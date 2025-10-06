@@ -75,8 +75,25 @@ class MindRootSIPBot(BareSIP):
         self.audio_handler = AudioHandler()
         
         # TTS audio output
-        self.tts_audio_queue = asyncio.Queue()
+        self.tts_audio_queue = None  # Will be created when needed
         self.tts_sender_task = None
+        
+        # Store reference to main event loop for cross-thread task scheduling
+        try:
+            self.main_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.main_loop = None
+        
+    def _schedule_coroutine(self, coro):
+        """Schedule a coroutine to run in the main event loop from any thread."""
+        if self.main_loop and not self.main_loop.is_closed():
+            try:
+                # Use call_soon_threadsafe to schedule from another thread
+                future = asyncio.run_coroutine_threadsafe(coro, self.main_loop)
+                return future
+            except Exception as e:
+                logger.error(f"Failed to schedule coroutine: {e}")
+        return None
         
     async def _on_utterance(self, text, utterance_num, timestamp):
         """Internal callback for utterances - sends to MindRoot agent"""
@@ -142,9 +159,37 @@ class MindRootSIPBot(BareSIP):
             logger.warning("Could not find audio recording files.")
             logger.warning("Make sure sndfile module is enabled in ~/.baresip/config")
             
-        # Start TTS audio sender
-        if asyncio.get_event_loop().is_running():
+        # Start TTS audio sender using thread-safe scheduling
+        if self.main_loop and not self.main_loop.is_closed():
+            try:
+                # Create the queue in the main loop if it doesn't exist
+                if self.tts_audio_queue is None:
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._create_tts_queue(), self.main_loop
+                    )
+                    future.result(timeout=5.0)  # Wait up to 5 seconds
+                
+                # Schedule the TTS sender task
+                future = asyncio.run_coroutine_threadsafe(
+                    self._start_tts_sender(), self.main_loop
+                )
+                logger.info("TTS audio sender scheduled")
+            except Exception as e:
+                logger.error(f"Failed to start TTS audio sender: {e}")
+        else:
+            logger.warning("No main event loop available for TTS audio sender")
+            
+    async def _create_tts_queue(self):
+        """Create the TTS audio queue in the main event loop."""
+        if self.tts_audio_queue is None:
+            self.tts_audio_queue = asyncio.Queue()
+            logger.debug("TTS audio queue created")
+            
+    async def _start_tts_sender(self):
+        """Start the TTS audio sender task."""
+        if self.tts_sender_task is None or self.tts_sender_task.done():
             self.tts_sender_task = asyncio.create_task(self._tts_audio_sender())
+            logger.debug("TTS audio sender task started")
             
     def _setup_transcription(self):
         """Setup Whisper transcription."""
@@ -193,15 +238,14 @@ class MindRootSIPBot(BareSIP):
                             self.transcriber.utterance_count += 1
                             timestamp = time.time()
                             
-                            # Call our async callback
-                            if asyncio.get_event_loop().is_running():
-                                asyncio.create_task(
-                                    self._on_utterance(
-                                        text,
-                                        self.transcriber.utterance_count,
-                                        timestamp
-                                    )
+                            # Schedule the async callback using thread-safe method
+                            self._schedule_coroutine(
+                                self._on_utterance(
+                                    text,
+                                    self.transcriber.utterance_count,
+                                    timestamp
                                 )
+                            )
                             
                             self.transcriber.last_transcription = text
                         
@@ -372,6 +416,10 @@ class MindRootSIPBot(BareSIP):
         try:
             while self.call_established:
                 try:
+                    if self.tts_audio_queue is None:
+                        await asyncio.sleep(0.1)
+                        continue
+                        
                     audio_chunk = await asyncio.wait_for(self.tts_audio_queue.get(), timeout=1.0)
                     if audio_chunk is None:  # Sentinel to stop
                         break
@@ -392,7 +440,7 @@ class MindRootSIPBot(BareSIP):
                 
     async def queue_tts_audio(self, audio_chunk: bytes):
         """Queue TTS audio chunk for sending to the call"""
-        if self.call_established:
+        if self.call_established and self.tts_audio_queue is not None:
             try:
                 await self.tts_audio_queue.put(audio_chunk)
             except Exception as e:
