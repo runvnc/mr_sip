@@ -222,17 +222,24 @@ class MindRootSIPBot(BareSIP):
         now = time.time()
         # the audio dir is actually always just the working dir
         self.audio_dir = os.getcwd()
+        logger.info(f"Looking for audio files in: {self.audio_dir}")
         for filename in os.listdir(self.audio_dir):
             if filename.startswith("dump-") and filename.endswith(".wav"):
+                logger.debug(f"Found audio file: {filename}")
                 filepath = os.path.join(self.audio_dir, filename)
                 file_time = os.path.getmtime(filepath)
                 
                 # If file was created in the last 5 seconds
                 if now - file_time < 5:
+                    logger.debug(f"Checking audio file: {filename}")
                     if "-dec.wav" in filename:
+                        print(f"Found decoded audio file: {filepath}")
                         self.current_dec_file = filepath
                     elif "-enc.wav" in filename:
+                        print(f"Found encoded audio file: {filepath}")
                         self.current_enc_file = filepath
+                else:
+                    logger.debug(f"Ignoring old audio file: {filename}")
     
     def _parse_wav_header(self, filepath):
         """Parse WAV header to get audio format info"""
