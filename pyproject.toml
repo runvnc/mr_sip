@@ -10,8 +10,10 @@ authors = [{name = "MindRoot Team"}]
 requires-python = ">=3.8"
 dependencies = [
     "baresipy",
-    "faster-whisper>=0.10.0",
     "openai-whisper>=20231117",
+    "torch",
+    "torchaudio",
+    "faster-whisper>=0.10.0",
     "numpy>=1.21.0",
     "scipy>=1.7.0",
     "JACK-Client>=0.5.0",
