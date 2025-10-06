@@ -156,6 +156,7 @@ async def sip_audio_out_chunk(audio_chunk: bytes, context=None) -> bool:
             context=context
         )
     """
+    logger.debug(f"sip_audio_out_chunk called with {len(audio_chunk)} bytes")
     if not context or not context.log_id:
         logger.warning("sip_audio_out_chunk called without context or log_id")
         return False
