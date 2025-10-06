@@ -38,7 +38,8 @@ def create_stt_provider(provider_name: Optional[str] = None, **kwargs) -> BaseST
     
     if provider_name == 'deepgram':
         from .deepgram_stt import DeepgramSTT
-        api_key = kwargs.get('api_key') or os.getenv('DEEPGRAM_API_KEY')
+        # Get api_key from kwargs or environment, but remove from kwargs to avoid duplicate
+        api_key = kwargs.pop('api_key', None) or os.getenv('DEEPGRAM_API_KEY')
         if not api_key:
             raise ValueError("Deepgram API key required. Set DEEPGRAM_API_KEY environment variable or pass api_key parameter.")
         return DeepgramSTT(api_key=api_key, **kwargs)
