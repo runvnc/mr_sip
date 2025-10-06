@@ -21,10 +21,11 @@ logger = logging.getLogger(__name__)
 SIP_GATEWAY = os.getenv('SIP_GATEWAY', 'chicago4.voip.ms')
 SIP_USER = os.getenv('SIP_USER', '498091')
 SIP_PASSWORD = os.getenv('SIP_PASSWORD', '3BM]ZEu:z4.]vXU')
-STT_PROVIDER = os.getenv('STT_PROVIDER', 'whisper_vad')  # 'deepgram' or 'whisper_vad'
+STT_PROVIDER = os.getenv('STT_PROVIDER', 'deepgram')  # Default to deepgram
 STT_MODEL_SIZE = os.getenv('STT_MODEL_SIZE', 'small')  # For Whisper
 DEEPGRAM_API_KEY = os.getenv('DEEPGRAM_API_KEY', '')  # For Deepgram
 AUDIO_DIR = os.getenv('AUDIO_DIR', os.path.expanduser('.'))
+REQUIRE_DEEPGRAM = os.getenv('REQUIRE_DEEPGRAM', 'true').lower() in ('true', '1', 'yes', 'on')
 
 @service()
 async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
@@ -52,7 +53,53 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
     logger.info(f"Initiating SIP call to {destination} for session {context.log_id}")
     logger.info(f"Using STT provider: {STT_PROVIDER}")
     
+    # Enforce Deepgram requirement if configured
+    if REQUIRE_DEEPGRAM:
+        if STT_PROVIDER != 'deepgram':
+            error_msg = (
+                f"\n\n"
+                f"{'='*80}\n"
+                f"FATAL ERROR: Deepgram is required but STT_PROVIDER='{STT_PROVIDER}'\n"
+                f"{'='*80}\n"
+                f"Please set: export STT_PROVIDER=deepgram\n"
+                f"Or disable requirement: export REQUIRE_DEEPGRAM=false\n"
+                f"{'='*80}\n"
+            )
+            logger.error(error_msg)
+            import sys
+            sys.exit(1)
+        
+        if not DEEPGRAM_API_KEY:
+            error_msg = (
+                f"\n\n"
+                f"{'='*80}\n"
+                f"FATAL ERROR: DEEPGRAM_API_KEY environment variable not set\n"
+                f"{'='*80}\n"
+                f"Deepgram is required but no API key was provided.\n"
+                f"\n"
+                f"To fix this:\n"
+                f"1. Get an API key from https://deepgram.com/\n"
+                f"2. Set it: export DEEPGRAM_API_KEY='your_key_here'\n"
+                f"\n"
+                f"Or to disable this requirement:\n"
+                f"   export REQUIRE_DEEPGRAM=false\n"
+                f"{'='*80}\n"
+            )
+            logger.error(error_msg)
+            import sys
+            sys.exit(1)
+    
     try:
+        # Verbose logging for Deepgram initialization
+        if STT_PROVIDER == 'deepgram':
+            logger.info("\n" + "="*80)
+            logger.info("INITIALIZING DEEPGRAM STT PROVIDER")
+            logger.info("="*80)
+            logger.info(f"API Key: {DEEPGRAM_API_KEY[:10]}...{DEEPGRAM_API_KEY[-4:] if len(DEEPGRAM_API_KEY) > 14 else '[too short]'}")
+            logger.info(f"Destination: {destination}")
+            logger.info(f"Session: {context.log_id}")
+            logger.info("="*80)
+        
         # Check/setup sndfile module
         if not setup_sndfile_module():
             logger.warning("sndfile module setup failed, audio recording may not work")
@@ -77,17 +124,43 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
         stt_config = {}
         
         if STT_PROVIDER == 'deepgram':
-            if not DEEPGRAM_API_KEY:
-                logger.error("DEEPGRAM_API_KEY not set but Deepgram provider selected")
-                return {
-                    "status": "error",
-                    "log_id": context.log_id,
-                    "destination": destination,
-                    "error": "DEEPGRAM_API_KEY environment variable not set"
-                }
             stt_config['api_key'] = DEEPGRAM_API_KEY
+            logger.info("Deepgram configuration prepared")
+            
+            # Test Deepgram connection before proceeding
+            logger.info("Testing Deepgram connection...")
+            try:
+                from .stt import create_stt_provider
+                test_stt = create_stt_provider('deepgram', **stt_config)
+                await test_stt.start()
+                logger.info("\n" + "="*80)
+                logger.info("✅ DEEPGRAM CONNECTION SUCCESSFUL")
+                logger.info("="*80)
+                await test_stt.stop()
+            except Exception as e:
+                error_msg = (
+                    f"\n\n"
+                    f"{'='*80}\n"
+                    f"❌ FATAL ERROR: Failed to connect to Deepgram\n"
+                    f"{'='*80}\n"
+                    f"Error: {str(e)}\n"
+                    f"\n"
+                    f"Possible causes:\n"
+                    f"1. Invalid API key\n"
+                    f"2. No internet connection\n"
+                    f"3. Firewall blocking WebSocket connections\n"
+                    f"4. Deepgram service is down\n"
+                    f"\n"
+                    f"Please verify your DEEPGRAM_API_KEY and internet connection.\n"
+                    f"{'='*80}\n"
+                )
+                logger.error(error_msg)
+                import sys
+                sys.exit(1)
+                
         elif STT_PROVIDER == 'whisper_vad':
             stt_config['model_size'] = STT_MODEL_SIZE
+            logger.info(f"Whisper VAD configuration prepared (model: {STT_MODEL_SIZE})")
         
         # Create baresip bot with MindRoot integration and STT provider
         bot = MindRootSIPBotV2(

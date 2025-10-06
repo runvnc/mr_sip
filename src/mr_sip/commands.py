@@ -15,10 +15,17 @@ try:
 except ImportError:
     V2_AVAILABLE = False
 
+# Import configuration
+REQUIRE_DEEPGRAM = os.getenv('REQUIRE_DEEPGRAM', 'true').lower() in ('true', '1', 'yes', 'on')
+STT_PROVIDER = os.getenv('STT_PROVIDER', 'deepgram' if REQUIRE_DEEPGRAM else 'whisper_vad')
+
 logger = logging.getLogger(__name__)
 
 # Check if V2 should be used (based on environment variable)
 USE_V2 = V2_AVAILABLE and os.getenv('SIP_USE_V2', 'true').lower() in ('true', '1', 'yes', 'on')
+
+# Log configuration on module load
+logger.info(f"SIP Plugin Configuration: V2={'enabled' if USE_V2 else 'disabled'}, STT_PROVIDER={STT_PROVIDER}, REQUIRE_DEEPGRAM={REQUIRE_DEEPGRAM}")
 
 @command()
 async def call(destination: str, context=None) -> str:
@@ -65,7 +72,7 @@ async def call(destination: str, context=None) -> str:
         
         # Use V2 if available and enabled
         if USE_V2:
-            stt_provider = os.getenv('STT_PROVIDER', 'whisper_vad')
+            stt_provider = STT_PROVIDER
             logger.info(f"Using V2 implementation with STT provider: {stt_provider}")
             result = await dial_service_v2(destination=destination, context=context)
         else:
