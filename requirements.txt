@@ -1,0 +1,14 @@
+# Core dependencies
+baresipy>=0.1.0
+faster-whisper>=0.10.0
+scipy>=1.11.0
+numpy>=1.24.0
+JACK-Client>=0.5.4
+
+# New dependencies for STT provider interface
+inotify>=0.2.10
+websockets>=12.0
+
+# Optional: for development/testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0

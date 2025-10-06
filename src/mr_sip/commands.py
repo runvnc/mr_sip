@@ -3,11 +3,22 @@
 MindRoot SIP Plugin - User Commands
 """
 
+import os
 import logging
 from lib.providers.commands import command
 from .services import dial_service, end_call_service
 
+# Import V2 services if available
+try:
+    from .services_v2 import dial_service_v2
+    V2_AVAILABLE = True
+except ImportError:
+    V2_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
+
+# Check if V2 should be used (based on environment variable)
+USE_V2 = V2_AVAILABLE and os.getenv('SIP_USE_V2', 'true').lower() in ('true', '1', 'yes', 'on')
 
 @command()
 async def call(destination: str, context=None) -> str:
@@ -31,7 +42,15 @@ async def call(destination: str, context=None) -> str:
     Environment Variables:
         SIP_GATEWAY: SIP gateway server (default: chicago4.voip.ms)
         SIP_USER: SIP username (default: 498091)
-        SIP_PASSWORD: SIP password (default: 3BM]ZEu:z4.]vXU)
+        SIP_PASSWORD: SIP password
+        
+        # V2 STT Provider Configuration (used if SIP_USE_V2=true)
+        SIP_USE_V2: Use V2 implementation with STT providers (default: true)
+        STT_PROVIDER: 'deepgram' or 'whisper_vad' (default: whisper_vad)
+        DEEPGRAM_API_KEY: Required if STT_PROVIDER=deepgram
+        STT_MODEL_SIZE: Whisper model size if STT_PROVIDER=whisper_vad (default: small)
+        
+        # V1 Configuration (used if SIP_USE_V2=false)
         WHISPER_MODEL: Whisper model size (default: small)
         AUDIO_DIR: Audio recording directory (default: ~/.baresip)
     """
@@ -44,11 +63,25 @@ async def call(destination: str, context=None) -> str:
         
         logger.info(f"Call command initiated to {destination} for session {context.log_id}")
         
-        # Use the dial service to initiate the call
-        result = await dial_service(destination=destination, context=context)
+        # Use V2 if available and enabled
+        if USE_V2:
+            stt_provider = os.getenv('STT_PROVIDER', 'whisper_vad')
+            logger.info(f"Using V2 implementation with STT provider: {stt_provider}")
+            result = await dial_service_v2(destination=destination, context=context)
+        else:
+            if USE_V2 and not V2_AVAILABLE:
+                logger.warning("V2 requested but not available, falling back to V1")
+            logger.info("Using V1 implementation")
+            result = await dial_service(destination=destination, context=context)
         
         if result["status"] == "call_established":
-            return f"Call established to {destination}. Voice conversation is now active. Speak naturally and I will respond through the phone."
+            msg = f"Call established to {destination}. Voice conversation is now active. Speak naturally and I will respond through the phone."
+            
+            # Add STT provider info if V2
+            if result.get('stt_provider'):
+                msg += f" (Using {result['stt_provider']} for transcription)"
+            
+            return msg
         elif result["status"] == "call_failed":
             return f"Failed to establish call to {destination}: {result.get('error', 'Unknown error')}"
         else:
@@ -81,7 +114,7 @@ async def hangup(context=None) -> str:
         
         logger.info(f"Hangup command initiated for session {context.log_id}")
         
-        # Use the end call service
+        # Use the end call service (works with both V1 and V2)
         result = await end_call_service(context=context)
         
         if result["status"] == "call_ended":
