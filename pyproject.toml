@@ -9,8 +9,9 @@ description = "MindRoot SIP phone integration plugin with voice transcription an
 authors = [{name = "MindRoot Team"}]
 requires-python = ">=3.8"
 dependencies = [
-    "baresipy",
+    "baresipy>=1.0.0",
     "faster-whisper>=0.10.0",
+    "openai-whisper>=20231117",
     "numpy>=1.21.0",
     "scipy>=1.7.0",
     "JACK-Client>=0.5.0",

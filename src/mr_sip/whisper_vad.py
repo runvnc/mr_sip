@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""
+Whisper Streaming STT with Voice Activity Detection (VAD) for MindRoot SIP Plugin
+
+Integrated version of whisper streaming VAD specifically for SIP phone calls.
+Detects pauses to identify complete utterances and reduce partials.
+"""
+
+import numpy as np
+import threading
+import queue
+import time
+import logging
+from collections import deque
+from typing import Callable, Optional
+
+try:
+    import whisper
+except ImportError:
+    whisper = None
+
+logger = logging.getLogger(__name__)
+
+class WhisperStreamingVAD:
+    """Whisper-based streaming speech-to-text with voice activity detection."""
+    
+    def __init__(self, model_size="small", sample_rate=16000, 
+                 chunk_duration=0.5, silence_threshold=0.01, 
+                 silence_duration=1.0, min_speech_duration=0.5,
+                 utterance_callback: Optional[Callable] = None):
+        """
+        Initialize streaming Whisper transcriber with VAD
+        
+        Args:
+            model_size: Whisper model size (tiny, base, small, medium, large)
+            sample_rate: Audio sample rate in Hz
+            chunk_duration: Duration of audio chunks for VAD analysis
+            silence_threshold: RMS threshold below which audio is considered silence
+            silence_duration: Seconds of silence to trigger end of utterance
+            min_speech_duration: Minimum speech duration to process (filter out noise)
+            utterance_callback: Callback function for complete utterances
+                               Signature: callback(text, utterance_num, timestamp)
+        """
+        if whisper is None:
+            raise ImportError("Whisper not available. Install with: pip install openai-whisper")
+            
+        logger.info(f"Loading Whisper {model_size} model...")
+        self.model = whisper.load_model(model_size)
+        self.sample_rate = sample_rate
+        self.chunk_duration = chunk_duration
+        self.chunk_samples = int(sample_rate * chunk_duration)
+        
+        # VAD parameters
+        self.silence_threshold = silence_threshold
+        self.silence_duration = silence_duration
+        self.min_speech_duration = min_speech_duration
+        self.silence_chunks_needed = int(silence_duration / chunk_duration)
+        
+        # State tracking
+        self.audio_buffer = deque()
+        self.speech_buffer = deque()
+        self.is_speaking = False
+        self.silence_counter = 0
+        self.speech_start_time = None
+        
+        # Processing
+        self.processing_queue = queue.Queue()
+        self.is_running = False
+        self.processing_thread = None
+        self.last_transcription = ""
+        self.utterance_count = 0
+        
+        # Callback for utterances
+        self.utterance_callback = utterance_callback
+        
+        logger.info(f"WhisperStreamingVAD initialized:")
+        logger.info(f"  Model: {model_size}")
+        logger.info(f"  Sample rate: {sample_rate} Hz")
+        logger.info(f"  Silence threshold: {silence_threshold}")
+        logger.info(f"  Silence duration: {silence_duration}s")
+        logger.info(f"  Min speech duration: {min_speech_duration}s")
+        
+    def start(self):
+        """Start the processing thread"""
+        if self.is_running:
+            logger.warning("WhisperStreamingVAD already running")
+            return
+            
+        self.is_running = True
+        self.processing_thread = threading.Thread(target=self._process_loop, daemon=True)
+        self.processing_thread.start()
+        logger.info("Whisper streaming transcription with VAD started")
+        
+    def stop(self):
+        """Stop the processing thread"""
+        if not self.is_running:
+            return
+            
+        self.is_running = False
+        if self.processing_thread:
+            self.processing_thread.join(timeout=5.0)
+        logger.info("Whisper streaming transcription stopped")
+        
+    def _calculate_rms(self, audio_chunk):
+        """Calculate RMS (Root Mean Square) energy of audio chunk"""
+        return np.sqrt(np.mean(audio_chunk**2))
+    
+    def _is_speech(self, audio_chunk):
+        """Determine if audio chunk contains speech based on energy"""
+        rms = self._calculate_rms(audio_chunk)
+        return rms > self.silence_threshold
+        
+    def add_audio(self, audio_chunk):
+        """
+        Add audio chunk and perform VAD
+        
+        Args:
+            audio_chunk: numpy array of audio samples (float32, mono)
+        """
+        if not self.is_running:
+            return
+            
+        # Ensure proper format
+        if audio_chunk.dtype != np.float32:
+            audio_chunk = audio_chunk.astype(np.float32)
+        if np.abs(audio_chunk).max() > 1.0:
+            audio_chunk = audio_chunk / 32768.0
+            
+        audio_chunk = audio_chunk.flatten()
+        self.audio_buffer.extend(audio_chunk)
+        
+        # Process in fixed-size chunks for VAD
+        while len(self.audio_buffer) >= self.chunk_samples:
+            chunk = np.array([self.audio_buffer.popleft() for _ in range(self.chunk_samples)])
+            self._process_vad_chunk(chunk)
+    
+    def _process_vad_chunk(self, chunk):
+        """Process a chunk for voice activity detection"""
+        is_speech = self._is_speech(chunk)
+        
+        if is_speech:
+            if not self.is_speaking:
+                # Speech started
+                self.is_speaking = True
+                self.speech_start_time = time.time()
+                self.silence_counter = 0
+                logger.debug("[SPEECH START]")
+            
+            # Add to speech buffer
+            self.speech_buffer.extend(chunk)
+            self.silence_counter = 0
+            
+        else:
+            # Silence detected
+            if self.is_speaking:
+                self.silence_counter += 1
+                # Still add to buffer during silence (for context)
+                self.speech_buffer.extend(chunk)
+                
+                # Check if silence duration threshold reached
+                if self.silence_counter >= self.silence_chunks_needed:
+                    # End of utterance
+                    speech_duration = time.time() - self.speech_start_time
+                    
+                    if speech_duration >= self.min_speech_duration:
+                        # Process the complete utterance
+                        audio_array = np.array(list(self.speech_buffer))
+                        self.processing_queue.put(('utterance', audio_array))
+                        logger.debug(f"[SPEECH END] Duration: {speech_duration:.2f}s")
+                    else:
+                        logger.debug(f"[SPEECH IGNORED] Too short: {speech_duration:.2f}s")
+                    
+                    # Reset state
+                    self.is_speaking = False
+                    self.speech_buffer.clear()
+                    self.silence_counter = 0
+                    self.speech_start_time = None
+    
+    def _process_loop(self):
+        """Background thread that processes complete utterances"""
+        logger.info("Whisper processing loop started")
+        
+        while self.is_running:
+            try:
+                msg_type, audio_chunk = self.processing_queue.get(timeout=0.1)
+                
+                if msg_type == 'utterance':
+                    # Transcribe the complete utterance
+                    try:
+                        result = self.model.transcribe(
+                            audio_chunk,
+                            language=None,
+                            fp16=False,
+                            verbose=False
+                        )
+                        
+                        text = result["text"].strip()
+                        if text and text != self.last_transcription:
+                            self.utterance_count += 1
+                            timestamp = time.time()
+                            
+                            logger.info(f"Transcribed utterance #{self.utterance_count}: {text}")
+                            
+                            # Call the callback if provided
+                            if self.utterance_callback:
+                                try:
+                                    self.utterance_callback(text, self.utterance_count, timestamp)
+                                except Exception as e:
+                                    logger.error(f"Error in utterance callback: {e}")
+                            
+                            self.last_transcription = text
+                            
+                    except Exception as e:
+                        logger.error(f"Error transcribing audio: {e}")
+                    
+            except queue.Empty:
+                continue
+            except Exception as e:
+                if self.is_running:
+                    logger.error(f"Error in processing loop: {e}")
+                continue
+                
+        logger.info("Whisper processing loop stopped")
+
+    def get_stats(self):
+        """Get transcription statistics"""
+        return {
+            "utterance_count": self.utterance_count,
+            "is_running": self.is_running,
+            "is_speaking": self.is_speaking,
+            "buffer_size": len(self.audio_buffer),
+            "speech_buffer_size": len(self.speech_buffer)
+        }

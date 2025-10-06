@@ -19,15 +19,7 @@ import asyncio
 import logging
 from typing import Callable, Optional, Any
 from .audio_handler import AudioHandler
-
-# Import the VAD transcriber from whispertest
-try:
-    sys.path.append('/files/whispertest')
-    from whisper_streaming_vad import WhisperStreamingVAD
-except ImportError:
-    print("Error: whisper_streaming_vad.py not found!")
-    print("Make sure /files/whispertest/whisper_streaming_vad.py exists.")
-    WhisperStreamingVAD = None
+from .whisper_vad import WhisperStreamingVAD
 
 logger = logging.getLogger(__name__)
 
@@ -193,70 +185,37 @@ class MindRootSIPBot(BareSIP):
             
     def _setup_transcription(self):
         """Setup Whisper transcription."""
-        if WhisperStreamingVAD:
-            logger.info(f"Initializing Whisper ({self.model_size} model)...")
+        try:
+            logger.info(f"Initializing integrated Whisper ({self.model_size} model)...")
+            
+            # Create utterance callback that schedules async processing
+            def utterance_callback(text, utterance_num, timestamp):
+                """Sync callback that schedules async processing"""
+                self._schedule_coroutine(
+                    self._on_utterance(text, utterance_num, timestamp)
+                )
+            
             self.transcriber = WhisperStreamingVAD(
                 model_size=self.model_size,
                 sample_rate=16000,  # Whisper expects 16kHz
                 chunk_duration=0.5,
                 silence_threshold=0.01,    # Adjust for phone line noise
                 silence_duration=1.0,      # 1 second pause = end of utterance
-                min_speech_duration=0.5    # Ignore very short sounds
+                min_speech_duration=0.5,   # Ignore very short sounds
+                utterance_callback=utterance_callback
             )
-            
-            # Setup transcriber callback
-            self._setup_transcriber_callback()
             
             # Start transcriber
             self.transcriber.start()
-            logger.info("Transcriber started.")
-        else:
-            logger.warning("WhisperStreamingVAD not available, transcription disabled")
+            logger.info("Integrated Whisper transcriber started.")
             
-    def _setup_transcriber_callback(self):
-        """Setup callback to capture complete utterances"""
-        if not self.transcriber:
-            return
-            
-        original_process = self.transcriber._process_loop
-        
-        def wrapped_process():
-            while self.transcriber.is_running:
-                try:
-                    msg_type, audio_chunk = self.transcriber.processing_queue.get(timeout=0.1)
-                    
-                    if msg_type == 'utterance':
-                        result = self.transcriber.model.transcribe(
-                            audio_chunk,
-                            language=None,
-                            fp16=False,
-                            verbose=False
-                        )
-                        
-                        text = result["text"].strip()
-                        if text and text != self.transcriber.last_transcription:
-                            self.transcriber.utterance_count += 1
-                            timestamp = time.time()
-                            
-                            # Schedule the async callback using thread-safe method
-                            self._schedule_coroutine(
-                                self._on_utterance(
-                                    text,
-                                    self.transcriber.utterance_count,
-                                    timestamp
-                                )
-                            )
-                            
-                            self.transcriber.last_transcription = text
-                        
-                except Empty:
-                    continue
-                except Exception as e:
-                    if self.transcriber.is_running:
-                        logger.error(f"Error processing audio: {e}")
-                    continue
-        
-        self.transcriber._process_loop = wrapped_process
+        except ImportError as e:
+            logger.error(f"Whisper not available: {e}")
+            logger.error("Install with: pip install openai-whisper")
+            self.transcriber = None
+        except Exception as e:
+            logger.error(f"Failed to initialize Whisper: {e}")
+            self.transcriber = None
             
     def _find_current_audio_files(self):
         """Find the audio files that baresip just created for this call"""
