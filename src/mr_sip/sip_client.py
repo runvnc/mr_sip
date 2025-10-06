@@ -133,7 +133,7 @@ class MindRootSIPBot(BareSIP):
         self._setup_transcription()
         
         # Wait for audio file to be created
-        time.sleep(0.5)
+        time.sleep(11.5)
         self._find_current_audio_files()
         
         if self.current_dec_file:
@@ -219,28 +219,39 @@ class MindRootSIPBot(BareSIP):
             
     def _find_current_audio_files(self):
         """Find the audio files that baresip just created for this call"""
-        now = time.time()
+        # Wait 5 seconds for files to be created and written
+        logger.info("Waiting 5 seconds for audio files to be created...")
+        time.sleep(5)
+        
         # the audio dir is actually always just the working dir
         self.audio_dir = os.getcwd()
         logger.info(f"Looking for audio files in: {self.audio_dir}")
+        
+        # Find all dump files and get the most recently modified ones
+        dec_files = []
+        enc_files = []
+        
         for filename in os.listdir(self.audio_dir):
             if filename.startswith("dump-") and filename.endswith(".wav"):
                 logger.debug(f"Found audio file: {filename}")
                 filepath = os.path.join(self.audio_dir, filename)
                 file_time = os.path.getmtime(filepath)
                 
-                # If file was created in the last 5 seconds
-                if now - file_time < 5:
-                    logger.debug(f"Checking audio file: {filename}")
-                    if "-dec.wav" in filename:
-                        print(f"Found decoded audio file: {filepath}")
-                        self.current_dec_file = filepath
-                    elif "-enc.wav" in filename:
-                        print(f"Found encoded audio file: {filepath}")
-                        self.current_enc_file = filepath
-                else:
-                    logger.debug(f"Ignoring old audio file: {filename}")
-    
+                if "-dec.wav" in filename:
+                    dec_files.append((filepath, file_time))
+                elif "-enc.wav" in filename:
+                    enc_files.append((filepath, file_time))
+        
+        # Pick the most recently modified files
+        if dec_files:
+            dec_files.sort(key=lambda x: x[1], reverse=True)  # Sort by modification time, newest first
+            self.current_dec_file = dec_files[0][0]
+            logger.info(f"Selected most recent decoded audio file: {self.current_dec_file}")
+        
+        if enc_files:
+            enc_files.sort(key=lambda x: x[1], reverse=True)  # Sort by modification time, newest first
+            self.current_enc_file = enc_files[0][0]
+            logger.info(f"Selected most recent encoded audio file: {self.current_enc_file}")    
     def _parse_wav_header(self, filepath):
         """Parse WAV header to get audio format info"""
         try:
