@@ -42,7 +42,6 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
     Returns:
         dict: Session information including log_id, destination, and status
 
-    
     Environment Variables:
         STT_PROVIDER: 'deepgram_flux', 'deepgram', or 'whisper_vad' (default: 'deepgram_flux')
         DEEPGRAM_API_KEY: Required if using Deepgram
@@ -124,7 +123,6 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
         # Prepare STT configuration
         stt_config = {}
         
-
         if STT_PROVIDER in ['deepgram', 'deepgram_flux']:
             # Don't put api_key in stt_config - it will be read from environment by factory
             # stt_config['api_key'] = DEEPGRAM_API_KEY  # Removed to avoid duplicate
@@ -140,7 +138,7 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
                 logger.info("\n" + "="*80)
                 logger.info(f"✅ {STT_PROVIDER.upper()} CONNECTION SUCCESSFUL")
                 logger.info("="*80)
-                await test_stt.stop()                await test_stt.stop()
+                await test_stt.stop()
             except Exception as e:
                 error_msg = (
                     f"\n\n"
