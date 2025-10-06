@@ -49,7 +49,7 @@ class MindRootSIPBotV2(BareSIP):
             on_utterance_callback: Async function called with each complete utterance
                                   Signature: async callback(text, utterance_num, timestamp, context)
             stt_provider: STT provider name ('deepgram', 'whisper_vad', etc.)
-                         If None, uses STT_PROVIDER env var or defaults to 'whisper_vad'
+                         If None, uses STT_PROVIDER env var or defaults to 'deepgram_flux'
             stt_config: Additional configuration for STT provider
             context: MindRoot ChatContext
         """
@@ -69,7 +69,7 @@ class MindRootSIPBotV2(BareSIP):
         self.current_enc_file = None
         
         # STT provider
-        self.stt_provider_name = stt_provider or os.getenv('STT_PROVIDER', 'whisper_vad')
+        self.stt_provider_name = stt_provider or os.getenv('STT_PROVIDER', 'deepgram_flux')
         self.stt_config = stt_config or {}
         self.stt: Optional[BaseSTTProvider] = None
         self.audio_capture: Optional[InotifyAudioCapture] = None

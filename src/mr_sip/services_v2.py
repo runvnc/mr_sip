@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 SIP_GATEWAY = os.getenv('SIP_GATEWAY', 'chicago4.voip.ms')
 SIP_USER = os.getenv('SIP_USER', '498091')
 SIP_PASSWORD = os.getenv('SIP_PASSWORD', '3BM]ZEu:z4.]vXU')
-STT_PROVIDER = os.getenv('STT_PROVIDER', 'deepgram')  # Default to deepgram
+STT_PROVIDER = os.getenv('STT_PROVIDER', 'deepgram_flux')  # Default to deepgram_flux
 STT_MODEL_SIZE = os.getenv('STT_MODEL_SIZE', 'small')  # For Whisper
 DEEPGRAM_API_KEY = os.getenv('DEEPGRAM_API_KEY', '')  # For Deepgram
 AUDIO_DIR = os.getenv('AUDIO_DIR', os.path.expanduser('.'))
@@ -41,9 +41,10 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
     
     Returns:
         dict: Session information including log_id, destination, and status
+
     
     Environment Variables:
-        STT_PROVIDER: 'deepgram' or 'whisper_vad' (default: 'whisper_vad')
+        STT_PROVIDER: 'deepgram_flux', 'deepgram', or 'whisper_vad' (default: 'deepgram_flux')
         DEEPGRAM_API_KEY: Required if using Deepgram
         STT_MODEL_SIZE: Whisper model size if using Whisper (default: 'small')
     """
@@ -55,13 +56,13 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
     
     # Enforce Deepgram requirement if configured
     if REQUIRE_DEEPGRAM:
-        if STT_PROVIDER != 'deepgram':
+        if STT_PROVIDER not in ['deepgram', 'deepgram_flux']:
             error_msg = (
                 f"\n\n"
                 f"{'='*80}\n"
                 f"FATAL ERROR: Deepgram is required but STT_PROVIDER='{STT_PROVIDER}'\n"
                 f"{'='*80}\n"
-                f"Please set: export STT_PROVIDER=deepgram\n"
+                f"Please set: export STT_PROVIDER=deepgram_flux (recommended) or deepgram\n"
                 f"Or disable requirement: export REQUIRE_DEEPGRAM=false\n"
                 f"{'='*80}\n"
             )
@@ -91,9 +92,9 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
     
     try:
         # Verbose logging for Deepgram initialization
-        if STT_PROVIDER == 'deepgram':
+        if STT_PROVIDER in ['deepgram', 'deepgram_flux']:
             logger.info("\n" + "="*80)
-            logger.info("INITIALIZING DEEPGRAM STT PROVIDER")
+            logger.info(f"INITIALIZING {STT_PROVIDER.upper()} STT PROVIDER")
             logger.info("="*80)
             logger.info(f"API Key: {DEEPGRAM_API_KEY[:10]}...{DEEPGRAM_API_KEY[-4:] if len(DEEPGRAM_API_KEY) > 14 else '[too short]'}")
             logger.info(f"Destination: {destination}")
@@ -123,22 +124,23 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
         # Prepare STT configuration
         stt_config = {}
         
-        if STT_PROVIDER == 'deepgram':
+
+        if STT_PROVIDER in ['deepgram', 'deepgram_flux']:
             # Don't put api_key in stt_config - it will be read from environment by factory
             # stt_config['api_key'] = DEEPGRAM_API_KEY  # Removed to avoid duplicate
-            logger.info("Deepgram configuration prepared")
+            logger.info(f"{STT_PROVIDER} configuration prepared")
             
             # Test Deepgram connection before proceeding
-            logger.info("Testing Deepgram connection...")
+            logger.info(f"Testing {STT_PROVIDER} connection...")
             try:
                 from .stt import create_stt_provider
                 # Factory will read DEEPGRAM_API_KEY from environment
-                test_stt = create_stt_provider('deepgram')
+                test_stt = create_stt_provider(STT_PROVIDER)
                 await test_stt.start()
                 logger.info("\n" + "="*80)
-                logger.info("✅ DEEPGRAM CONNECTION SUCCESSFUL")
+                logger.info(f"✅ {STT_PROVIDER.upper()} CONNECTION SUCCESSFUL")
                 logger.info("="*80)
-                await test_stt.stop()
+                await test_stt.stop()                await test_stt.stop()
             except Exception as e:
                 error_msg = (
                     f"\n\n"
