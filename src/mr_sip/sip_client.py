@@ -198,9 +198,9 @@ class MindRootSIPBot(BareSIP):
             self.transcriber = WhisperStreamingVAD(
                 model_size=self.model_size,
                 sample_rate=16000,  # Whisper expects 16kHz
-                chunk_duration=0.25,
-                silence_threshold=0.01,    # Adjust for phone line noise
-                silence_duration=0.25,     # 0.25 second pause = end of utterance
+                chunk_duration=0.15,       # 150ms chunks for fast VAD
+                silence_threshold=0.005,   # Lower threshold for phone audio
+                silence_duration=0.3,      # 300ms pause = end of utterance (2 chunks)
                 min_speech_duration=0.3,   # Ignore very short sounds
                 utterance_callback=utterance_callback
             )

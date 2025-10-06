@@ -25,8 +25,8 @@ class WhisperStreamingVAD:
     """Faster-Whisper-based streaming speech-to-text with voice activity detection."""
     
     def __init__(self, model_size="base", sample_rate=16000, 
-                 chunk_duration=0.25, silence_threshold=0.01, 
-                 silence_duration=0.3, min_speech_duration=0.3,
+                 chunk_duration=0.15, silence_threshold=0.005, 
+                 silence_duration=0.3, min_speech_duration=0.25,
                  utterance_callback: Optional[Callable] = None):
         """
         Initialize streaming Whisper transcriber with VAD
