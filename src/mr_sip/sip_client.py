@@ -220,7 +220,8 @@ class MindRootSIPBot(BareSIP):
     def _find_current_audio_files(self):
         """Find the audio files that baresip just created for this call"""
         now = time.time()
-        
+        # the audio dir is actually always just the working dir
+        self.audio_dir = os.getcwd()
         for filename in os.listdir(self.audio_dir):
             if filename.startswith("dump-") and filename.endswith(".wav"):
                 filepath = os.path.join(self.audio_dir, filename)
