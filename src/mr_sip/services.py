@@ -19,7 +19,7 @@ SIP_GATEWAY = os.getenv('SIP_GATEWAY', 'chicago4.voip.ms')
 SIP_USER = os.getenv('SIP_USER', '498091')
 SIP_PASSWORD = os.getenv('SIP_PASSWORD', '3BM]ZEu:z4.]vXU')
 WHISPER_MODEL = os.getenv('WHISPER_MODEL', 'small')
-AUDIO_DIR = os.getenv('AUDIO_DIR', os.path.expanduser('~/.baresip'))
+AUDIO_DIR = os.getenv('AUDIO_DIR', os.path.expanduser('.'))
 
 @service()
 async def dial_service(destination: str, context=None) -> Dict[str, Any]:
