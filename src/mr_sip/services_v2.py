@@ -124,14 +124,16 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
         stt_config = {}
         
         if STT_PROVIDER == 'deepgram':
-            stt_config['api_key'] = DEEPGRAM_API_KEY
+            # Don't put api_key in stt_config - it will be read from environment by factory
+            # stt_config['api_key'] = DEEPGRAM_API_KEY  # Removed to avoid duplicate
             logger.info("Deepgram configuration prepared")
             
             # Test Deepgram connection before proceeding
             logger.info("Testing Deepgram connection...")
             try:
                 from .stt import create_stt_provider
-                test_stt = create_stt_provider('deepgram', **stt_config)
+                # Factory will read DEEPGRAM_API_KEY from environment
+                test_stt = create_stt_provider('deepgram')
                 await test_stt.start()
                 logger.info("\n" + "="*80)
                 logger.info("✅ DEEPGRAM CONNECTION SUCCESSFUL")
