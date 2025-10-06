@@ -18,7 +18,7 @@ def create_stt_provider(provider_name: Optional[str] = None, **kwargs) -> BaseST
     
     Args:
         provider_name: Name of the provider ('deepgram', 'whisper_vad', 'streaming_whisper')
-                      If None, uses STT_PROVIDER environment variable or defaults to 'deepgram_flux'
+                      If None, uses STT_PROVIDER environment variable or defaults to 'whisper_vad'
         **kwargs: Additional arguments passed to the provider constructor
         
     Returns:
@@ -30,7 +30,7 @@ def create_stt_provider(provider_name: Optional[str] = None, **kwargs) -> BaseST
         STT_MODEL_SIZE: Whisper model size for whisper providers (default: 'small')
     """
     if provider_name is None:
-        provider_name = os.getenv('STT_PROVIDER', 'deepgram_flux')
+        provider_name = os.getenv('STT_PROVIDER', 'whisper_vad')
         
     provider_name = provider_name.lower()
     
@@ -44,14 +44,6 @@ def create_stt_provider(provider_name: Optional[str] = None, **kwargs) -> BaseST
             raise ValueError("Deepgram API key required. Set DEEPGRAM_API_KEY environment variable or pass api_key parameter.")
         return DeepgramSTT(api_key=api_key, **kwargs)
         
-    elif provider_name == 'deepgram_flux':
-        from .deepgram_flux_stt import DeepgramFluxSTT
-        # Get api_key from kwargs or environment, but remove from kwargs to avoid duplicate
-        api_key = kwargs.pop('api_key', None) or os.getenv('DEEPGRAM_API_KEY')
-        if not api_key:
-            raise ValueError("Deepgram API key required. Set DEEPGRAM_API_KEY environment variable or pass api_key parameter.")
-        return DeepgramFluxSTT(api_key=api_key, **kwargs)
-        
     elif provider_name == 'whisper_vad':
         from .whisper_vad_stt import WhisperVADSTT
         model_size = kwargs.get('model_size') or os.getenv('STT_MODEL_SIZE', 'small')
@@ -62,4 +54,4 @@ def create_stt_provider(provider_name: Optional[str] = None, **kwargs) -> BaseST
         raise NotImplementedError("Streaming Whisper provider not yet implemented. Use 'whisper_vad' or 'deepgram'.")
         
     else:
-        raise ValueError(f"Unknown STT provider: {provider_name}. Available: deepgram, deepgram_flux, whisper_vad, streaming_whisper")
+        raise ValueError(f"Unknown STT provider: {provider_name}. Available: deepgram, whisper_vad, streaming_whisper")

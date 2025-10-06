@@ -8,6 +8,7 @@ JACK-Client>=0.5.4
 # New dependencies for STT provider interface
 inotify>=0.2.10
 websockets>=12.0
+deepgram-sdk>=3.0.0
 
 # Optional: for development/testing
 pytest>=7.4.0
