@@ -1,6 +1,6 @@
 #!/bin/bash
 # JACK Audio Daemon Startup Script for MindRoot SIP
-# Configured for 8000 Hz telephony with S16 format
+# Configured for 8000 Hz telephony using dummy driver
 
 # Kill any existing JACK instances
 echo "Stopping any existing JACK instances..."
@@ -9,33 +9,21 @@ sleep 1
 
 # JACK Configuration
 SAMPLE_RATE=8000      # Telephony standard
-BUFFER_SIZE=1024      # Period size (adjust for latency vs stability)
-NUM_PERIODS=2         # Number of periods per buffer
-AUDIO_DEVICE="hw:0"   # Default audio device (change if needed)
+BUFFER_SIZE=1536      # Period size (adjust for latency vs stability)
 
 echo "Starting JACK daemon..."
 echo "Sample Rate: ${SAMPLE_RATE} Hz"
 echo "Buffer Size: ${BUFFER_SIZE} frames"
-echo "Audio Device: ${AUDIO_DEVICE}"
+echo "Driver: dummy (no physical audio device)"
 
-# Start JACK with ALSA driver
-# -d alsa: Use ALSA driver
+# Start JACK with dummy driver
+# -d dummy: Use dummy driver (no physical audio, just routing)
 # -r 8000: Sample rate for telephony
 # -p 1024: Period size (buffer size)
-# -n 2: Number of periods
-# -S: Use 16-bit samples (S16) instead of 32-bit float
-# -D: Duplex mode (capture + playback)
-# -C: Capture device
-# -P: Playback device
 
-jackd -d alsa \
+jackd -d dummy \
   -r ${SAMPLE_RATE} \
   -p ${BUFFER_SIZE} \
-  -n ${NUM_PERIODS} \
-  -S \
-  -D \
-  -C${AUDIO_DEVICE} \
-  -P${AUDIO_DEVICE} \
   2>&1 | tee /tmp/jackd.log &
 
 JACK_PID=$!

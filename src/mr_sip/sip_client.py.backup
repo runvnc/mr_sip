@@ -126,14 +126,14 @@ class MindRootSIPBot(BareSIP):
             self.audio_handler.configure_baresip_jack(self)
             
         # Connect JACK ports after call is established
-        time.sleep(0.5)  # Give baresip time to create ports
+        time.sleep(1.0)  # Give baresip time to create ports
         self.audio_handler.connect_jack_to_baresip()
         
         # Setup transcription
         self._setup_transcription()
         
         # Wait for audio file to be created
-        # Removed fixed delay - _find_current_audio_files now polls
+        time.sleep(11.5)
         self._find_current_audio_files()
         
         if self.current_dec_file:
@@ -198,10 +198,10 @@ class MindRootSIPBot(BareSIP):
             self.transcriber = WhisperStreamingVAD(
                 model_size=self.model_size,
                 sample_rate=16000,  # Whisper expects 16kHz
-                chunk_duration=0.25,
+                chunk_duration=0.5,
                 silence_threshold=0.01,    # Adjust for phone line noise
-                silence_duration=0.25,     # 0.25 second pause = end of utterance
-                min_speech_duration=0.3,   # Ignore very short sounds
+                silence_duration=1.0,      # 1 second pause = end of utterance
+                min_speech_duration=0.5,   # Ignore very short sounds
                 utterance_callback=utterance_callback
             )
             
@@ -219,23 +219,10 @@ class MindRootSIPBot(BareSIP):
             
     def _find_current_audio_files(self):
         """Find the audio files that baresip just created for this call"""
-        # Poll for audio files instead of fixed delay
-        logger.info("Polling for audio files...")
+        # Wait 5 seconds for files to be created and written
+        logger.info("Waiting 5 seconds for audio files to be created...")
+        time.sleep(5)
         
-        max_attempts = 50  # 5 seconds max (50 * 0.1s)
-        attempt = 0
-        
-        while attempt < max_attempts:
-            # Check if any dump files exist
-            dump_files = [f for f in os.listdir(os.getcwd()) 
-                         if f.startswith("dump-") and f.endswith(".wav")]
-            if dump_files:
-                logger.info(f"Found audio files after {attempt * 0.1:.1f}s")
-                break
-            time.sleep(0.1)
-            attempt += 1
-        
-        # the audio dir is actually always just the working dir
         # the audio dir is actually always just the working dir
         self.audio_dir = os.getcwd()
         logger.info(f"Looking for audio files in: {self.audio_dir}")
@@ -338,20 +325,8 @@ class MindRootSIPBot(BareSIP):
         #    return
                 
         try:
-            # Poll for WAV header to be written (wait for file to have data)
-            max_attempts = 20  # 2 seconds max
-            attempt = 0
-            while attempt < max_attempts:
-                if os.path.exists(self.current_dec_file):
-                    file_size = os.path.getsize(self.current_dec_file)
-                    if file_size > 100:  # Has header + some data
-                        logger.info(f"WAV file ready after {attempt * 0.1:.1f}s (size: {file_size} bytes)")
-                        break
-                time.sleep(0.1)
-                attempt += 1
-            
-            if attempt >= max_attempts:
-                logger.warning("Timeout waiting for WAV file to be ready")
+            # Wait for WAV header to be written
+            time.sleep(1.0)
             
             # Parse header
             wav_info = self._parse_wav_header(self.current_dec_file)

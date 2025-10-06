@@ -2,7 +2,7 @@
 """
 Whisper Streaming STT with Voice Activity Detection (VAD) for MindRoot SIP Plugin
 
-Optimized version using faster-whisper for 4x faster transcription.
+Integrated version of whisper streaming VAD specifically for SIP phone calls.
 Detects pauses to identify complete utterances and reduce partials.
 """
 
@@ -15,18 +15,18 @@ from collections import deque
 from typing import Callable, Optional
 
 try:
-    from faster_whisper import WhisperModel
+    import whisper
 except ImportError:
-    WhisperModel = None
+    whisper = None
 
 logger = logging.getLogger(__name__)
 
 class WhisperStreamingVAD:
-    """Faster-Whisper-based streaming speech-to-text with voice activity detection."""
+    """Whisper-based streaming speech-to-text with voice activity detection."""
     
-    def __init__(self, model_size="base", sample_rate=16000, 
-                 chunk_duration=0.25, silence_threshold=0.01, 
-                 silence_duration=0.3, min_speech_duration=0.3,
+    def __init__(self, model_size="small", sample_rate=16000, 
+                 chunk_duration=0.5, silence_threshold=0.01, 
+                 silence_duration=1.0, min_speech_duration=0.5,
                  utterance_callback: Optional[Callable] = None):
         """
         Initialize streaming Whisper transcriber with VAD
@@ -34,24 +34,23 @@ class WhisperStreamingVAD:
         Args:
             model_size: Whisper model size (tiny, base, small, medium, large)
             sample_rate: Audio sample rate in Hz
-            chunk_duration: Duration of audio chunks for VAD analysis (default: 0.25s)
+            chunk_duration: Duration of audio chunks for VAD analysis
             silence_threshold: RMS threshold below which audio is considered silence
-            silence_duration: Seconds of silence to trigger end of utterance (default: 0.3s)
+            silence_duration: Seconds of silence to trigger end of utterance
             min_speech_duration: Minimum speech duration to process (filter out noise)
             utterance_callback: Callback function for complete utterances
                                Signature: callback(text, utterance_num, timestamp)
         """
-        if WhisperModel is None:
-            raise ImportError("faster-whisper not available. Install with: pip install faster-whisper")
+        if whisper is None:
+            raise ImportError("Whisper not available. Install with: pip install openai-whisper")
             
-        logger.info(f"Loading faster-whisper {model_size} model...")
-        # Use CPU with 4 threads for good performance without GPU
-        self.model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        logger.info(f"Loading Whisper {model_size} model...")
+        self.model = whisper.load_model(model_size)
         self.sample_rate = sample_rate
         self.chunk_duration = chunk_duration
         self.chunk_samples = int(sample_rate * chunk_duration)
         
-        # VAD parameters - optimized for low latency
+        # VAD parameters
         self.silence_threshold = silence_threshold
         self.silence_duration = silence_duration
         self.min_speech_duration = min_speech_duration
@@ -74,10 +73,9 @@ class WhisperStreamingVAD:
         # Callback for utterances
         self.utterance_callback = utterance_callback
         
-        logger.info(f"WhisperStreamingVAD initialized (faster-whisper):")
+        logger.info(f"WhisperStreamingVAD initialized:")
         logger.info(f"  Model: {model_size}")
         logger.info(f"  Sample rate: {sample_rate} Hz")
-        logger.info(f"  Chunk duration: {chunk_duration}s")
         logger.info(f"  Silence threshold: {silence_threshold}")
         logger.info(f"  Silence duration: {silence_duration}s")
         logger.info(f"  Min speech duration: {min_speech_duration}s")
@@ -91,7 +89,7 @@ class WhisperStreamingVAD:
         self.is_running = True
         self.processing_thread = threading.Thread(target=self._process_loop, daemon=True)
         self.processing_thread.start()
-        logger.info("Faster-whisper streaming transcription with VAD started")
+        logger.info("Whisper streaming transcription with VAD started")
         
     def stop(self):
         """Stop the processing thread"""
@@ -101,7 +99,7 @@ class WhisperStreamingVAD:
         self.is_running = False
         if self.processing_thread:
             self.processing_thread.join(timeout=5.0)
-        logger.info("Faster-whisper streaming transcription stopped")
+        logger.info("Whisper streaming transcription stopped")
         
     def _calculate_rms(self, audio_chunk):
         """Calculate RMS (Root Mean Square) energy of audio chunk"""
@@ -179,41 +177,29 @@ class WhisperStreamingVAD:
                     self.speech_start_time = None
     
     def _process_loop(self):
-        """Background thread that processes complete utterances using faster-whisper"""
-        logger.info("Faster-whisper processing loop started")
+        """Background thread that processes complete utterances"""
+        logger.info("Whisper processing loop started")
         
         while self.is_running:
             try:
                 msg_type, audio_chunk = self.processing_queue.get(timeout=0.1)
                 
                 if msg_type == 'utterance':
-                    # Transcribe the complete utterance using faster-whisper
+                    # Transcribe the complete utterance
                     try:
-                        start_time = time.time()
-                        
-                        # faster-whisper returns an iterator of segments
-                        segments, info = self.model.transcribe(
+                        result = self.model.transcribe(
                             audio_chunk,
-                            language=None,  # Auto-detect
-                            beam_size=5,
-                            vad_filter=False,  # We're doing our own VAD
-                            without_timestamps=True  # Faster without timestamps
+                            language=None,
+                            fp16=False,
+                            verbose=False
                         )
                         
-                        # Collect all segments
-                        text_parts = []
-                        for segment in segments:
-                            text_parts.append(segment.text)
-                        
-                        text = " ".join(text_parts).strip()
-                        
-                        transcribe_time = time.time() - start_time
-                        
+                        text = result["text"].strip()
                         if text and text != self.last_transcription:
                             self.utterance_count += 1
                             timestamp = time.time()
                             
-                            logger.info(f"Transcribed utterance #{self.utterance_count} in {transcribe_time:.2f}s: {text}")
+                            logger.info(f"Transcribed utterance #{self.utterance_count}: {text}")
                             
                             # Call the callback if provided
                             if self.utterance_callback:
@@ -234,7 +220,7 @@ class WhisperStreamingVAD:
                     logger.error(f"Error in processing loop: {e}")
                 continue
                 
-        logger.info("Faster-whisper processing loop stopped")
+        logger.info("Whisper processing loop stopped")
 
     def get_stats(self):
         """Get transcription statistics"""
