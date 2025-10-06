@@ -1,0 +1,174 @@
+# MindRoot SIP Plugin - Baresip Configuration Template
+# Copy this to ~/.baresip/config or ~/.baresipy/config
+#
+# This configuration enables JACK audio integration for real-time TTS streaming
+
+#------------------------------------------------------------------------------
+# Core Configuration
+#------------------------------------------------------------------------------
+
+# SIP Configuration
+sip_listen		0.0.0.0:5060
+sip_trans_bsize		128
+
+# Audio Configuration for JACK Integration
+# CRITICAL: ausrc_format MUST be 'float' for JACK to work
+ausrc_format		float		# JACK requires float format
+auplay_format		float		# JACK output format  
+auenc_format		s16			# Codec (PCMU) requires s16
+audec_format		s16			# Codec (PCMU) requires s16
+
+# Audio sample rates (8000 Hz for telephony)
+audio_srate		8000-48000
+
+#------------------------------------------------------------------------------
+# Module Configuration
+#------------------------------------------------------------------------------
+
+# Module path
+module_path		/usr/local/lib/baresip/modules
+
+# Core modules
+module			stun.so
+module			turn.so
+module			ice.so
+module			natpmp.so
+module			upnp.so
+
+# Audio modules
+module			alsa.so
+module			jack.so			# REQUIRED for JACK integration
+module			sndfile.so		# REQUIRED for call recording
+
+# Codec modules
+module			g711.so
+module			g722.so
+module			g726.so
+module			gsm.so
+module			speex.so
+module			opus.so
+
+# Network modules
+module			srtp.so
+module			dtls_srtp.so
+
+# Application modules
+module			contact.so
+module			menu.so
+module			accounts.so
+
+#------------------------------------------------------------------------------
+# Audio Device Configuration
+#------------------------------------------------------------------------------
+
+# Default audio devices (will be overridden by JACK when active)
+audio_player		alsa,default
+audio_source		alsa,default
+
+# Audio processing
+audio_level		no
+audio_preamp		0
+
+#------------------------------------------------------------------------------
+# Codec Configuration
+#------------------------------------------------------------------------------
+
+# Codec priority (higher number = higher priority)
+audio_codecs		PCMU/8000/1
+audio_codecs		PCMA/8000/1
+audio_codecs		G722/16000/1
+audio_codecs		G726-32/8000/1
+audio_codecs		GSM/8000/1
+audio_codecs		Speex/8000/1
+audio_codecs		Speex/16000/1
+audio_codecs		opus/48000/2
+
+#------------------------------------------------------------------------------
+# Network Configuration
+#------------------------------------------------------------------------------
+
+# RTP configuration
+rtp_tos			184
+rtp_ports		10000-20000
+rtp_bandwidth		512-1024
+
+# RTCP configuration
+rtcp_enable		yes
+rtcp_mux		no
+
+# SRTP configuration
+srtp_enable		yes
+srtp_optional		yes
+
+#------------------------------------------------------------------------------
+# SIP Configuration
+#------------------------------------------------------------------------------
+
+# SIP timers (in seconds)
+sip_timer_t1		500
+sip_timer_t2		4000
+sip_timer_t4		5000
+
+# SIP extensions
+sip_extensions		replaces,100rel,timer,outbound
+
+# User-Agent string
+ua_name			MindRoot-SIP/1.0
+
+#------------------------------------------------------------------------------
+# Call Configuration
+#------------------------------------------------------------------------------
+
+# Call timers
+call_local_timeout		120
+call_max_calls		4
+
+# DTMF configuration
+dtmf_mode		rfc2833
+
+#------------------------------------------------------------------------------
+# Recording Configuration (for transcription)
+#------------------------------------------------------------------------------
+
+# Enable call recording for transcription
+# Files will be saved to ~/.baresip/ by default
+call_recording		yes
+record_path		~/.baresip
+
+#------------------------------------------------------------------------------
+# Advanced Configuration
+#------------------------------------------------------------------------------
+
+# DNS configuration
+dns_server		8.8.8.8:53
+dns_server		8.8.4.4:53
+
+# Network interface
+net_interface		0.0.0.0
+
+# Debug levels (0=none, 1=error, 2=warning, 3=info, 4=debug)
+debug_level		2
+
+#------------------------------------------------------------------------------
+# JACK-Specific Notes
+#------------------------------------------------------------------------------
+#
+# When using JACK with MindRoot SIP plugin:
+#
+# 1. Start JACK server first:
+#    jackd -d dummy -r 8000 &
+#
+# 2. The plugin will automatically configure baresip to use JACK:
+#    /ausrc jack,MindRootSIP.*
+#
+# 3. JACK ports will appear when a call is active:
+#    - baresip:input_1, baresip:input_2 (for TTS audio input)
+#    - baresip:output_1, baresip:output_2 (for captured audio output)
+#
+# 4. The MindRoot plugin connects automatically:
+#    MindRootSIP:output_L -> baresip:input_1
+#    MindRootSIP:output_R -> baresip:input_2
+#
+# 5. Use 'jack_lsp' to see all available JACK ports
+#
+#------------------------------------------------------------------------------

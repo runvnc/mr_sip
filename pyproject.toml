@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mr_sip"
+version = "1.0.0"
+description = "MindRoot SIP phone integration plugin with voice transcription and TTS"
+authors = [{name = "MindRoot Team"}]
+requires-python = ">=3.8"
+dependencies = [
+    "baresipy>=1.0.0",
+    "faster-whisper>=0.10.0",
+    "numpy>=1.21.0",
+    "scipy>=1.7.0",
+    "JACK-Client>=0.5.0",
+    "pydub>=0.25.0",
+    "asyncio"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "pytest-asyncio>=0.18.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+mr_sip = ["*.py"]
