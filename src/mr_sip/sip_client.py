@@ -308,19 +308,21 @@ class MindRootSIPBot(BareSIP):
         logger.info(f"Processing audio from: {self.current_dec_file}")
         
         # Wait for file to be ready
-        max_wait_attempts = 50
-        wait_count = 0
-        while (not os.path.exists(self.current_dec_file) or 
-               os.path.getsize(self.current_dec_file) < 100) and \
-              wait_count < max_wait_attempts:
-            time.sleep(0.1)
-            wait_count += 1
-            if not self.call_established:
-                return
+        #max_wait_attempts = 50
+        #wait_count = 0
+        #logger.info(f"Waiting for audio file to be ready at location {self.current_dec_file)"
+        #while (not os.path.exists(self.current_dec_file) or 
+        #       os.path.getsize(self.current_dec_file) < 100) and \
+        #      wait_count < max_wait_attempts:
+        #    time.sleep(0.1)
+        #    logger.debug(f"File size is {os.path.getsize(self.current_dec_file)} bytes, waiting...")
+        #    wait_count += 1
+        #    if not self.call_established:
+        #        return
                 
-        if wait_count >= max_wait_attempts:
-            logger.error("Timeout waiting for audio file to be ready")
-            return
+        #if wait_count >= max_wait_attempts:
+        #    logger.error("Timeout waiting for audio file to be ready")
+        #    return
                 
         try:
             # Wait for WAV header to be written
@@ -345,6 +347,7 @@ class MindRootSIPBot(BareSIP):
                 resample_ratio = 1.0
             
             # Open file and read audio data
+            logger.info(f"Opening audio file for real-time processing at location {self.current_dec_file}")
             with open(self.current_dec_file, 'rb') as f:
                 f.seek(data_offset)
                 
