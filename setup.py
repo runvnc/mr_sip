@@ -10,7 +10,7 @@ setup(
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     install_requires=[
-        "baresipy>=1.0.0",
+        "baresipy",
         "faster-whisper>=0.10.0",
         "numpy>=1.21.0",
         "scipy>=1.7.0",
