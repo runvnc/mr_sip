@@ -4,7 +4,6 @@ Audio Handler for MindRoot SIP Plugin
 Handles audio processing, format conversion, and JACK integration
 """
 
-import audioop
 import numpy as np
 import logging
 from scipy import signal
@@ -57,21 +56,21 @@ class AudioHandler:
             return
             
         try:
-            # Decode μ-law to 16-bit PCM
-            # ElevenLabs sends ulaw_8000 format (8-bit μ-law at 8000 Hz)
-            pcm_data = audioop.ulaw2lin(audio_chunk, 2)  # 2 = 16-bit output
+            # Convert bytes to numpy array (assuming 16-bit PCM)
+            audio_array = np.frombuffer(audio_chunk, dtype=np.int16)
             
-            # Convert PCM bytes to numpy array
-            audio_array = np.frombuffer(pcm_data, dtype=np.int16)
-            
-            # Convert to float32 normalized to -1.0 to 1.0 for JACK
+            # Convert to float32 normalized to -1.0 to 1.0
             audio_float = audio_array.astype(np.float32) / 32768.0
             
-            # No resampling needed - audio is already at 8000 Hz from ElevenLabs
-            # JACK is also running at 8000 Hz, so we can send directly
+            # Resample if needed (ElevenLabs typically uses 22050 Hz or 44100 Hz)
+            # JACK/baresip expects 8000 Hz for telephony
             if len(audio_float) > 0:
+                # Assume input is 22050 Hz, resample to 8000 Hz
+                target_length = int(len(audio_float) * 8000 / 22050)
+                audio_resampled = signal.resample(audio_float, target_length)
+                
                 # Feed to JACK ring buffer
-                self.jack_streamer.write_audio(audio_float)
+                self.jack_streamer.write_audio(audio_resampled.astype(np.float32))
                 
                 logger.debug(f"Sent {len(audio_chunk)} bytes TTS audio to JACK")
                 
