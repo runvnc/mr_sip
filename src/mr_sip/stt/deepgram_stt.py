@@ -93,7 +93,7 @@ class DeepgramSTT(BaseSTTProvider):
             # Connect with authentication header
             self.ws = await websockets.connect(
                 self.ws_url,
-                extra_headers={"Authorization": f"Token {self.api_key}"},
+                additional_headers={"Authorization": f"Token {self.api_key}"},
                 ping_interval=5,
                 ping_timeout=10
             )
