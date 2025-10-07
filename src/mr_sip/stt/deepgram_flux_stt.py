@@ -42,8 +42,8 @@ class DeepgramFluxSTT(BaseSTTProvider):
                  sample_rate: int = 16000,
                  language: str = "en",
                  model: str = "flux-general-en",
-                 eager_eot_threshold: float = 0.7,
-                 eot_threshold: float = 0.8,
+                 eager_eot_threshold: float = 0.35,
+                 eot_threshold: float = 0.45,
                  eot_timeout_ms: int = None):
         """
         Initialize Deepgram Flux STT provider.
@@ -53,8 +53,8 @@ class DeepgramFluxSTT(BaseSTTProvider):
             sample_rate: Audio sample rate in Hz (default: 16000)
             language: Language code (default: 'en')
             model: Deepgram model to use (default: 'flux-general-en')
-            eager_eot_threshold: Threshold for EagerEndOfTurn events (0.3-0.9, default: 0.7)
-            eot_threshold: Threshold for EndOfTurn events (default: 0.8)
+            eager_eot_threshold: Threshold for EagerEndOfTurn events (0.3-0.9, default: 0.35)
+            eot_threshold: Threshold for EndOfTurn events (default: 0.45)
             eot_timeout_ms: Turn timeout in milliseconds (optional)
         """
         super().__init__(sample_rate=sample_rate)

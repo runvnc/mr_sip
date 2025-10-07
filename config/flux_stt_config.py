@@ -27,6 +27,12 @@ FLUX_CONFIG = {
 
 # Configuration presets for different use cases
 CONFIG_PRESETS = {
+    # Ultra-low latency, hyper-aggressive (half of low_latency)
+    'ultra_low_latency': {
+        'eager_eot_threshold': 0.25,  # Extremely eager - instant responses, many false starts
+        'eot_threshold': 0.35,        # Very low final threshold for maximum speed
+        'eot_timeout_ms': 750,        # Very short timeout for ultra-fast responses
+    },
     # High-speed, low-latency configuration
     'low_latency': {
         'eager_eot_threshold': 0.5,  # Very eager - faster responses, more false starts
