@@ -86,21 +86,17 @@ class DeepgramFluxSTT(BaseSTTProvider):
             # Initialize Deepgram client
             self.client = DeepgramClient(api_key=self.api_key)
             
-            # Connection options
-            options = {
-                "model": self.model,
-                "encoding": "linear16",
-                "sample_rate": self.sample_rate,
-                "channels": 1,
-                "language": self.language,
-                "smart_format": self.smart_format,
-                "punctuate": self.punctuate,
-                "eager_eot_threshold": self.eager_eot_threshold,
-                "eot_threshold": self.eot_threshold
-            }
-            
             # Connect to Flux
-            self.connection = self.client.listen.v2.connect(**options)
+            self.connection = self.client.listen.v2.connect(
+                model=self.model,
+                encoding="linear16",
+                sample_rate=self.sample_rate,
+                language=self.language,
+                smart_format=self.smart_format,
+                punctuate=self.punctuate,
+                eager_eot_threshold=self.eager_eot_threshold,
+                eot_threshold=self.eot_threshold
+            )
             
             # Set up event handlers
             self.connection.on(EventType.OPEN, self._on_open)

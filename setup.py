@@ -12,6 +12,10 @@ setup(
     install_requires=[
         "baresipy",
         "faster-whisper>=0.10.0",
+        "deepgram-sdk>=3.0.0",
+        "websockets>=12.0",
+        "inotify>=0.2.10",
+        "JACK-Client>=0.5.0",
         "numpy>=1.21.0",
         "scipy>=1.7.0",
     ],
