@@ -102,6 +102,10 @@ class DeepgramFluxSTT(BaseSTTProvider):
             if self.eot_timeout_ms is not None:
                 connection_params["eot_timeout_ms"] = self.eot_timeout_ms
             
+            # Set running flag before starting connection
+            self.is_running = True
+            self.connection_start_time = time.time()
+            
             # Connect to Flux using synchronous context manager pattern
             self.connection_task = asyncio.create_task(
                 self._run_connection(**connection_params)
@@ -113,9 +117,6 @@ class DeepgramFluxSTT(BaseSTTProvider):
             )
             # Wait a moment for connection to establish
             await asyncio.sleep(0.5)
-            
-            self.is_running = True
-            self.connection_start_time = time.time()
             
             logger.info("Connected to Deepgram Flux API")
             
@@ -152,6 +153,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
                 
     async def _run_connection(self, **connection_params):
         """Run the Deepgram connection in synchronous context manager."""
+        logger.info(f"Starting Deepgram connection with params: {connection_params}")
         try:
             with self.client.listen.v2.connect(**connection_params) as connection:
                 self.connection = connection
@@ -168,8 +170,10 @@ class DeepgramFluxSTT(BaseSTTProvider):
                 listen_thread.start()
                 
                 # Keep the connection alive
+                logger.info("Entering connection keep-alive loop")
                 while self.is_running:
                     await asyncio.sleep(0.1)
+                logger.info("Exiting connection keep-alive loop")
                 
         except Exception as e:
             logger.error(f"Error in Deepgram connection: {e}")
