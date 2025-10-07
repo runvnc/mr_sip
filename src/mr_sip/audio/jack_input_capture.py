@@ -22,6 +22,7 @@ from typing import Optional, Callable
 
 import numpy as np
 from scipy.signal import resample_poly
+from .sliding_window_agc import SlidingWindowAGC
 
 try:
     import jack
@@ -58,6 +59,7 @@ class JACKAudioCapture:
         self.inport_l = None
         self.inport_r = None
         self.rb: Optional["jack.RingBuffer"] = None
+        self.agc: Optional[SlidingWindowAGC] = None
 
         self.server_rate: Optional[int] = None
         self.bytes_per_sample = 4  # JACK uses float32 mono per port
@@ -68,6 +70,11 @@ class JACKAudioCapture:
         self.stereo_mix = bool(stereo_mix)
         self.agc_target_rms = float(agc_target_rms)
         self.agc_max_gain = float(agc_max_gain)
+
+        # Initialize sliding window AGC if enabled
+        if self.agc_target_rms > 0.0:
+            logger.info(f"Initializing SlidingWindowAGC with target_rms={agc_target_rms}, max_gain={agc_max_gain}")
+            # Will be fully initialized in start() when we know sample rate
 
     async def start(self) -> None:
         if self._running:
@@ -83,6 +90,15 @@ class JACKAudioCapture:
         else:
             self.inport = self.client.inports.register('input')
 
+        # Initialize AGC now that we know the sample rate
+        if self.agc_target_rms > 0.0:
+            self.agc = SlidingWindowAGC(
+                target_rms=self.agc_target_rms,
+                max_gain=self.agc_max_gain,
+                sample_rate=self.server_rate,
+                window_seconds=1.5,
+                smoothing=0.95
+            )
         # Allocate ring buffer for ~5 seconds of audio (mono float32)
         rb_bytes = int(self.server_rate * 5 * self.bytes_per_sample)
         self.rb = jack.RingBuffer(rb_bytes)
@@ -271,20 +287,14 @@ class JACKAudioCapture:
                     continue
 
                 audio_f32 = np.frombuffer(data, dtype=np.float32)
+                
                 # DC offset removal
                 if audio_f32.size:
                     audio_f32 = audio_f32 - float(audio_f32.mean())
-                # Simple AGC: scale toward target RMS, clamp gain (skip if disabled)
-                if audio_f32.size and self.agc_target_rms > 0.0:
-                    rms = float(np.sqrt(np.mean(audio_f32**2)))
-                    if rms > 1e-6:
-                        gain = min(self.agc_max_gain, max(0.5, self.agc_target_rms / rms))
-                        if abs(gain - 1.0) > 0.05:
-                            audio_f32 = np.clip(audio_f32 * gain, -1.0, 1.0).astype(np.float32, copy=False)
-                else:
-                    # AGC disabled, just clip to prevent overflow
-                    if audio_f32.size:
-                        audio_f32 = np.clip(audio_f32, -1.0, 1.0).astype(np.float32, copy=False)
+                
+                # Apply sliding window AGC if enabled
+                if self.agc is not None and audio_f32.size:
+                    audio_f32 = self.agc.process_chunk(audio_f32)
 
                 if self.server_rate != self.target_sample_rate:
                     from math import gcd

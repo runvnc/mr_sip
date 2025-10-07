@@ -264,8 +264,8 @@ class MindRootSIPBotV2(BareSIP):
                 chunk_duration_s=0.25,
                 chunk_callback=self._on_audio_chunk_prebuffer,
                 stereo_mix=True,
-                agc_target_rms=0.0,  # Disable AGC
-                agc_max_gain=1.0     # Disable AGC
+                agc_target_rms=0.15,  # Re-enable with better settings
+                agc_max_gain=4.0      # More conservative max gain
             )
             await self.audio_capture.start()
 
