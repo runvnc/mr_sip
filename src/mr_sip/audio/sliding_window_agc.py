@@ -15,6 +15,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# ANSI color codes for white text on red background
+RED_BG_WHITE_TEXT = '\033[41m\033[97m'
+RESET_COLOR = '\033[0m'
+
 
 class SlidingWindowAGC:
     """Smooth AGC using sliding window RMS and exponential gain smoothing."""
@@ -57,8 +61,10 @@ class SlidingWindowAGC:
         self.chunks_processed = 0
         self.total_gain_changes = 0.0
         
+        print(f"{RED_BG_WHITE_TEXT}[AGC INIT] SlidingWindowAGC initialized: target_rms={target_rms:.3f}, max_gain={max_gain:.1f}, window={window_seconds:.1f}s, smoothing={smoothing:.2f}{RESET_COLOR}")
+        
         logger.info(f"SlidingWindowAGC initialized: target_rms={target_rms:.3f}, "
-                   f"max_gain={max_gain:.1f}, window={window_seconds:.1f}s, "
+                   f"max_gain={max_gain:.1f}x, window={window_seconds:.1f}s, "
                    f"smoothing={smoothing:.2f}")
     
     def process_chunk(self, audio_chunk: np.ndarray) -> np.ndarray:
@@ -111,9 +117,11 @@ class SlidingWindowAGC:
         # Log occasionally for debugging
         if self.chunks_processed % 100 == 0:
             avg_change = self.total_gain_changes / self.chunks_processed
+            print(f"{RED_BG_WHITE_TEXT}[AGC STATS] chunk#{self.chunks_processed}: gain={self.current_gain:.3f}x, window_rms={window_rms:.4f}, avg_change={avg_change:.4f}{RESET_COLOR}")
             logger.debug(f"AGC stats: current_gain={self.current_gain:.3f}, "
                         f"window_rms={window_rms:.4f}, "
                         f"avg_gain_change={avg_change:.4f}")
+        
         
         # Apply smoothed gain to current chunk
         processed = audio_chunk * self.current_gain
@@ -129,6 +137,7 @@ class SlidingWindowAGC:
         self.current_gain = 1.0
         self.chunks_processed = 0
         self.total_gain_changes = 0.0
+        print(f"{RED_BG_WHITE_TEXT}[AGC RESET] SlidingWindowAGC reset{RESET_COLOR}")
         logger.info("SlidingWindowAGC reset")
     
     def get_stats(self) -> dict:
