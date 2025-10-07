@@ -41,7 +41,10 @@ class JACKAudioCapture:
                  target_sample_rate: int = 16000,
                  chunk_duration_s: float = 0.25,
                  chunk_callback: Optional[Callable] = None,
-                 client_name: str = "MindRootSTTIn"):
+                 client_name: str = "MindRootSTTIn",
+                 stereo_mix: bool = True,
+                 agc_target_rms: float = 0.05,
+                 agc_max_gain: float = 8.0):
         if not JACK_AVAILABLE:
             raise ImportError(f"python-jack-client not available: {_jack_import_error}")
 
@@ -52,6 +55,8 @@ class JACKAudioCapture:
 
         self.client: Optional["jack.Client"] = None
         self.inport = None
+        self.inport_l = None
+        self.inport_r = None
         self.rb: Optional["jack.RingBuffer"] = None
 
         self.server_rate: Optional[int] = None
@@ -60,6 +65,9 @@ class JACKAudioCapture:
         self._reader_task: Optional[asyncio.Task] = None
         self._running = False
         self.selected_port_name: Optional[str] = None
+        self.stereo_mix = bool(stereo_mix)
+        self.agc_target_rms = float(agc_target_rms)
+        self.agc_max_gain = float(agc_max_gain)
 
     async def start(self) -> None:
         if self._running:
@@ -69,7 +77,11 @@ class JACKAudioCapture:
         # Create JACK client and ports
         self.client = jack.Client(self.client_name)
         self.server_rate = int(self.client.samplerate)
-        self.inport = self.client.inports.register('input')
+        if self.stereo_mix:
+            self.inport_l = self.client.inports.register('input_L')
+            self.inport_r = self.client.inports.register('input_R')
+        else:
+            self.inport = self.client.inports.register('input')
 
         # Allocate ring buffer for ~5 seconds of audio (mono float32)
         rb_bytes = int(self.server_rate * 5 * self.bytes_per_sample)
@@ -78,10 +90,24 @@ class JACKAudioCapture:
         @self.client.set_process_callback
         def _process(frames):
             try:
-                buf = self.inport.get_array()
-                if buf is None:
-                    return
-                data = buf.tobytes()
+                if self.stereo_mix:
+                    buf_l = self.inport_l.get_array() if self.inport_l else None
+                    buf_r = self.inport_r.get_array() if self.inport_r else None
+                    if buf_l is None and buf_r is None:
+                        return
+                    if buf_l is None:
+                        mix = buf_r
+                    elif buf_r is None:
+                        mix = buf_l
+                    else:
+                        # Average L and R to mono
+                        mix = (buf_l + buf_r) * 0.5
+                    data = mix.astype(np.float32, copy=False).tobytes()
+                else:
+                    buf = self.inport.get_array()
+                    if buf is None:
+                        return
+                    data = buf.tobytes()
                 if self.rb is not None:
                     space = self.rb.write_space
                     if space >= len(data):
@@ -89,7 +115,6 @@ class JACKAudioCapture:
                     else:
                         if space > 0:
                             self.rb.write(data[:space])
-                        # Drop remainder silently to avoid RT thread blocking/logging
             except Exception:
                 # Never raise/log from RT thread
                 pass
@@ -97,8 +122,8 @@ class JACKAudioCapture:
         # Activate client before connecting
         self.client.activate()
 
-        # Attempt to connect baresip -> our inport with retries (ports may appear after call setup)
-        self._connect_from_baresip_output(retries=100, delay_s=0.05)
+        # Attempt to connect baresip -> our inport with retries (ports appear only during active calls)
+        self._connect_from_baresip_output(retries=400, delay_s=0.05)
 
         # Start async reader
         self._running = True
@@ -150,6 +175,8 @@ class JACKAudioCapture:
                 s += 200
             if 'baresip' in n:
                 s += 100
+            if 'system:capture' in n:
+                s -= 500
             if 'playback' in n:
                 s += 30
             if 'dec' in n:
@@ -166,6 +193,33 @@ class JACKAudioCapture:
                 if not ports:
                     raise RuntimeError('No JACK audio output ports visible')
 
+                # If stereo, try to find paired L/R ports from the same client first
+                if self.stereo_mix:
+                    left = None
+                    right = None
+                    # Heuristic: look for names ending with ':output_L' and ':output_R'
+                    for p in ports:
+                        n = p.name.lower()
+                        if 'mindrootsip' in n:
+                            continue
+                        if 'mr-stt' in n or 'baresip' in n or 'dec' in n or 'playback' in n:
+                            if n.endswith(':output_l') or n.endswith('/output_l') or n.endswith(' output_l'):
+                                left = p
+                            elif n.endswith(':output_r') or n.endswith('/output_r') or n.endswith(' output_r'):
+                                right = p
+                    if left or right:
+                        try:
+                            if left and self.inport_l:
+                                self.client.connect(left, self.inport_l)
+                            if right and self.inport_r:
+                                self.client.connect(right, self.inport_r)
+                            self.selected_port_name = ",".join([x.name for x in [left, right] if x])
+                            logger.info(f"Connected JACK ports {self.selected_port_name} -> {self.client.name}:input_[L/R]")
+                            return
+                        except jack.JackError as e:
+                            logger.warning(f"Failed to connect stereo ports -> inports: {e}")
+
+                # Fallback: best single port
                 best = None
                 best_score = -10**9
                 for p in ports:
@@ -173,23 +227,24 @@ class JACKAudioCapture:
                     if sc > best_score:
                         best = p
                         best_score = sc
-
-                if best is not None and best_score > -100:
+                if best is not None and best_score >= 50:
                     try:
-                        self.client.connect(best, self.inport)
+                        # Connect single best to left/only inport
+                        port_obj = self.inport_l if (self.stereo_mix and self.inport_l) else self.inport
+                        self.client.connect(best, port_obj)
                         self.selected_port_name = best.name
-                        logger.info(f"Connected JACK port {best.name} -> {self.client.name}:{self.inport.name}")
+                        logger.info(f"Connected JACK port {best.name} -> {self.client.name}:{port_obj.name}")
                         return
                     except jack.JackError as e:
                         logger.warning(f"Failed to connect {best.name} -> inport: {e}")
                 else:
-                    logger.debug("No suitable JACK output port found yet; will retry")
+                    logger.debug("No suitable JACK output port (MR-STT/baresip) yet; waiting for active call...")
             except Exception as e:
                 logger.debug(f"JACK port discovery error (attempt {attempt+1}): {e}")
 
             if attempt < retries - 1:
                 time.sleep(max(0.0, delay_s))
-        logger.warning("Gave up connecting JACK capture: no suitable baresip output ports found")
+        logger.warning("Gave up connecting JACK capture: no MR-STT/baresip output ports found; ensure a call is active and auplay is set to jack,MR-STT")
 
     async def _reader_loop(self) -> None:
         """Drain the ring buffer and invoke the chunk callback with float32 arrays."""
@@ -216,6 +271,16 @@ class JACKAudioCapture:
                     continue
 
                 audio_f32 = np.frombuffer(data, dtype=np.float32)
+                # DC offset removal
+                if audio_f32.size:
+                    audio_f32 = audio_f32 - float(audio_f32.mean())
+                # Simple AGC: scale toward target RMS, clamp gain
+                if audio_f32.size:
+                    rms = float(np.sqrt(np.mean(audio_f32**2)))
+                    if rms > 1e-6:
+                        gain = min(self.agc_max_gain, max(0.5, self.agc_target_rms / rms))
+                        if abs(gain - 1.0) > 0.05:
+                            audio_f32 = np.clip(audio_f32 * gain, -1.0, 1.0).astype(np.float32, copy=False)
 
                 if self.server_rate != self.target_sample_rate:
                     from math import gcd

@@ -262,7 +262,10 @@ class MindRootSIPBotV2(BareSIP):
             self.audio_capture = JACKAudioCapture(
                 target_sample_rate=16000,
                 chunk_duration_s=0.25,
-                chunk_callback=self._on_audio_chunk_prebuffer
+                chunk_callback=self._on_audio_chunk_prebuffer,
+                stereo_mix=True,
+                agc_target_rms=0.08,
+                agc_max_gain=10.0
             )
             await self.audio_capture.start()
 

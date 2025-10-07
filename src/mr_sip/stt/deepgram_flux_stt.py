@@ -246,13 +246,12 @@ class DeepgramFluxSTT(BaseSTTProvider):
             # Ensure proper format
             if audio_chunk.dtype != np.float32:
                 audio_chunk = audio_chunk.astype(np.float32)
-                
-            # Normalize to [-1, 1] if needed
-            if np.abs(audio_chunk).max() > 1.0:
-                audio_chunk = audio_chunk / 32768.0
-                
-            # Convert to 16-bit PCM
-            audio_int16 = (audio_chunk * 32767).astype(np.int16)
+            # Hard clip to [-1,1] just in case and remove DC offset
+            if audio_chunk.size:
+                audio_chunk = audio_chunk - float(audio_chunk.mean())
+            audio_chunk = np.clip(audio_chunk, -1.0, 1.0)
+            # Convert to 16-bit PCM LE
+            audio_int16 = (audio_chunk * 32767.0).astype(np.int16)
             audio_bytes = audio_int16.tobytes()
             
             # Send to Deepgram Flux  
@@ -479,13 +478,12 @@ class DeepgramFluxSTT(BaseSTTProvider):
             # Ensure proper format
             if audio_chunk.dtype != np.float32:
                 audio_chunk = audio_chunk.astype(np.float32)
-                
-            # Normalize to [-1, 1] if needed
-            if np.abs(audio_chunk).max() > 1.0:
-                audio_chunk = audio_chunk / 32768.0
-                
-            # Convert to 16-bit PCM
-            audio_int16 = (audio_chunk * 32767).astype(np.int16)
+            # Hard clip to [-1,1] just in case and remove DC offset
+            if audio_chunk.size:
+                audio_chunk = audio_chunk - float(audio_chunk.mean())
+            audio_chunk = np.clip(audio_chunk, -1.0, 1.0)
+            # Convert to 16-bit PCM LE
+            audio_int16 = (audio_chunk * 32767.0).astype(np.int16)
             audio_bytes = audio_int16.tobytes()
             
             # Send to Deepgram Flux
