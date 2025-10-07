@@ -74,6 +74,12 @@ class DeepgramFluxSTT(BaseSTTProvider):
         self.total_finals = 0
         self.latencies = []
         
+        # Audio buffering for reconnection
+        self.audio_buffer = []
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 3
+        self.total_reconnections = 0
+        
         # Turn resumed callback
         self._on_turn_resumed_callback: Optional[Callable[[], None]] = None
         
@@ -208,8 +214,16 @@ class DeepgramFluxSTT(BaseSTTProvider):
             
     async def add_audio(self, audio_chunk: np.ndarray) -> None:
         """Send audio chunk to Deepgram Flux."""
+        # Always buffer audio (keep last 10 chunks to prevent memory growth)
+        self.audio_buffer.append(audio_chunk.copy())
+        if len(self.audio_buffer) > 10:
+            self.audio_buffer.pop(0)
+            
         if not self.is_running or not self.connection:
-            logger.warning("Cannot send audio: not connected to Deepgram Flux")
+            logger.debug("Cannot send audio: not connected to Deepgram Flux")
+            # Always attempt reconnection
+            logger.warning("🔄 TRIGGERING BUFFERED RECONNECTION - Connection lost!")
+            asyncio.create_task(self._reconnect_with_buffer())
             return
             
         try:
@@ -225,7 +239,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
             audio_int16 = (audio_chunk * 32767).astype(np.int16)
             audio_bytes = audio_int16.tobytes()
             
-            # Send to Deepgram Flux
+            # Send to Deepgram Flux  
             self.connection.send_media(audio_bytes)
             self.total_audio_sent += len(audio_bytes)
             logger.debug(f"Sent {len(audio_bytes)} bytes to Deepgram Flux (total: {self.total_audio_sent})")
@@ -237,7 +251,10 @@ class DeepgramFluxSTT(BaseSTTProvider):
                 logger.debug(f"WebSocket status (not an error): {e}")
             else:
                 logger.error(f"Error sending audio to Deepgram Flux: {e}")
-            
+                # Always attempt reconnection on send error
+                logger.warning("🔄 TRIGGERING BUFFERED RECONNECTION after send error!")
+                asyncio.create_task(self._reconnect_with_buffer())
+                
     def _on_open(self, *args) -> None:
         """Handle connection open event."""
         logger.info("Deepgram Flux connection opened - ready to receive audio")
@@ -248,14 +265,20 @@ class DeepgramFluxSTT(BaseSTTProvider):
         """Handle connection close event."""
         logger.info("Deepgram Flux connection closed")
         if self.is_running:
-            # Unexpected close, try to reconnect
+            # Unexpected close, try to reconnect with buffer
             self.connection_healthy = False
-            logger.warning("Unexpected connection close, attempting reconnect...")
-            asyncio.create_task(self._reconnect())
+            logger.warning("🔄 TRIGGERING BUFFERED RECONNECTION due to unexpected close")
+            asyncio.create_task(self._reconnect_with_buffer())
             
     def _on_error(self, error) -> None:
         """Handle connection error event."""
+        error_str = str(error)
         logger.error(f"Deepgram Flux connection error: {error}")
+        
+        # Handle 1011 websocket errors and other connection issues
+        if "1011" in error_str or "policy violation" in error_str.lower() or "connection" in error_str.lower():
+            logger.warning(f"🔄 TRIGGERING BUFFERED RECONNECTION due to error: {error}")
+            asyncio.create_task(self._reconnect_with_buffer())
         
     def _on_message(self, message) -> None:
         """Handle incoming message from Deepgram Flux."""
@@ -351,6 +374,94 @@ class DeepgramFluxSTT(BaseSTTProvider):
         # Emit final result
         self._emit_final(result)
         
+    def _should_attempt_reconnect(self) -> bool:
+        """Check if we should attempt reconnection."""
+        # Always allow reconnection attempts, just check attempt limits
+        if self.reconnect_attempts >= self.max_reconnect_attempts:
+            logger.warning(f"Max reconnection attempts reached: {self.reconnect_attempts}/{self.max_reconnect_attempts}")
+            return False
+            
+        return True
+        
+    async def _reconnect_with_buffer(self):
+        """Reconnect and immediately send buffered audio."""
+        if not self._should_attempt_reconnect():
+            return
+            
+        try:
+            self.reconnect_attempts += 1
+            self.total_reconnections += 1
+            
+            logger.error("=" * 80)
+            logger.error(f"BUFFERED RECONNECTION #{self.total_reconnections} (attempt {self.reconnect_attempts}/{self.max_reconnect_attempts})")
+            
+            # Smart backoff based on audio availability
+            if len(self.audio_buffer) == 0:
+                # No audio = call setup/silence, use slower backoff
+                backoff_times = [1.0, 2.0, 5.0]
+                backoff_time = backoff_times[min(self.reconnect_attempts - 1, len(backoff_times) - 1)]
+                logger.error(f"NO AUDIO BUFFERED - Using slow backoff: {backoff_time}s")
+            else:
+                # Have audio = active conversation, use fast backoff  
+                backoff_times = [0.1, 0.2, 0.5]
+                backoff_time = backoff_times[min(self.reconnect_attempts - 1, len(backoff_times) - 1)]
+                logger.error(f"AUDIO BUFFERED ({len(self.audio_buffer)} chunks) - Using fast backoff: {backoff_time}s")
+                
+            logger.error("=" * 80)
+            
+            if backoff_time > 0:
+                logger.warning(f"Waiting {backoff_time}s before reconnection...")
+                await asyncio.sleep(backoff_time)
+            
+            logger.warning(f"Starting reconnection to Deepgram Flux...")
+            
+            # Restart connection
+            await self.stop()
+            await self.start()
+            
+            # Wait a moment for connection to stabilize
+            await asyncio.sleep(0.2)
+            
+            # Send buffered audio if available
+            if len(self.audio_buffer) > 0:
+                logger.warning(f"Sending {len(self.audio_buffer)} buffered audio chunks immediately...")
+                for i, chunk in enumerate(self.audio_buffer):
+                    if self.connection and self.connection_healthy:
+                        await self._send_audio_chunk_direct(chunk)
+                        await asyncio.sleep(0.01)  # Small delay between chunks
+                    else:
+                        logger.error(f"Connection lost during buffer send at chunk {i}")
+                        break
+            else:
+                logger.warning("No buffered audio - connection ready for new audio")
+                    
+            # Reset on successful reconnection
+            logger.warning(f"RECONNECTION COMPLETE - resuming normal operation")
+            self.reconnect_attempts = 0
+            
+        except Exception as e:
+            logger.error(f"RECONNECTION FAILED: {e}")
+            
+    async def _send_audio_chunk_direct(self, audio_chunk: np.ndarray) -> None:
+        """Send audio chunk directly to Deepgram (for buffered sending)."""
+        try:
+            # Ensure proper format
+            if audio_chunk.dtype != np.float32:
+                audio_chunk = audio_chunk.astype(np.float32)
+                
+            # Normalize to [-1, 1] if needed
+            if np.abs(audio_chunk).max() > 1.0:
+                audio_chunk = audio_chunk / 32768.0
+                
+            # Convert to 16-bit PCM
+            audio_int16 = (audio_chunk * 32767).astype(np.int16)
+            audio_bytes = audio_int16.tobytes()
+            
+            # Send to Deepgram Flux
+            self.connection.send_media(audio_bytes)
+        except Exception as e:
+            logger.error(f"Error in direct audio send: {e}")
+            
     async def _reconnect(self) -> None:
         """Attempt to reconnect to Deepgram Flux."""
         if not self.is_running:
@@ -380,5 +491,8 @@ class DeepgramFluxSTT(BaseSTTProvider):
             "connection_duration_seconds": time.time() - self.connection_start_time if self.connection_start_time else 0,
             "eager_eot_threshold": self.eager_eot_threshold,
             "eot_threshold": self.eot_threshold,
-            "draft_response_active": self.draft_response_active
+            "draft_response_active": self.draft_response_active,
+            "total_reconnections": self.total_reconnections,
+            "current_reconnect_attempts": self.reconnect_attempts,
+            "audio_buffer_size": len(self.audio_buffer)
         }
