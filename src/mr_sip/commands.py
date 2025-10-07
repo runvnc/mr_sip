@@ -12,7 +12,7 @@ from .sip_manager import get_session_manager
 
 # Import V2 services if available
 try:
-    from .services_v2 import dial_service_v2
+    from .services_v2 import dial_service_v2, end_call_service_v2
     V2_AVAILABLE = True
 except ImportError:
     V2_AVAILABLE = False
@@ -123,8 +123,11 @@ async def hangup(context=None) -> str:
         
         logger.info(f"Hangup command initiated for session {context.log_id}")
         
-        # Use the end call service (works with both V1 and V2)
-        result = await end_call_service(context=context)
+        # Use the appropriate end call service based on version
+        if USE_V2:
+            result = await end_call_service_v2(context=context)
+        else:
+            result = await end_call_service(context=context)
         
         if result["status"] == "call_ended":
             duration = result.get("call_duration_seconds")

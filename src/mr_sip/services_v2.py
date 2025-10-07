@@ -207,5 +207,61 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
             "error": str(e)
         }
 
-# Note: sip_audio_out_chunk and end_call_service remain the same
-# They work with both V1 and V2 implementations
+
+@service()
+async def end_call_service_v2(context=None) -> Dict[str, Any]:
+    """
+    Service to terminate active V2 SIP call and cleanup resources.
+    
+    Args:
+        context: MindRoot context (required for session identification)
+    
+    Returns:
+        dict: Status information about the call termination
+    """
+    if not context or not context.log_id:
+        return {
+            "status": "error",
+            "error": "Context with log_id is required"
+        }
+        
+    try:
+        session_manager = get_session_manager()
+        session = await session_manager.get_session(context.log_id)
+        
+        if session and session.baresip_bot:
+            # Get call duration and transcript before ending
+            call_duration = None
+            transcript = ""
+            
+            if session.baresip_bot.call_start_time:
+                from datetime import datetime
+                call_duration = (datetime.now() - session.baresip_bot.call_start_time).total_seconds()
+            transcript = session.baresip_bot.get_transcript()
+            
+            # Use the new hangup method on the bot itself
+            await session.baresip_bot.hangup_call()
+            
+            # Clean up the session from the manager
+            await session_manager.end_session(context.log_id)
+            
+            logger.info(f"Successfully ended V2 SIP call for session {context.log_id}")
+            return {
+                "status": "call_ended",
+                "log_id": context.log_id,
+                "call_duration_seconds": call_duration,
+                "transcript": transcript
+            }
+        else:
+            return {
+                "status": "no_active_call",
+                "log_id": context.log_id
+            }
+            
+    except Exception as e:
+        logger.error(f"Error in end_call_service_v2: {e}")
+        return {
+            "status": "error",
+            "log_id": context.log_id if context else None,
+            "error": str(e)
+        }

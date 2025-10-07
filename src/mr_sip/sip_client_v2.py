@@ -533,6 +533,14 @@ class MindRootSIPBotV2(BareSIP):
             except Exception as e:
                 logger.error(f"Failed to queue TTS audio: {e}")
                 
+    async def hangup_call(self):
+        """Initiate call hangup and ensure cleanup is performed."""
+        logger.info("Hangup requested. Performing cleanup...")
+        # Manually trigger the cleanup logic
+        self.handle_call_ended("Hangup command received")
+        # Now, execute the actual hangup
+        self.hang()
+
     def handle_call_ended(self, reason):
         """When call ends, cleanup resources."""
         logger.info("=== CALL ENDED ===")
