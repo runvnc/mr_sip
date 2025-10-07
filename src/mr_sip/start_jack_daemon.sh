@@ -8,8 +8,8 @@ killall -9 jackd 2>/dev/null
 sleep 1
 
 # JACK Configuration
-SAMPLE_RATE=8000      # Telephony standard
-BUFFER_SIZE=1536      # Period size (adjust for latency vs stability)
+SAMPLE_RATE=16000     # Match STT provider sample rate
+BUFFER_SIZE=2048      # Period size (adjust for latency vs stability)
 
 echo "Starting JACK daemon..."
 echo "Sample Rate: ${SAMPLE_RATE} Hz"
