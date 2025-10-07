@@ -31,6 +31,10 @@ from .stt import create_stt_provider, BaseSTTProvider, STTResult
 from .audio import InotifyAudioCapture
 
 from lib.providers.services import service_manager
+
+# Reduce inotify debug spam
+logging.getLogger('inotify.adapters').setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 class MindRootSIPBotV2(BareSIP):
@@ -186,6 +190,7 @@ class MindRootSIPBotV2(BareSIP):
     async def _on_audio_chunk(self, audio_chunk: np.ndarray):
         """Callback for audio chunks from capture."""
         if self.stt and self.stt.is_running:
+            logger.debug(f"Sending audio chunk of size {len(audio_chunk)} to STT")
             try:
                 await self.stt.add_audio(audio_chunk)
             except Exception as e:
@@ -195,6 +200,7 @@ class MindRootSIPBotV2(BareSIP):
         """Callback for partial transcription results."""
         if result.text != self.last_partial_text:
             logger.debug(f"[PARTIAL] {result.text} (confidence: {result.confidence:.2f}, eager_eot: {result.is_eager_eot})")
+            logger.info(f"[PARTIAL] {result.text} (confidence: {result.confidence:.2f}, eager_eot: {result.is_eager_eot})")
             self.last_partial_text = result.text
             
             # Handle eager end of turn processing

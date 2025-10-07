@@ -12,6 +12,7 @@ import logging
 import time
 import threading
 import numpy as np
+import sys
 from typing import Optional, Callable
 from deepgram import DeepgramClient
 from deepgram.core.events import EventType
@@ -61,6 +62,11 @@ class DeepgramFluxSTT(BaseSTTProvider):
         self.connection_start_time = None
         self.draft_response_active = False
         
+        # Connection health monitoring
+        self.connection_healthy = False
+        self.last_message_time = None
+        self.connection_timeout = 30.0  # seconds
+        
         # Stats
         self.total_audio_sent = 0
         self.total_eager_eots = 0
@@ -101,6 +107,10 @@ class DeepgramFluxSTT(BaseSTTProvider):
                 self._run_connection(**connection_params)
             )
             
+            # Start connection health monitor
+            self.health_monitor_task = asyncio.create_task(
+                self._monitor_connection_health()
+            )
             # Wait a moment for connection to establish
             await asyncio.sleep(0.5)
             
@@ -113,6 +123,33 @@ class DeepgramFluxSTT(BaseSTTProvider):
             logger.error(f"Failed to connect to Deepgram Flux: {e}")
             raise
             
+    async def _monitor_connection_health(self):
+        """Monitor connection health and exit if connection fails."""
+        await asyncio.sleep(5.0)  # Give connection time to establish
+        
+        while self.is_running:
+            try:
+                # Check if connection was ever established
+                if not self.connection_healthy and self.connection_start_time:
+                    elapsed = time.time() - self.connection_start_time
+                    if elapsed > 10.0:  # 10 seconds to establish
+                        logger.error("Deepgram Flux connection failed to establish after 10 seconds")
+                        self._exit_process("Connection establishment timeout")
+                        return
+                
+                # Check for message timeout (no messages received)
+                if self.connection_healthy and self.last_message_time:
+                    elapsed = time.time() - self.last_message_time
+                    if elapsed > self.connection_timeout:
+                        logger.error(f"No messages from Deepgram Flux for {elapsed:.1f} seconds")
+                        self._exit_process("Message timeout")
+                        return
+                        
+                await asyncio.sleep(5.0)  # Check every 5 seconds
+            except Exception as e:
+                logger.error(f"Error in connection health monitor: {e}")
+                await asyncio.sleep(1.0)
+                
     async def _run_connection(self, **connection_params):
         """Run the Deepgram connection in synchronous context manager."""
         try:
@@ -137,6 +174,12 @@ class DeepgramFluxSTT(BaseSTTProvider):
         except Exception as e:
             logger.error(f"Error in Deepgram connection: {e}")
             self.is_running = False
+            self._exit_process(f"Connection error: {e}")
+            
+    def _exit_process(self, reason: str):
+        """Exit the process due to connection failure."""
+        logger.error(f"EXITING PROCESS: Deepgram Flux connection failed - {reason}")
+        sys.exit(1)
             
     async def stop(self) -> None:
         """Disconnect from Deepgram Flux API."""
@@ -149,6 +192,10 @@ class DeepgramFluxSTT(BaseSTTProvider):
             # Cancel the connection task
             if self.connection_task and not self.connection_task.done():
                 self.connection_task.cancel()
+                
+            # Cancel health monitor
+            if hasattr(self, 'health_monitor_task') and not self.health_monitor_task.done():
+                self.health_monitor_task.cancel()
                 
             logger.info("Disconnected from Deepgram Flux API")
             
@@ -177,6 +224,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
             # Send to Deepgram Flux
             self.connection.send_media(audio_bytes)
             self.total_audio_sent += len(audio_bytes)
+            logger.debug(f"Sent {len(audio_bytes)} bytes to Deepgram Flux (total: {self.total_audio_sent})")
             
         except Exception as e:
             # Filter out normal WebSocket status messages that aren't actually errors
@@ -188,6 +236,8 @@ class DeepgramFluxSTT(BaseSTTProvider):
             
     def _on_open(self, *args) -> None:
         """Handle connection open event."""
+        logger.info("Deepgram Flux connection opened - ready to receive audio")
+        self.connection_healthy = True
         logger.debug("Deepgram Flux connection opened")
         
     def _on_close(self, *args) -> None:
@@ -195,6 +245,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         logger.info("Deepgram Flux connection closed")
         if self.is_running:
             # Unexpected close, try to reconnect
+            self.connection_healthy = False
             logger.warning("Unexpected connection close, attempting reconnect...")
             asyncio.create_task(self._reconnect())
             
@@ -204,6 +255,9 @@ class DeepgramFluxSTT(BaseSTTProvider):
         
     def _on_message(self, message) -> None:
         """Handle incoming message from Deepgram Flux."""
+        logger.info(f"Received message from Deepgram Flux: {getattr(message, 'type', 'unknown')}")
+        self.last_message_time = time.time()
+        
         try:
             # Check if this is a TurnInfo message
             if not hasattr(message, 'type') or message.type != 'TurnInfo':
@@ -214,6 +268,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
             transcript = getattr(message, 'transcript', '').strip()
             
             if not transcript:
+                logger.debug(f"Received TurnInfo message with empty transcript, event: {event}")
                 return
                 
             # Calculate latency
