@@ -3,5 +3,5 @@
   "version": "1.0.0",
   "description": "SIP phone integration with voice transcription and TTS for real-time AI conversations",
   "services": ["dial_service", "sip_audio_out_chunk", "end_call_service"],
-  "commands": ["call", "hangup"]
+  "commands": ["call", "hangup", "send_dtmf"]
 }

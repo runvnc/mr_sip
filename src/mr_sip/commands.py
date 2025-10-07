@@ -7,6 +7,7 @@ import os
 import logging
 from lib.providers.commands import command
 from .services import dial_service, end_call_service
+from .sip_manager import get_session_manager
 
 # Import V2 services if available
 try:
@@ -143,3 +144,49 @@ async def hangup(context=None) -> str:
     except Exception as e:
         logger.error(f"Error in hangup command: {e}")
         return f"Error hanging up call: {str(e)}"
+
+@command()
+async def send_dtmf(digits: str, context=None) -> str:
+    """
+    Send DTMF tones during an active SIP call.
+    
+    DTMF (Dual-Tone Multi-Frequency) tones are used for phone menu navigation,
+    entering PIN codes, or interacting with automated phone systems.
+    
+    Args:
+        digits: String of DTMF digits to send (0-9, *, #)
+                Can be a single digit or multiple digits
+        context: MindRoot context (automatically provided)
+    
+    Returns:
+        str: Status message about the DTMF transmission
+    
+    Example:
+        { "send_dtmf": { "digits": "1" } }
+        { "send_dtmf": { "digits": "123#" } }
+        { "send_dtmf": { "digits": "*9" } }
+    """
+    try:
+        if not context or not context.log_id:
+            return "Error: Valid MindRoot context is required"
+        
+        if not digits:
+            return "Error: DTMF digits are required"
+        
+        # Validate digits
+        valid_dtmf = set('0123456789*#')
+        if not all(d in valid_dtmf for d in digits):
+            return f"Error: Invalid DTMF digits. Only 0-9, *, # are allowed. Got: {digits}"
+        
+        session_manager = get_session_manager()
+        session = await session_manager.get_session(context.log_id)
+        
+        if session and session.is_active and session.baresip_bot:
+            session.baresip_bot.send_dtmf(digits)
+            logger.info(f"Sent DTMF digits '{digits}' for session {context.log_id}")
+            return f"DTMF tones sent: {digits}"
+        else:
+            return "Error: No active call to send DTMF tones"
+    except Exception as e:
+        logger.error(f"Error in send_dtmf command: {e}")
+        return f"Error sending DTMF: {str(e)}"
