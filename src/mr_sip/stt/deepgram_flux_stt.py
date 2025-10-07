@@ -179,7 +179,12 @@ class DeepgramFluxSTT(BaseSTTProvider):
             self.total_audio_sent += len(audio_bytes)
             
         except Exception as e:
-            logger.error(f"Error sending audio to Deepgram Flux: {e}")
+            # Filter out normal WebSocket status messages that aren't actually errors
+            error_msg = str(e)
+            if "sent" in error_msg and "received" in error_msg and "OK" in error_msg:
+                logger.debug(f"WebSocket status (not an error): {e}")
+            else:
+                logger.error(f"Error sending audio to Deepgram Flux: {e}")
             
     def _on_open(self, *args) -> None:
         """Handle connection open event."""
