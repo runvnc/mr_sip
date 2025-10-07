@@ -112,6 +112,10 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
             try:
                 logger.info(f"Transcribed utterance #{utterance_num}: {text}")
                 
+                # Update chat frontend with user message
+                await service_manager.backend_user_message(
+                    message=text
+                )
                 # Send transcribed text as user message to the agent
                 await service_manager.send_message_to_agent(
                     session_id=ctx.log_id,
