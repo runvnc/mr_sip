@@ -26,6 +26,8 @@ STT_MODEL_SIZE = os.getenv('STT_MODEL_SIZE', 'small')  # For Whisper
 DEEPGRAM_API_KEY = os.getenv('DEEPGRAM_API_KEY', '')  # For Deepgram
 AUDIO_DIR = os.getenv('AUDIO_DIR', os.path.expanduser('.'))
 REQUIRE_DEEPGRAM = os.getenv('REQUIRE_DEEPGRAM', 'true').lower() in ('true', '1', 'yes', 'on')
+# Allow a longer ring timeout so Deepgram isn't started/given up before answer
+CALL_ESTABLISH_TIMEOUT = int(os.getenv('SIP_CALL_ESTABLISH_TIMEOUT', '120'))
 
 @service()
 async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
@@ -162,7 +164,7 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
         bot.call(destination)
         
         # Wait for call to be established (with timeout)
-        max_wait = 30  # 30 seconds timeout
+        max_wait = CALL_ESTABLISH_TIMEOUT  # seconds
         wait_count = 0
         while not bot.call_established and wait_count < max_wait:
             await asyncio.sleep(1)
@@ -183,7 +185,7 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
         else:
             # Call failed to establish
             await session_manager.end_session(context.log_id)
-            logger.error(f"Failed to establish call to {destination}")
+            logger.error(f"Failed to establish call to {destination} within {max_wait}s")
             
             return {
                 "status": "call_failed",

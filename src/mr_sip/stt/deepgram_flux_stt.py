@@ -13,6 +13,7 @@ import time
 import threading
 import numpy as np
 import sys
+import os
 from typing import Optional, Callable
 from deepgram import DeepgramClient
 from deepgram.core.events import EventType
@@ -65,7 +66,8 @@ class DeepgramFluxSTT(BaseSTTProvider):
         # Connection health monitoring
         self.connection_healthy = False
         self.last_message_time = None
-        self.connection_timeout = 30.0  # seconds
+        # Allow tuning via env; default higher to avoid premature shutdown when user hasn't answered
+        self.connection_timeout = float(os.getenv('DEEPGRAM_FLUX_MSG_TIMEOUT', '120'))  # seconds
         
         # Stats
         self.total_audio_sent = 0
@@ -138,27 +140,34 @@ class DeepgramFluxSTT(BaseSTTProvider):
             raise
             
     async def _monitor_connection_health(self):
-        """Monitor connection health and exit if connection fails."""
+        """Monitor connection health; do not kill the process, and defer checks until SIP call is established and audio is flowing."""
         await asyncio.sleep(5.0)  # Give connection time to establish
-        
+
         while self.is_running:
             try:
+                # If SIP call isn't established yet, skip aggressive checks entirely
+                if not getattr(self, 'sip_call_established', False):
+                    await asyncio.sleep(2.0)
+                    continue
+
                 # Check if connection was ever established
                 if not self.connection_healthy and self.connection_start_time:
                     elapsed = time.time() - self.connection_start_time
-                    if elapsed > 10.0:  # 10 seconds to establish
-                        logger.error("Deepgram Flux connection failed to establish after 10 seconds")
-                        self._exit_process("Connection establishment timeout")
+                    # Allow longer grace period before SIP answers (configurable)
+                    establish_timeout = float(os.getenv('DEEPGRAM_FLUX_CONNECT_TIMEOUT', '60'))
+                    if elapsed > establish_timeout:
+                        logger.warning(f"Deepgram Flux connection not healthy after {elapsed:.1f}s; stopping STT and will rely on reconnection logic later")
+                        await self.stop()
                         return
-                
+
                 # Check for message timeout (no messages received)
                 if self.connection_healthy and self.last_message_time:
                     elapsed = time.time() - self.last_message_time
                     if elapsed > self.connection_timeout:
-                        logger.error(f"No messages from Deepgram Flux for {elapsed:.1f} seconds")
-                        self._exit_process("Message timeout")
+                        logger.warning(f"No messages from Deepgram Flux for {elapsed:.1f} seconds; stopping STT and allowing caller to restart when audio resumes")
+                        await self.stop()
                         return
-                        
+
                 await asyncio.sleep(5.0)  # Check every 5 seconds
             except Exception as e:
                 logger.error(f"Error in connection health monitor: {e}")
@@ -194,9 +203,9 @@ class DeepgramFluxSTT(BaseSTTProvider):
             self._exit_process(f"Connection error: {e}")
             
     def _exit_process(self, reason: str):
-        """Exit the process due to connection failure."""
-        logger.error(f"EXITING PROCESS: Deepgram Flux connection failed - {reason}")
-        sys.exit(1)
+        """Deprecated: do not exit the process from the STT layer."""
+        logger.warning(f"Deepgram Flux connection issue (no sys.exit): {reason}")
+        # Intentionally do not exit; lifecycle will be managed by caller.
             
     async def stop(self) -> None:
         """Disconnect from Deepgram Flux API."""
@@ -435,6 +444,10 @@ class DeepgramFluxSTT(BaseSTTProvider):
             
             # Restart connection
             await self.stop()
+            # If SIP call isn't established, do not attempt aggressive reconnect
+            if not getattr(self, 'sip_call_established', False):
+                logger.warning("Skipping Deepgram reconnect: SIP call not yet established")
+                return
             await self.start()
             
             # Wait a moment for connection to stabilize
