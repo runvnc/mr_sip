@@ -29,6 +29,7 @@ from typing import Callable, Optional, Any
 from .audio_handler import AudioHandler
 from .stt import create_stt_provider, BaseSTTProvider, STTResult
 from .audio import InotifyAudioCapture
+from .audio import JACKAudioCapture  # optional; may be None if JACK not available
 
 from lib.providers.services import service_manager
 
@@ -77,7 +78,19 @@ class MindRootSIPBotV2(BareSIP):
         self.stt_provider_name = stt_provider or os.getenv('STT_PROVIDER', 'deepgram_flux')
         self.stt_config = stt_config or {}
         self.stt: Optional[BaseSTTProvider] = None
-        self.audio_capture: Optional[InotifyAudioCapture] = None
+        self.audio_capture = None  # type: ignore
+
+        # Audio capture method: 'jack' (default) or 'inotify'
+        self.audio_capture_method = os.getenv('AUDIO_CAPTURE_METHOD', 'jack').strip().lower()
+
+        # Enforce no-fallback policy: require JACK when selected/default
+        if self.audio_capture_method == 'jack' and (JACKAudioCapture is None):
+            logger.critical(
+                "JACK input capture is required but unavailable. "
+                "Install python-jack-client (pip install jack-client), ensure JACK server is running, "
+                "and set AUDIO_CAPTURE_METHOD=inotify only if you explicitly want file capture."
+            )
+            sys.exit(2)
         
         # Transcription tracking
         self.utterances = []
@@ -131,7 +144,10 @@ class MindRootSIPBotV2(BareSIP):
         self.audio_handler.connect_jack_to_baresip()
         
         # Setup STT provider and audio capture
-        self._schedule_coroutine(self._setup_stt_and_capture())
+        if self.audio_capture_method == 'jack' and JACKAudioCapture is not None:
+            self._schedule_coroutine(self._setup_stt_and_capture_jack())
+        else:
+            self._schedule_coroutine(self._setup_stt_and_capture())
         
         # Start TTS audio sender
         if self.main_loop and not self.main_loop.is_closed():
@@ -232,6 +248,76 @@ class MindRootSIPBotV2(BareSIP):
         except Exception as e:
             logger.error(f"🔍 DEBUG: Exception in _setup_stt_and_capture: {e}")
             logger.error(f"Error setting up STT and capture: {e}")
+
+    async def _setup_stt_and_capture_jack(self):
+        """Setup STT and JACK-based audio capture (no file I/O)."""
+        logger.error("🔍 DEBUG: _setup_stt_and_capture_jack() STARTED")
+        try:
+            # Create JACK capture FIRST (pre-buffer audio before STT starts)
+            if JACKAudioCapture is None:
+                logger.critical("JACKAudioCapture not available; exiting due to no-fallback policy")
+                sys.exit(2)
+
+            logger.info("Starting JACK audio capture to pre-buffer audio...")
+            self.audio_capture = JACKAudioCapture(
+                target_sample_rate=16000,
+                chunk_duration_s=0.25,
+                chunk_callback=self._on_audio_chunk_prebuffer
+            )
+            await self.audio_capture.start()
+
+            # Wait for audio chunks to be available (pre-buffer)
+            max_wait_time = 10.0
+            wait_start = time.time()
+            if not hasattr(self, 'audio_prebuffer'):
+                self.audio_prebuffer = []
+            while len(self.audio_prebuffer) < 2:
+                if time.time() - wait_start > max_wait_time:
+                    logger.critical("Timeout waiting for JACK audio data; exiting due to no-fallback policy")
+                    sys.exit(2)
+                await asyncio.sleep(0.1)
+
+            logger.info(f"Got {len(self.audio_prebuffer)} JACK audio chunks, now starting STT provider...")
+            logger.error(f"🔍 DEBUG: About to create STT provider (JACK path): {self.stt_provider_name}")
+
+            # Create and start STT provider
+            self.stt = create_stt_provider(self.stt_provider_name, **self.stt_config)
+            # Update capture sample rate to match STT
+            self.audio_capture.target_sample_rate = self.stt.sample_rate
+
+            # Set callbacks
+            self.stt.set_callbacks(
+                on_partial=self._on_partial_result,
+                on_final=self._on_final_result
+            )
+
+            # Deepgram Flux turn resumed callback support
+            if hasattr(self.stt, 'set_turn_resumed_callback'):
+                self.stt.set_turn_resumed_callback(self._handle_turn_resumed)
+
+            if hasattr(self.stt, 'main_loop'):
+                self.stt.main_loop = self.main_loop
+
+            if hasattr(self.stt, 'set_sip_call_established'):
+                self.stt.set_sip_call_established(True)
+
+            logger.error("🔍 DEBUG: About to start STT provider (JACK path)")
+            await self.stt.start()
+            logger.info(f"STT provider started: {self.stt_provider_name}")
+
+            # Switch to normal audio processing
+            self.audio_capture.chunk_callback = self._on_audio_chunk
+
+            # Send pre-buffered audio
+            logger.info(f"Sending {len(self.audio_prebuffer)} pre-buffered JACK chunks to STT...")
+            for chunk in self.audio_prebuffer:
+                await self.stt.add_audio(chunk)
+                await asyncio.sleep(0.01)
+
+            logger.info("STT setup complete (JACK) - audio flowing immediately")
+
+        except Exception as e:
+            logger.error(f"Error setting up STT and JACK capture: {e}")
             
     async def _on_audio_chunk_prebuffer(self, audio_chunk: np.ndarray):
         """Callback for audio chunks during pre-buffering phase."""
