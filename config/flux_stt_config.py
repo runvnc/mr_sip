@@ -21,11 +21,8 @@ FLUX_CONFIG = {
     # Flux-specific tuning parameters
     'FLUX_EAGER_EOT_THRESHOLD': '0.7',  # Eager End-of-Turn threshold (0.3-0.9)
     'FLUX_EOT_THRESHOLD': '0.8',        # Final End-of-Turn threshold
-    
-    # Audio settings
+    'FLUX_EOT_TIMEOUT_MS': '2000',      # Turn timeout in milliseconds
     'FLUX_SAMPLE_RATE': '16000',        # Audio sample rate
-    'FLUX_SMART_FORMAT': 'true',        # Enable smart formatting
-    'FLUX_PUNCTUATE': 'true',           # Enable punctuation
 }
 
 # Configuration presets for different use cases
@@ -34,40 +31,35 @@ CONFIG_PRESETS = {
     'low_latency': {
         'eager_eot_threshold': 0.5,  # Very eager - faster responses, more false starts
         'eot_threshold': 0.7,        # Lower final threshold for speed
-        'smart_format': True,
-        'punctuate': True,
+        'eot_timeout_ms': 1500,      # Shorter timeout for speed
     },
     
     # Balanced configuration (recommended)
     'balanced': {
         'eager_eot_threshold': 0.7,  # Balanced - good speed with fewer false starts
         'eot_threshold': 0.8,        # Standard final threshold
-        'smart_format': True,
-        'punctuate': True,
+        'eot_timeout_ms': 2000,      # Standard timeout
     },
     
     # High-accuracy, conservative configuration
     'high_accuracy': {
         'eager_eot_threshold': 0.8,  # Conservative - fewer false starts, slightly slower
         'eot_threshold': 0.9,        # High final threshold for accuracy
-        'smart_format': True,
-        'punctuate': True,
+        'eot_timeout_ms': 3000,      # Longer timeout for accuracy
     },
     
     # Call center / customer service configuration
     'call_center': {
         'eager_eot_threshold': 0.6,  # Moderate eagerness for natural conversation
         'eot_threshold': 0.8,        # Standard threshold
-        'smart_format': True,        # Important for professional transcripts
-        'punctuate': True,           # Essential for readability
+        'eot_timeout_ms': 2500,      # Professional timeout
     },
     
     # Phone assistant / IVR configuration
     'phone_assistant': {
         'eager_eot_threshold': 0.5,  # Very responsive for interactive systems
         'eot_threshold': 0.7,        # Lower threshold for quick responses
-        'smart_format': True,
-        'punctuate': False,          # May not need punctuation for commands
+        'eot_timeout_ms': 1000,      # Very fast timeout for commands
     }
 }
 
@@ -107,8 +99,7 @@ stt = create_stt_provider(
     api_key='your_api_key',
     eager_eot_threshold=0.6,
     eot_threshold=0.8,
-    smart_format=True,
-    punctuate=True
+    eot_timeout_ms=2000
 )
 """
 

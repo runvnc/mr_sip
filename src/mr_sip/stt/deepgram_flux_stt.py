@@ -30,8 +30,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
                  model: str = "flux-general-en",
                  eager_eot_threshold: float = 0.7,
                  eot_threshold: float = 0.8,
-                 smart_format: bool = True,
-                 punctuate: bool = True):
+                 eot_timeout_ms: int = None):
         """
         Initialize Deepgram Flux STT provider.
         
@@ -42,8 +41,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
             model: Deepgram model to use (default: 'flux-general-en')
             eager_eot_threshold: Threshold for EagerEndOfTurn events (0.3-0.9, default: 0.7)
             eot_threshold: Threshold for EndOfTurn events (default: 0.8)
-            smart_format: Apply smart formatting (default: True)
-            punctuate: Add punctuation (default: True)
+            eot_timeout_ms: Turn timeout in milliseconds (optional)
         """
         super().__init__(sample_rate=sample_rate)
         self.api_key = api_key
@@ -51,8 +49,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         self.model = model
         self.eager_eot_threshold = eager_eot_threshold
         self.eot_threshold = eot_threshold
-        self.smart_format = smart_format
-        self.punctuate = punctuate
+        self.eot_timeout_ms = eot_timeout_ms
         
         # Deepgram client and connection
         self.client: Optional[DeepgramClient] = None
@@ -89,16 +86,21 @@ class DeepgramFluxSTT(BaseSTTProvider):
             # Initialize Deepgram client
             self.client = DeepgramClient(api_key=self.api_key)
             
+            # Build connection parameters
+            connection_params = {
+                "model": self.model,
+                "encoding": "linear16",
+                "sample_rate": self.sample_rate,
+                "eager_eot_threshold": self.eager_eot_threshold,
+                "eot_threshold": self.eot_threshold
+            }
+            
+            # Add optional parameters
+            if self.eot_timeout_ms is not None:
+                connection_params["eot_timeout_ms"] = self.eot_timeout_ms
+            
             # Connect to Flux
-            self.connection = self.client.listen.v2.connect(
-                model=self.model,
-                encoding="linear16",
-                sample_rate=self.sample_rate,
-                eager_eot_threshold=self.eager_eot_threshold,
-                eot_threshold=self.eot_threshold,
-                smart_format=self.smart_format,
-                punctuate=self.punctuate
-            )
+            self.connection = self.client.listen.v2.connect(**connection_params)
             
             # Set up event handlers
             self.connection.on(EventType.OPEN, self._on_open)
