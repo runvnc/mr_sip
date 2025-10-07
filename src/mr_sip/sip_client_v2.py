@@ -102,16 +102,22 @@ class MindRootSIPBotV2(BareSIP):
             
     def _schedule_coroutine(self, coro):
         """Schedule a coroutine to run in the main event loop from any thread."""
+        logger.error(f"🔍 DEBUG: _schedule_coroutine called with: {coro}")
         if self.main_loop and not self.main_loop.is_closed():
             try:
                 future = asyncio.run_coroutine_threadsafe(coro, self.main_loop)
+                logger.error(f"🔍 DEBUG: Coroutine scheduled successfully")
                 return future
             except Exception as e:
+                logger.error(f"🔍 DEBUG: Failed to schedule coroutine: {e}")
                 logger.error(f"Failed to schedule coroutine: {e}")
+        else:
+            logger.error(f"🔍 DEBUG: No main loop available for scheduling")
         return None
         
     def handle_call_established(self):
         """When call connects, setup JACK and start transcription."""
+        logger.error("🔍 DEBUG: handle_call_established() CALLED - This is when STT should start")
         logger.info("=== CALL ESTABLISHED ===")
         self.call_start_time = datetime.now()
         
@@ -145,6 +151,8 @@ class MindRootSIPBotV2(BareSIP):
                 
     async def _setup_stt_and_capture(self):
         """Setup STT provider and audio capture with pre-buffering."""
+        logger.error("🔍 DEBUG: _setup_stt_and_capture() STARTED")
+        logger.error(f"🔍 DEBUG: Current STT provider exists: {self.stt is not None}")
         try:
             # Find audio file
             await self._find_current_audio_files()
@@ -170,6 +178,7 @@ class MindRootSIPBotV2(BareSIP):
             # Wait for audio chunks to be available (pre-buffer)
             max_wait_time = 10.0  # 10 seconds max wait
             wait_start = time.time()
+            logger.error(f"🔍 DEBUG: Waiting for pre-buffer, current size: {len(getattr(self, 'audio_prebuffer', []))}")
             while len(getattr(self, 'audio_prebuffer', [])) < 2:
                 if time.time() - wait_start > max_wait_time:
                     logger.error("Timeout waiting for audio data")
@@ -177,6 +186,7 @@ class MindRootSIPBotV2(BareSIP):
                 await asyncio.sleep(0.1)
             
             logger.info(f"Got {len(self.audio_prebuffer)} audio chunks, now starting STT provider...")
+            logger.error(f"🔍 DEBUG: About to create STT provider: {self.stt_provider_name}")
             
             # NOW create and start STT provider with audio ready to send
             logger.info(f"Creating STT provider: {self.stt_provider_name}")
@@ -199,6 +209,11 @@ class MindRootSIPBotV2(BareSIP):
             if hasattr(self.stt, 'main_loop'):
                 self.stt.main_loop = self.main_loop
                 
+            # Set call established status to prevent premature reconnection
+            if hasattr(self.stt, 'set_sip_call_established'):
+                self.stt.set_sip_call_established(True)
+                
+            logger.error("🔍 DEBUG: About to start STT provider (this opens Deepgram connection)")
             await self.stt.start()
             logger.info(f"STT provider started: {self.stt_provider_name}")
             
@@ -206,6 +221,7 @@ class MindRootSIPBotV2(BareSIP):
             self.audio_capture.chunk_callback = self._on_audio_chunk
             
             # Immediately send pre-buffered audio
+            logger.error(f"🔍 DEBUG: Sending {len(self.audio_prebuffer)} pre-buffered chunks immediately")
             logger.info(f"Sending {len(self.audio_prebuffer)} pre-buffered chunks to STT...")
             for chunk in self.audio_prebuffer:
                 await self.stt.add_audio(chunk)
@@ -214,6 +230,7 @@ class MindRootSIPBotV2(BareSIP):
             logger.info("STT setup complete - audio flowing immediately")
             
         except Exception as e:
+            logger.error(f"🔍 DEBUG: Exception in _setup_stt_and_capture: {e}")
             logger.error(f"Error setting up STT and capture: {e}")
             
     async def _on_audio_chunk_prebuffer(self, audio_chunk: np.ndarray):

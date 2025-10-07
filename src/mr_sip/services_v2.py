@@ -127,38 +127,8 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
             # Don't put api_key in stt_config - it will be read from environment by factory
             # stt_config['api_key'] = DEEPGRAM_API_KEY  # Removed to avoid duplicate
             logger.info(f"{STT_PROVIDER} configuration prepared")
-            
-            # Test Deepgram connection before proceeding
-            logger.info(f"Testing {STT_PROVIDER} connection...")
-            try:
-                from .stt import create_stt_provider
-                # Factory will read DEEPGRAM_API_KEY from environment
-                test_stt = create_stt_provider(STT_PROVIDER)
-                await test_stt.start()
-                logger.info("\n" + "="*80)
-                logger.info(f"✅ {STT_PROVIDER.upper()} CONNECTION SUCCESSFUL")
-                logger.info("="*80)
-                await test_stt.stop()
-            except Exception as e:
-                error_msg = (
-                    f"\n\n"
-                    f"{'='*80}\n"
-                    f"❌ FATAL ERROR: Failed to connect to Deepgram\n"
-                    f"{'='*80}\n"
-                    f"Error: {str(e)}\n"
-                    f"\n"
-                    f"Possible causes:\n"
-                    f"1. Invalid API key\n"
-                    f"2. No internet connection\n"
-                    f"3. Firewall blocking WebSocket connections\n"
-                    f"4. Deepgram service is down\n"
-                    f"\n"
-                    f"Please verify your DEEPGRAM_API_KEY and internet connection.\n"
-                    f"{'='*80}\n"
-                )
-                logger.error(error_msg)
-                import sys
-                sys.exit(1)
+            # Skip test connection - will connect after call establishment
+            logger.info(f"{STT_PROVIDER} will connect after call establishment")
                 
         elif STT_PROVIDER == 'whisper_vad':
             stt_config['model_size'] = STT_MODEL_SIZE

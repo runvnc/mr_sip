@@ -383,12 +383,23 @@ class DeepgramFluxSTT(BaseSTTProvider):
         
     def _should_attempt_reconnect(self) -> bool:
         """Check if we should attempt reconnection."""
+        # Don't reconnect if we don't have a proper SIP context yet
+        # This prevents reconnection during call setup phase
+        if not hasattr(self, 'sip_call_established') or not getattr(self, 'sip_call_established', False):
+            logger.warning("🔍 DEBUG: Skipping reconnection - SIP call not established yet")
+            return False
+            
         # Always allow reconnection attempts, just check attempt limits
         if self.reconnect_attempts >= self.max_reconnect_attempts:
             logger.warning(f"Max reconnection attempts reached: {self.reconnect_attempts}/{self.max_reconnect_attempts}")
             return False
             
         return True
+        
+    def set_sip_call_established(self, established: bool):
+        """Set whether the SIP call is established (prevents premature reconnection)."""
+        self.sip_call_established = established
+        logger.error(f"🔍 DEBUG: SIP call established status set to: {established}")
         
     async def _reconnect_with_buffer(self):
         """Reconnect and immediately send buffered audio."""
