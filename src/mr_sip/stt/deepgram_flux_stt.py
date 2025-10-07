@@ -15,11 +15,24 @@ import numpy as np
 import sys
 import os
 from typing import Optional, Callable
+import wave
+from datetime import datetime
 from deepgram import DeepgramClient
 from deepgram.core.events import EventType
 from .base_stt import BaseSTTProvider, STTResult
 
 logger = logging.getLogger(__name__)
+
+# ANSI color codes for blue background with yellow text
+BLUE_BG_YELLOW_TEXT = '\033[44m\033[93m'
+RESET_COLOR = '\033[0m'
+
+def print_deepgram_event(message: str):
+    """Print message with blue background and yellow text."""
+    print(f"{BLUE_BG_YELLOW_TEXT}[DEEPGRAM EVENT] {message}{RESET_COLOR}")
+    # Also log it normally
+    logger.info(f"[DEEPGRAM EVENT] {message}")
+
 
 class DeepgramFluxSTT(BaseSTTProvider):
     """Deepgram Flux streaming STT provider with conversational turn detection."""
@@ -92,6 +105,11 @@ class DeepgramFluxSTT(BaseSTTProvider):
         # Turn resumed callback
         self._on_turn_resumed_callback: Optional[Callable[[], None]] = None
         
+        # Audio debugging - WAV file writer
+        self.debug_wav_file = None
+        self.debug_wav_path = None
+        self._setup_debug_wav_file()
+        
     async def start(self) -> None:
         """Connect to Deepgram Flux API."""
         if self.is_running:
@@ -138,6 +156,30 @@ class DeepgramFluxSTT(BaseSTTProvider):
         except Exception as e:
             logger.error(f"Failed to connect to Deepgram Flux: {e}")
             raise
+            
+    def _setup_debug_wav_file(self):
+        """Setup WAV file for debugging audio sent to Deepgram."""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.debug_wav_path = f"/tmp/deepgram_audio_{timestamp}.wav"
+            
+            # Create WAV file with proper parameters
+            self.debug_wav_file = wave.open(self.debug_wav_path, 'wb')
+            self.debug_wav_file.setnchannels(1)  # Mono
+            self.debug_wav_file.setsampwidth(2)  # 16-bit
+            self.debug_wav_file.setframerate(self.sample_rate)
+            
+            print_deepgram_event(f"Audio debug WAV file created: {self.debug_wav_path}")
+            logger.info(f"Audio debug WAV file created: {self.debug_wav_path}")
+        except Exception as e:
+            logger.error(f"Failed to create debug WAV file: {e}")
+            self.debug_wav_file = None
+            
+    def _close_debug_wav_file(self):
+        """Close the debug WAV file."""
+        if self.debug_wav_file:
+            self.debug_wav_file.close()
+            print_deepgram_event(f"Audio debug WAV file closed: {self.debug_wav_path}")
             
     async def _monitor_connection_health(self):
         """Monitor connection health; do not kill the process, and defer checks until SIP call is established and audio is flowing."""
@@ -209,6 +251,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
             
     async def stop(self) -> None:
         """Disconnect from Deepgram Flux API."""
+        self._close_debug_wav_file()
         if not self.is_running:
             return
             
@@ -257,6 +300,13 @@ class DeepgramFluxSTT(BaseSTTProvider):
             # Send to Deepgram Flux  
             self.connection.send_media(audio_bytes)
             self.total_audio_sent += len(audio_bytes)
+            
+            # Write to debug WAV file
+            if self.debug_wav_file:
+                try:
+                    self.debug_wav_file.writeframes(audio_bytes)
+                except Exception as e:
+                    logger.error(f"Failed to write to debug WAV file: {e}")
             logger.debug(f"Sent {len(audio_bytes)} bytes to Deepgram Flux (total: {self.total_audio_sent})")
             
         except Exception as e:
@@ -272,16 +322,19 @@ class DeepgramFluxSTT(BaseSTTProvider):
                 
     def _on_open(self, *args) -> None:
         """Handle connection open event."""
+        print_deepgram_event("Connection OPENED - ready to receive audio")
         logger.info("Deepgram Flux connection opened - ready to receive audio")
         self.connection_healthy = True
         logger.debug("Deepgram Flux connection opened")
         
     def _on_close(self, *args) -> None:
         """Handle connection close event."""
+        print_deepgram_event(f"Connection CLOSED (args: {args})")
         logger.info("Deepgram Flux connection closed")
         if self.is_running:
             # Unexpected close, try to reconnect with buffer
             self.connection_healthy = False
+            print_deepgram_event("Unexpected close detected - triggering reconnection")
             logger.warning("🔄 TRIGGERING BUFFERED RECONNECTION due to unexpected close")
             self._schedule_coroutine_threadsafe(self._reconnect_with_buffer())
             
@@ -289,6 +342,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         """Handle connection error event."""
         error_str = str(error)
         logger.error(f"Deepgram Flux connection error: {error}")
+        print_deepgram_event(f"ERROR: {error_str}")
         
         # Handle 1011 websocket errors and other connection issues
         if "1011" in error_str or "policy violation" in error_str.lower() or "connection" in error_str.lower():
@@ -297,7 +351,20 @@ class DeepgramFluxSTT(BaseSTTProvider):
         
     def _on_message(self, message) -> None:
         """Handle incoming message from Deepgram Flux."""
-        logger.info(f"Received message from Deepgram Flux: {getattr(message, 'type', 'unknown')}")
+        # Print ALL message attributes for complete debugging
+        msg_attrs = {}
+        for attr in dir(message):
+            if not attr.startswith('_'):
+                try:
+                    value = getattr(message, attr)
+                    if not callable(value):
+                        msg_attrs[attr] = value
+                except:
+                    pass
+        
+        print_deepgram_event(f"MESSAGE - All attributes: {msg_attrs}")
+        msg_type = getattr(message, 'type', 'unknown')
+        logger.info(f"Received message from Deepgram Flux: {msg_type}")
         self.last_message_time = time.time()
         
         try:
@@ -334,6 +401,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         """Handle EagerEndOfTurn event - start preparing response."""
         self.total_eager_eots += 1
         self.draft_response_active = True
+        print_deepgram_event(f"EAGER EOT - Transcript: '{transcript}' (latency: {latency*1000:.0f}ms)")
         
         logger.info(f"[EAGER EOT] {transcript} (latency: {latency*1000:.0f}ms)")
         
@@ -357,6 +425,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         """Handle TurnResumed event - cancel draft response."""
         self.total_turn_resumed += 1
         self.draft_response_active = False
+        print_deepgram_event(f"TURN RESUMED - User continued speaking (latency: {latency*1000:.0f}ms)")
         
         logger.info(f"[TURN RESUMED] User continued speaking (latency: {latency*1000:.0f}ms)")
         
@@ -373,6 +442,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         self.total_finals += 1
         self.last_final_text = transcript
         self.draft_response_active = False
+        print_deepgram_event(f"END OF TURN (FINAL #{self.utterance_count}) - Transcript: '{transcript}' (latency: {latency*1000:.0f}ms)")
         
         logger.info(f"[FINAL #{self.utterance_count}] {transcript} (latency: {latency*1000:.0f}ms)")
         
