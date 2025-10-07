@@ -76,6 +76,13 @@ class DeepgramFluxSTT(BaseSTTProvider):
         
         # Audio buffering for reconnection
         self.audio_buffer = []
+        
+        # Store reference to main event loop for cross-thread task scheduling
+        self.main_loop = None
+        try:
+            self.main_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.main_loop = None
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = 3
         self.total_reconnections = 0
@@ -223,7 +230,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
             logger.debug("Cannot send audio: not connected to Deepgram Flux")
             # Always attempt reconnection
             logger.warning("🔄 TRIGGERING BUFFERED RECONNECTION - Connection lost!")
-            asyncio.create_task(self._reconnect_with_buffer())
+            self._schedule_coroutine_threadsafe(self._reconnect_with_buffer())
             return
             
         try:
@@ -253,7 +260,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
                 logger.error(f"Error sending audio to Deepgram Flux: {e}")
                 # Always attempt reconnection on send error
                 logger.warning("🔄 TRIGGERING BUFFERED RECONNECTION after send error!")
-                asyncio.create_task(self._reconnect_with_buffer())
+                self._schedule_coroutine_threadsafe(self._reconnect_with_buffer())
                 
     def _on_open(self, *args) -> None:
         """Handle connection open event."""
@@ -268,7 +275,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
             # Unexpected close, try to reconnect with buffer
             self.connection_healthy = False
             logger.warning("🔄 TRIGGERING BUFFERED RECONNECTION due to unexpected close")
-            asyncio.create_task(self._reconnect_with_buffer())
+            self._schedule_coroutine_threadsafe(self._reconnect_with_buffer())
             
     def _on_error(self, error) -> None:
         """Handle connection error event."""
@@ -278,7 +285,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         # Handle 1011 websocket errors and other connection issues
         if "1011" in error_str or "policy violation" in error_str.lower() or "connection" in error_str.lower():
             logger.warning(f"🔄 TRIGGERING BUFFERED RECONNECTION due to error: {error}")
-            asyncio.create_task(self._reconnect_with_buffer())
+            self._schedule_coroutine_threadsafe(self._reconnect_with_buffer())
         
     def _on_message(self, message) -> None:
         """Handle incoming message from Deepgram Flux."""
@@ -496,3 +503,15 @@ class DeepgramFluxSTT(BaseSTTProvider):
             "current_reconnect_attempts": self.reconnect_attempts,
             "audio_buffer_size": len(self.audio_buffer)
         }
+        
+    def _schedule_coroutine_threadsafe(self, coro):
+        """Schedule a coroutine to run in the main event loop from any thread."""
+        if self.main_loop and not self.main_loop.is_closed():
+            try:
+                future = asyncio.run_coroutine_threadsafe(coro, self.main_loop)
+                return future
+            except Exception as e:
+                logger.error(f"Failed to schedule coroutine from thread: {e}")
+        else:
+            logger.warning("No main event loop available for cross-thread scheduling")
+        return None

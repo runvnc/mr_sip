@@ -144,7 +144,7 @@ class MindRootSIPBotV2(BareSIP):
                 logger.error(f"Failed to start TTS audio sender: {e}")
                 
     async def _setup_stt_and_capture(self):
-        """Setup STT provider and audio capture with pre-buffering."""
+        """Setup STT provider and audio capture."""
         try:
             # Find audio file
             await self._find_current_audio_files()
@@ -155,35 +155,9 @@ class MindRootSIPBotV2(BareSIP):
                 
             logger.info(f"Using audio file: {self.current_dec_file}")
             
-            # Create audio capture FIRST (don't start STT yet)
-            logger.info("Starting audio capture to pre-buffer audio...")
-            self.audio_capture = InotifyAudioCapture(
-                audio_file=self.current_dec_file,
-                target_sample_rate=16000,  # We'll adjust this after STT creation
-                chunk_callback=self._on_audio_chunk_prebuffer
-            )
-            
-            # Start audio capture
-            await self.audio_capture.start()
-            logger.info("Audio capture started, waiting for audio data...")
-            
-            # Wait for audio chunks to be available (pre-buffer)
-            max_wait_time = 10.0  # 10 seconds max wait
-            wait_start = time.time()
-            while len(getattr(self, 'audio_prebuffer', [])) < 2:
-                if time.time() - wait_start > max_wait_time:
-                    logger.error("Timeout waiting for audio data")
-                    return
-                await asyncio.sleep(0.1)
-            
-            logger.info(f"Got {len(self.audio_prebuffer)} audio chunks, now starting STT provider...")
-            
-            # NOW create and start STT provider with audio ready to send
+            # Create STT provider
             logger.info(f"Creating STT provider: {self.stt_provider_name}")
             self.stt = create_stt_provider(self.stt_provider_name, **self.stt_config)
-            
-            # Update audio capture sample rate to match STT
-            self.audio_capture.target_sample_rate = self.stt.sample_rate
             
             # Set callbacks
             self.stt.set_callbacks(
@@ -194,40 +168,25 @@ class MindRootSIPBotV2(BareSIP):
             # Set turn resumed callback for Deepgram Flux
             if hasattr(self.stt, 'set_turn_resumed_callback'):
                 self.stt.set_turn_resumed_callback(self._handle_turn_resumed)
-                
-            # Store main event loop reference for threading
-            if hasattr(self.stt, 'main_loop'):
-                self.stt.main_loop = self.main_loop
-                
+            
+            # Start STT provider
             await self.stt.start()
             logger.info(f"STT provider started: {self.stt_provider_name}")
             
-            # Switch to normal audio processing
-            self.audio_capture.chunk_callback = self._on_audio_chunk
+            # Create audio capture with callback
+            self.audio_capture = InotifyAudioCapture(
+                audio_file=self.current_dec_file,
+                target_sample_rate=self.stt.sample_rate,
+                chunk_callback=self._on_audio_chunk
+            )
             
-            # Immediately send pre-buffered audio
-            logger.info(f"Sending {len(self.audio_prebuffer)} pre-buffered chunks to STT...")
-            for chunk in self.audio_prebuffer:
-                await self.stt.add_audio(chunk)
-                await asyncio.sleep(0.01)  # Small delay between chunks
-            
-            logger.info("STT setup complete - audio flowing immediately")
+            # Start audio capture
+            await self.audio_capture.start()
+            logger.info("Audio capture started")
             
         except Exception as e:
             logger.error(f"Error setting up STT and capture: {e}")
             
-    async def _on_audio_chunk_prebuffer(self, audio_chunk: np.ndarray):
-        """Callback for audio chunks during pre-buffering phase."""
-        if not hasattr(self, 'audio_prebuffer'):
-            self.audio_prebuffer = []
-            
-        # Buffer audio chunks (keep last 10 to prevent memory growth)
-        self.audio_prebuffer.append(audio_chunk.copy())
-        if len(self.audio_prebuffer) > 10:
-            self.audio_prebuffer.pop(0)
-            
-        logger.debug(f"Pre-buffered audio chunk, total: {len(self.audio_prebuffer)} chunks")
-
     async def _on_audio_chunk(self, audio_chunk: np.ndarray):
         """Callback for audio chunks from capture."""
         if self.stt and self.stt.is_running:
