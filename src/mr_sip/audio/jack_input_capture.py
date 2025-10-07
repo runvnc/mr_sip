@@ -59,6 +59,7 @@ class JACKAudioCapture:
 
         self._reader_task: Optional[asyncio.Task] = None
         self._running = False
+        self.selected_port_name: Optional[str] = None
 
     async def start(self) -> None:
         if self._running:
@@ -97,7 +98,7 @@ class JACKAudioCapture:
         self.client.activate()
 
         # Attempt to connect baresip -> our inport with retries (ports may appear after call setup)
-        self._connect_from_baresip_output(retries=50, delay_s=0.1)
+        self._connect_from_baresip_output(retries=100, delay_s=0.05)
 
         # Start async reader
         self._running = True
@@ -143,6 +144,10 @@ class JACKAudioCapture:
             s = 0
             if 'mindrootsip' in n:
                 s -= 1000
+            if 'mr-stt' in n:
+                s += 200
+            if 'mr-stt' in n:
+                s += 200
             if 'baresip' in n:
                 s += 100
             if 'playback' in n:
@@ -172,6 +177,7 @@ class JACKAudioCapture:
                 if best is not None and best_score > -100:
                     try:
                         self.client.connect(best, self.inport)
+                        self.selected_port_name = best.name
                         logger.info(f"Connected JACK port {best.name} -> {self.client.name}:{self.inport.name}")
                         return
                     except jack.JackError as e:
@@ -190,6 +196,8 @@ class JACKAudioCapture:
         bytes_per_frame = self.bytes_per_sample  # mono float32
         chunk_frames_server = max(1, int(self.chunk_duration_s * self.server_rate))
         chunk_bytes_server = chunk_frames_server * bytes_per_frame
+        zero_warned = False
+        chunk_count = 0
 
         try:
             while self._running:
@@ -217,6 +225,15 @@ class JACKAudioCapture:
                     up //= g
                     down //= g
                     audio_f32 = resample_poly(audio_f32, up, down).astype(np.float32, copy=False)
+
+                # Basic silence check (RMS)
+                chunk_count += 1
+                if chunk_count <= 10 or (chunk_count % 50 == 0):
+                    rms = float(np.sqrt(np.mean(audio_f32**2))) if audio_f32.size else 0.0
+                    logger.debug(f"JACKCapture chunk#{chunk_count} rms={rms:.6f} from='{self.selected_port_name}'")
+                    if rms < 1e-5 and not zero_warned:
+                        logger.warning("JACKCapture: near-zero audio detected; verify auplay has exposed MR-STT ports and connection.")
+                        zero_warned = True
 
                 if self.chunk_callback is not None:
                     try:

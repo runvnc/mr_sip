@@ -33,15 +33,20 @@ class AudioHandler:
             return False
     
     def configure_baresip_jack(self, baresip_bot):
-        """Configure baresip to use JACK for both input (ausrc) and output (auplay)."""
+        """Configure baresip to use JACK for both input (ausrc) and output (auplay).
+
+        We set a distinct JACK client name for auplay so our capture can reliably find it.
+        """
         if baresip_bot:
             try:
+                # Ensure JACK module is loaded in baresip
+                baresip_bot.do_command("/module_load jack")
                 # Use JACK for input source (microphone into baresip)
                 baresip_bot.do_command("/ausrc jack,MindRootSIP.*")
-                # Use JACK for output playback so baresip exposes decoded audio to JACK
-                # Many builds accept '/auplay jack' and will create 'baresip:*' output ports
-                baresip_bot.do_command("/auplay jack")
-                logger.info("Configured baresip to use JACK (ausrc and auplay)")
+                # Use JACK for output playback so baresip exposes decoded audio to JACK.
+                # Pass a specific client name so ports appear as 'MR-STT:output_*'.
+                baresip_bot.do_command("/auplay jack,MR-STT")
+                logger.info("Configured baresip to use JACK (ausrc jack,MindRootSIP.*; auplay jack,MR-STT)")
             except Exception as e:
                 logger.error(f"Failed to configure baresip JACK settings: {e}")
     
