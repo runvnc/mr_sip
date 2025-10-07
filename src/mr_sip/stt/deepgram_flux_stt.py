@@ -15,7 +15,6 @@ import numpy as np
 from typing import Optional, Callable
 from deepgram import DeepgramClient
 from deepgram.core.events import EventType
-from deepgram.extensions.types.sockets import ListenV2SocketClientResponse
 from .base_stt import BaseSTTProvider, STTResult
 
 logger = logging.getLogger(__name__)
@@ -54,6 +53,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         # Deepgram client and connection
         self.client: Optional[DeepgramClient] = None
         self.connection = None
+        self.connection_task = None
         
         # Processing state
         self.utterance_count = 0
@@ -67,9 +67,6 @@ class DeepgramFluxSTT(BaseSTTProvider):
         self.total_turn_resumed = 0
         self.total_finals = 0
         self.latencies = []
-        
-        # Threading
-        self.listen_thread: Optional[threading.Thread] = None
         
         # Turn resumed callback
         self._on_turn_resumed_callback: Optional[Callable[[], None]] = None
@@ -99,21 +96,13 @@ class DeepgramFluxSTT(BaseSTTProvider):
             if self.eot_timeout_ms is not None:
                 connection_params["eot_timeout_ms"] = self.eot_timeout_ms
             
-            # Connect to Flux
-            self.connection = self.client.listen.v2.connect(**connection_params)
-            
-            # Set up event handlers
-            self.connection.on(EventType.OPEN, self._on_open)
-            self.connection.on(EventType.MESSAGE, self._on_message)
-            self.connection.on(EventType.ERROR, self._on_error)
-            self.connection.on(EventType.CLOSE, self._on_close)
-            
-            # Start listening in separate thread
-            self.listen_thread = threading.Thread(
-                target=self.connection.start_listening,
-                daemon=True
+            # Connect to Flux using context manager pattern
+            self.connection_task = asyncio.create_task(
+                self._run_connection(**connection_params)
             )
-            self.listen_thread.start()
+            
+            # Wait a moment for connection to establish
+            await asyncio.sleep(0.5)
             
             self.is_running = True
             self.connection_start_time = time.time()
@@ -124,6 +113,25 @@ class DeepgramFluxSTT(BaseSTTProvider):
             logger.error(f"Failed to connect to Deepgram Flux: {e}")
             raise
             
+    async def _run_connection(self, **connection_params):
+        """Run the Deepgram connection in async context manager."""
+        try:
+            async with self.client.listen.v2.connect(**connection_params) as connection:
+                self.connection = connection
+                
+                # Set up event handlers
+                connection.on(EventType.OPEN, self._on_open)
+                connection.on(EventType.MESSAGE, self._on_message)
+                connection.on(EventType.ERROR, self._on_error)
+                connection.on(EventType.CLOSE, self._on_close)
+                
+                # Start listening
+                await connection.start_listening()
+                
+        except Exception as e:
+            logger.error(f"Error in Deepgram connection: {e}")
+            self.is_running = False
+            
     async def stop(self) -> None:
         """Disconnect from Deepgram Flux API."""
         if not self.is_running:
@@ -132,13 +140,9 @@ class DeepgramFluxSTT(BaseSTTProvider):
         self.is_running = False
         
         try:
-            # Close connection
-            if self.connection:
-                self.connection.finish()
-                
-            # Wait for listen thread to finish
-            if self.listen_thread and self.listen_thread.is_alive():
-                self.listen_thread.join(timeout=2.0)
+            # Cancel the connection task
+            if self.connection_task and not self.connection_task.done():
+                self.connection_task.cancel()
                 
             logger.info("Disconnected from Deepgram Flux API")
             
@@ -187,7 +191,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         """Handle connection error event."""
         logger.error(f"Deepgram Flux connection error: {error}")
         
-    def _on_message(self, message: ListenV2SocketClientResponse) -> None:
+    def _on_message(self, message) -> None:
         """Handle incoming message from Deepgram Flux."""
         try:
             # Check if this is a TurnInfo message
@@ -254,7 +258,6 @@ class DeepgramFluxSTT(BaseSTTProvider):
                 self._on_turn_resumed_callback()
             except Exception as e:
                 logger.error(f"Error in turn resumed callback: {e}")
-        # For now, just log and wait for next event
         
     def _handle_end_of_turn(self, transcript: str, latency: float) -> None:
         """Handle EndOfTurn event - finalize response."""
