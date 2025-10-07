@@ -5,6 +5,7 @@ MindRoot SIP Plugin - User Commands
 
 import os
 import logging
+import numpy as np
 from lib.providers.commands import command
 from .services import dial_service, end_call_service
 from .sip_manager import get_session_manager
@@ -145,6 +146,70 @@ async def hangup(context=None) -> str:
         logger.error(f"Error in hangup command: {e}")
         return f"Error hanging up call: {str(e)}"
 
+def generate_dtmf_tone(digit: str, duration: float = 0.1, sample_rate: int = 8000) -> np.ndarray:
+    """
+    Generate a DTMF tone for a single digit.
+    
+    DTMF uses two simultaneous tones (low and high frequency):
+    
+    Args:
+        digit: Single DTMF digit (0-9, *, #)
+        duration: Duration in seconds (default 0.1s = 100ms)
+        sample_rate: Sample rate in Hz (default 8000 for phone audio)
+    
+    Returns:
+        numpy array of float32 audio samples normalized to [-1, 1]
+    """
+    # DTMF frequency table
+    dtmf_freqs = {
+        '1': (697, 1209), '2': (697, 1336), '3': (697, 1477),
+        '4': (770, 1209), '5': (770, 1336), '6': (770, 1477),
+        '7': (852, 1209), '8': (852, 1336), '9': (852, 1477),
+        '*': (941, 1209), '0': (941, 1336), '#': (941, 1477)
+    }
+    
+    if digit not in dtmf_freqs:
+        raise ValueError(f"Invalid DTMF digit: {digit}")
+    
+    low_freq, high_freq = dtmf_freqs[digit]
+    
+    # Generate time array
+    num_samples = int(duration * sample_rate)
+    t = np.linspace(0, duration, num_samples, endpoint=False)
+    
+    # Generate two sine waves and combine
+    low_tone = np.sin(2 * np.pi * low_freq * t)
+    high_tone = np.sin(2 * np.pi * high_freq * t)
+    
+    # Combine and normalize
+    tone = (low_tone + high_tone) / 2.0
+    
+    # Apply envelope to avoid clicks (10ms fade in/out)
+    fade_samples = int(0.01 * sample_rate)
+    if fade_samples > 0:
+        fade_in = np.linspace(0, 1, fade_samples)
+        fade_out = np.linspace(1, 0, fade_samples)
+        tone[:fade_samples] *= fade_in
+        tone[-fade_samples:] *= fade_out
+    
+    return tone.astype(np.float32)
+
+def dtmf_to_ulaw(tone: np.ndarray) -> bytes:
+    """
+    Convert DTMF tone from float32 to μ-law encoded bytes.
+    
+    Args:
+        tone: Float32 audio samples normalized to [-1, 1]
+    
+    Returns:
+        μ-law encoded audio bytes
+    """
+    import audioop
+    # Convert float32 to 16-bit PCM
+    pcm = (tone * 32767).astype(np.int16).tobytes()
+    # Convert PCM to μ-law
+    return audioop.lin2ulaw(pcm, 2)
+
 @command()
 async def send_dtmf(digits: str, context=None) -> str:
     """
@@ -181,12 +246,33 @@ async def send_dtmf(digits: str, context=None) -> str:
         session_manager = get_session_manager()
         session = await session_manager.get_session(context.log_id)
         
-        if session and session.is_active and session.baresip_bot:
-            session.baresip_bot.send_dtmf(digits)
-            logger.info(f"Sent DTMF digits '{digits}' for session {context.log_id}")
-            return f"DTMF tones sent: {digits}"
-        else:
+        if not session or not session.is_active:
             return "Error: No active call to send DTMF tones"
+        
+        # Generate and send DTMF tones through the audio pipeline
+        # This preserves the JACK audio setup unlike baresipy's send_dtmf
+        logger.info(f"Generating DTMF tones for '{digits}'")
+        
+        for digit in digits:
+            # Generate tone (100ms duration)
+            tone = generate_dtmf_tone(digit, duration=0.1, sample_rate=8000)
+            
+            # Convert to μ-law format (same as TTS audio)
+            ulaw_data = dtmf_to_ulaw(tone)
+            
+            # Send through the audio pipeline
+            await session.send_audio(ulaw_data)
+            
+            # Add silence between digits (50ms)
+            silence = np.zeros(int(0.05 * 8000), dtype=np.float32)
+            silence_ulaw = dtmf_to_ulaw(silence)
+            await session.send_audio(silence_ulaw)
+            
+            logger.debug(f"Sent DTMF tone for digit '{digit}'")
+        
+        logger.info(f"Sent DTMF digits '{digits}' for session {context.log_id}")
+        return f"DTMF tones sent: {digits}"
+        
     except Exception as e:
         logger.error(f"Error in send_dtmf command: {e}")
         return f"Error sending DTMF: {str(e)}"
