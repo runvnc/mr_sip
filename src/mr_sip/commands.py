@@ -211,7 +211,7 @@ def dtmf_to_ulaw(tone: np.ndarray) -> bytes:
     return audioop.lin2ulaw(pcm, 2)
 
 @command()
-async def send_dtmf(digits: str, context=None) -> str:
+async def send_dtmf(digits: str, context=None) -> None:
     """
     Send DTMF tones during an active SIP call.
     
@@ -224,7 +224,7 @@ async def send_dtmf(digits: str, context=None) -> str:
         context: MindRoot context (automatically provided)
     
     Returns:
-        str: Status message about the DTMF transmission
+        None: Command executes without waiting for acknowledgment
     
     Example:
         { "send_dtmf": { "digits": "1" } }
@@ -233,21 +233,25 @@ async def send_dtmf(digits: str, context=None) -> str:
     """
     try:
         if not context or not context.log_id:
-            return "Error: Valid MindRoot context is required"
+            logger.error("send_dtmf called without valid context")
+            return
         
         if not digits:
-            return "Error: DTMF digits are required"
+            logger.error("send_dtmf called without digits")
+            return
         
         # Validate digits
         valid_dtmf = set('0123456789*#')
         if not all(d in valid_dtmf for d in digits):
-            return f"Error: Invalid DTMF digits. Only 0-9, *, # are allowed. Got: {digits}"
+            logger.error(f"Invalid DTMF digits: {digits}")
+            return
         
         session_manager = get_session_manager()
         session = await session_manager.get_session(context.log_id)
         
         if not session or not session.is_active:
-            return "Error: No active call to send DTMF tones"
+            logger.warning(f"No active call for session {context.log_id}")
+            return
         
         # Generate and send DTMF tones through the audio pipeline
         # This preserves the JACK audio setup unlike baresipy's send_dtmf
@@ -271,8 +275,5 @@ async def send_dtmf(digits: str, context=None) -> str:
             logger.debug(f"Sent DTMF tone for digit '{digit}'")
         
         logger.info(f"Sent DTMF digits '{digits}' for session {context.log_id}")
-        return f"DTMF tones sent: {digits}"
-        
     except Exception as e:
         logger.error(f"Error in send_dtmf command: {e}")
-        return f"Error sending DTMF: {str(e)}"
