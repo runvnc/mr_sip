@@ -8,22 +8,26 @@ killall -9 jackd 2>/dev/null
 sleep 1
 
 # JACK Configuration
-SAMPLE_RATE=8000      # Telephony standard (resampled to 16000 in capture code)
-BUFFER_SIZE=1536      # Period size (adjust for latency vs stability)
+SAMPLE_RATE=8000       # Telephony standard (resampled to 16000 in capture code)
+PERIOD_SIZE=256        # Smaller period = less latency, smoother audio (32ms at 8000 Hz)
+WAIT_TIME=32000        # Microseconds between engine processes (match period time)
 
 echo "Starting JACK daemon..."
 echo "Sample Rate: ${SAMPLE_RATE} Hz"
-echo "Buffer Size: ${BUFFER_SIZE} frames"
+echo "Period Size: ${PERIOD_SIZE} frames (${PERIOD_SIZE}/${SAMPLE_RATE} = $(echo "scale=1; ${PERIOD_SIZE}*1000/${SAMPLE_RATE}" | bc)ms)"
+echo "Wait Time: ${WAIT_TIME} microseconds"
 echo "Driver: dummy (no physical audio device)"
 
 # Start JACK with dummy driver
 # -d dummy: Use dummy driver (no physical audio, just routing)
 # -r 8000: Sample rate for telephony
-# -p 1024: Period size (buffer size)
+# -p 256: Period size (smaller = smoother, less latency)
+# -w 32000: Wait time between engine processes
 
 jackd -d dummy \
   -r ${SAMPLE_RATE} \
-  -p ${BUFFER_SIZE} \
+  -p ${PERIOD_SIZE} \
+  -w ${WAIT_TIME} \
   2>&1 | tee /tmp/jackd.log &
 
 JACK_PID=$!

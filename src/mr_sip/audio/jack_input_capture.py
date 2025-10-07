@@ -96,8 +96,8 @@ class JACKAudioCapture:
                 target_rms=self.agc_target_rms,
                 max_gain=self.agc_max_gain,
                 sample_rate=self.server_rate,
-                window_seconds=2.5,
-                smoothing=0.88
+                window_seconds=1.5,
+                smoothing=0.95
             )
         # Allocate ring buffer for ~5 seconds of audio (mono float32)
         rb_bytes = int(self.server_rate * 5 * self.bytes_per_sample)
