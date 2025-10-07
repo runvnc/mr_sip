@@ -236,15 +236,15 @@ class MindRootSIPBotV2(BareSIP):
             self.active_ai_task_id = None
             # Don't send to AI again, the eager response should handle it
         else:
-        # Send to MindRoot agent
-        if self.on_utterance_callback:
-            self._schedule_coroutine(
-                self._call_utterance_callback(
-                    result.text,
-                    utterance_data['number'],
-                    utterance_data['timestamp']
+            # Send to MindRoot agent
+            if self.on_utterance_callback:
+                self._schedule_coroutine(
+                    self._call_utterance_callback(
+                        result.text,
+                        utterance_data['number'],
+                        utterance_data['timestamp']
+                    )
                 )
-            )
         
             
         # Clear partial text
