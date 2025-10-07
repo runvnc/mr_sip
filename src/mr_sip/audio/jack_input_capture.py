@@ -274,13 +274,17 @@ class JACKAudioCapture:
                 # DC offset removal
                 if audio_f32.size:
                     audio_f32 = audio_f32 - float(audio_f32.mean())
-                # Simple AGC: scale toward target RMS, clamp gain
-                if audio_f32.size:
+                # Simple AGC: scale toward target RMS, clamp gain (skip if disabled)
+                if audio_f32.size and self.agc_target_rms > 0.0:
                     rms = float(np.sqrt(np.mean(audio_f32**2)))
                     if rms > 1e-6:
                         gain = min(self.agc_max_gain, max(0.5, self.agc_target_rms / rms))
                         if abs(gain - 1.0) > 0.05:
                             audio_f32 = np.clip(audio_f32 * gain, -1.0, 1.0).astype(np.float32, copy=False)
+                else:
+                    # AGC disabled, just clip to prevent overflow
+                    if audio_f32.size:
+                        audio_f32 = np.clip(audio_f32, -1.0, 1.0).astype(np.float32, copy=False)
 
                 if self.server_rate != self.target_sample_rate:
                     from math import gcd
