@@ -74,6 +74,9 @@ class DeepgramFluxSTT(BaseSTTProvider):
         # Threading
         self.listen_thread: Optional[threading.Thread] = None
         
+        # Turn resumed callback
+        self._on_turn_resumed_callback: Optional[Callable[[], None]] = None
+        
     async def start(self) -> None:
         """Connect to Deepgram Flux API."""
         if self.is_running:
@@ -91,11 +94,10 @@ class DeepgramFluxSTT(BaseSTTProvider):
                 model=self.model,
                 encoding="linear16",
                 sample_rate=self.sample_rate,
-                language=self.language,
-                smart_format=self.smart_format,
-                punctuate=self.punctuate,
                 eager_eot_threshold=self.eager_eot_threshold,
-                eot_threshold=self.eot_threshold
+                eot_threshold=self.eot_threshold,
+                smart_format=self.smart_format,
+                punctuate=self.punctuate
             )
             
             # Set up event handlers
@@ -224,13 +226,18 @@ class DeepgramFluxSTT(BaseSTTProvider):
         # Create partial result for quick response preparation
         result = STTResult(
             text=transcript,
-            is_final=False,  # This is a draft/partial
+            is_final=False,  # This is a draft/partial  
+            is_eager_eot=True,  # Flag for eager end of turn
             confidence=0.8,  # Medium confidence for eager EOT
             timestamp=time.time()
         )
         
         # Emit as partial for early processing
         self._emit_partial(result)
+        
+    def set_turn_resumed_callback(self, callback: Optional[Callable[[], None]]) -> None:
+        """Set callback for TurnResumed events."""
+        self._on_turn_resumed_callback = callback
         
     def _handle_turn_resumed(self, transcript: str, latency: float) -> None:
         """Handle TurnResumed event - cancel draft response."""
@@ -239,7 +246,12 @@ class DeepgramFluxSTT(BaseSTTProvider):
         
         logger.info(f"[TURN RESUMED] User continued speaking (latency: {latency*1000:.0f}ms)")
         
-        # Could emit a cancellation signal here if needed
+        # Emit cancellation signal to SIP client
+        if self._on_turn_resumed_callback:
+            try:
+                self._on_turn_resumed_callback()
+            except Exception as e:
+                logger.error(f"Error in turn resumed callback: {e}")
         # For now, just log and wait for next event
         
     def _handle_end_of_turn(self, transcript: str, latency: float) -> None:
@@ -255,6 +267,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         result = STTResult(
             text=transcript,
             is_final=True,
+            is_eager_eot=False,  # This is final, not eager
             confidence=0.95,  # High confidence for final EOT
             timestamp=time.time()
         )

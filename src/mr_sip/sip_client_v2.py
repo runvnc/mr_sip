@@ -30,6 +30,7 @@ from .audio_handler import AudioHandler
 from .stt import create_stt_provider, BaseSTTProvider, STTResult
 from .audio import InotifyAudioCapture
 
+from lib.providers.services import service_manager
 logger = logging.getLogger(__name__)
 
 class MindRootSIPBotV2(BareSIP):
@@ -77,6 +78,10 @@ class MindRootSIPBotV2(BareSIP):
         # Transcription tracking
         self.utterances = []
         self.last_partial_text = ""
+        
+        # Eager end of turn tracking
+        self.active_ai_task_id = None
+        self.draft_response_active = False
         
         # Audio processing
         self.audio_handler = AudioHandler()
@@ -156,6 +161,10 @@ class MindRootSIPBotV2(BareSIP):
                 on_final=self._on_final_result
             )
             
+            # Set turn resumed callback for Deepgram Flux
+            if hasattr(self.stt, 'set_turn_resumed_callback'):
+                self.stt.set_turn_resumed_callback(self._handle_turn_resumed)
+            
             # Start STT provider
             await self.stt.start()
             logger.info(f"STT provider started: {self.stt_provider_name}")
@@ -185,9 +194,25 @@ class MindRootSIPBotV2(BareSIP):
     def _on_partial_result(self, result: STTResult):
         """Callback for partial transcription results."""
         if result.text != self.last_partial_text:
-            logger.debug(f"[PARTIAL] {result.text} (confidence: {result.confidence:.2f})")
+            logger.debug(f"[PARTIAL] {result.text} (confidence: {result.confidence:.2f}, eager_eot: {result.is_eager_eot})")
             self.last_partial_text = result.text
             
+            # Handle eager end of turn processing
+            if hasattr(result, 'is_eager_eot') and result.is_eager_eot:
+                logger.info(f"[EAGER EOT] Starting AI response preparation for: {result.text}")
+                self.draft_response_active = True
+                
+                # Send to AI agent immediately for eager processing
+                if self.on_utterance_callback:
+                    utterance_num = len(self.utterances) + 1
+                    self._schedule_coroutine(
+                        self._call_utterance_callback(
+                            result.text,
+                            utterance_num,
+                            result.timestamp or time.time(),
+                            is_eager=True
+                        )
+                    )
             # Optionally notify user of partial results
             # (could be used for real-time display)
             
@@ -204,6 +229,13 @@ class MindRootSIPBotV2(BareSIP):
         
         logger.info(f"[{utterance_data['time_str']}] Utterance #{utterance_data['number']}: {result.text} (confidence: {result.confidence:.2f})")
         
+        # Check if we already have a draft response active
+        if self.draft_response_active:
+            logger.info(f"[FINAL] Draft response already active, using prepared response")
+            self.draft_response_active = False
+            self.active_ai_task_id = None
+            # Don't send to AI again, the eager response should handle it
+        else:
         # Send to MindRoot agent
         if self.on_utterance_callback:
             self._schedule_coroutine(
@@ -213,11 +245,12 @@ class MindRootSIPBotV2(BareSIP):
                     utterance_data['timestamp']
                 )
             )
+        
             
         # Clear partial text
         self.last_partial_text = ""
         
-    async def _call_utterance_callback(self, text: str, utterance_num: int, timestamp: float):
+    async def _call_utterance_callback(self, text: str, utterance_num: int, timestamp: float, is_eager: bool = False):
         """Call the utterance callback."""
         try:
             if asyncio.iscoroutinefunction(self.on_utterance_callback):
@@ -231,6 +264,31 @@ class MindRootSIPBotV2(BareSIP):
                 )
         except Exception as e:
             logger.error(f"Error in utterance callback: {e}")
+            
+    async def _cancel_ai_response(self):
+        """Cancel active AI response using service manager."""
+        if not self.context or not self.context.log_id:
+            logger.warning("Cannot cancel AI response: no context or log_id")
+            return
+            
+        try:
+            result = await service_manager.cancel_active_response(
+                log_id=self.context.log_id,
+                context=self.context
+            )
+            logger.info(f"AI response cancelled: {result}")
+            self.draft_response_active = False
+            self.active_ai_task_id = None
+        except Exception as e:
+            logger.error(f"Error cancelling AI response: {e}")
+            
+    def _handle_turn_resumed(self):
+        """Handle TurnResumed event from Deepgram Flux."""
+        if self.draft_response_active:
+            logger.info(f"[TURN RESUMED] Cancelling draft AI response")
+            self._schedule_coroutine(self._cancel_ai_response())
+        else:
+            logger.debug(f"[TURN RESUMED] No active draft response to cancel")
             
     async def _find_current_audio_files(self):
         """Find the audio files that baresip created for this call."""

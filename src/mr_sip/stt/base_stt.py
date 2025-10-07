@@ -18,6 +18,7 @@ class STTResult:
     text: str
     is_final: bool
     confidence: float = 1.0
+    is_eager_eot: bool = False
     utterance_num: Optional[int] = None
     timestamp: Optional[float] = None
     
