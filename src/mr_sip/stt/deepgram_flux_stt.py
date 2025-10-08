@@ -411,7 +411,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
             if event == 'EagerEndOfTurn':
                 self._handle_eager_eot(transcript, latency)
             elif event == 'TurnResumed' or event == 'StartOfTurn':
-                self._handle_turn_resumed(transcript, latency)
+                self._handle_turn_resumed(transcript, latency, event)
             elif event == 'EndOfTurn':
                 self._handle_end_of_turn(transcript, latency)
             else:
@@ -444,15 +444,15 @@ class DeepgramFluxSTT(BaseSTTProvider):
         """Set callback for TurnResumed events."""
         self._on_turn_resumed_callback = callback
         
-    def _handle_turn_resumed(self, transcript: str, latency: float) -> None:
-        """Handle TurnResumed event - cancel draft response."""
+    def _handle_turn_resumed(self, transcript: str, latency: float, event_name: str = 'TurnResumed') -> None:
+        """Handle user interruption (TurnResumed or StartOfTurn) - cancel draft response."""
         self.total_turn_resumed += 1
         self.draft_response_active = False
-        print_deepgram_event("TurnResumed", {"message": "User continued speaking", "latency_ms": f"{latency*1000:.0f}"})
+        print_deepgram_event(event_name, {"message": "User interruption detected", "latency_ms": f"{latency*1000:.0f}"})
         
-        logger.info(f"[TURN RESUMED] User continued speaking (latency: {latency*1000:.0f}ms)")
+        logger.info(f"[{event_name.upper()}] User interruption detected (latency: {latency*1000:.0f}ms)")
         # DEBUG TRACE
-        print("\033[91;107m[DEBUG TRACE 1/6] Deepgram 'TurnResumed' event received by STT provider.\033[0m")
+        print(f"\033[91;107m[DEBUG TRACE 1/6] Deepgram '{event_name}' event received by STT provider.\033[0m")
         
         # Emit cancellation signal to SIP client
         if self._on_turn_resumed_callback:
