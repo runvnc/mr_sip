@@ -422,7 +422,7 @@ class MindRootSIPBotV2(BareSIP):
             session = await session_manager.get_session(self.context.log_id)
             if session:
                 session.halt_audio_out = False
-        self._schedule_coroutine(set_halt_flag())
+        self._schedule_coroutine(unset_halt_flag())
   
         self.utterances.append(utterance_data)
         
