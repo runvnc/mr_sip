@@ -419,6 +419,13 @@ class MindRootSIPBotV2(BareSIP):
         from .sip_manager import get_session_manager
         session_manager = get_session_manager()
         async def unset_halt_flag():
+            logger.debug(f"UNSET HALT AUDIO! text is {result.text}")
+            logger.debug(f"UNSET HALT AUDIO! text is {result.text}")
+            logger.debug(f"UNSET HALT AUDIO! text is {result.text}")
+            logger.debug(f"UNSET HALT AUDIO! text is {result.text}")
+            logger.debug(f"UNSET HALT AUDIO! text is {result.text}")
+            logger.debug(f"UNSET HALT AUDIO! text is {result.text}")
+ 
             session = await session_manager.get_session(self.context.log_id)
             if session:
                 session.halt_audio_out = False
@@ -540,7 +547,7 @@ class MindRootSIPBotV2(BareSIP):
         # Also clear the TTS queue
         #self._stop_tts_immediately()
 
-        if False and self.draft_response_active:
+        if self.draft_response_active:
             # DEBUG TRACE
             print("\033[91;107m[DEBUG TRACE 3/6] Scheduling _cancel_ai_response coroutine.\033[0m")
             logger.info(f"[TURN RESUMED] Cancelling draft AI response")
