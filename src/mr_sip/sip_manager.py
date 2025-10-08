@@ -25,6 +25,7 @@ class SIPSession:
         self.baresip_bot = baresip_bot
         self.created_at = datetime.now()
         self.is_active = False
+        self.halt_audio_out = False
         self.audio_queue = asyncio.Queue()
         self._audio_sender_task = None
         
