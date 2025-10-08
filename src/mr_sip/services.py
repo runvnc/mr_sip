@@ -163,6 +163,11 @@ async def sip_audio_out_chunk(audio_chunk: bytes, context=None) -> bool:
     logger.debug(f"sip_audio_out_chunk called with {len(audio_chunk)} bytes")
     if not context or not context.log_id:
         logger.warning("sip_audio_out_chunk called without context or log_id")
+        logger.warning("sip_audio_out_chunk called without context or log_id")
+        logger.warning("sip_audio_out_chunk called without context or log_id")
+        logger.warning("sip_audio_out_chunk called without context or log_id")
+        logger.warning("sip_audio_out_chunk called without context or log_id")
+    
         return False
         
     try:
@@ -170,12 +175,33 @@ async def sip_audio_out_chunk(audio_chunk: bytes, context=None) -> bool:
         session = await session_manager.get_session(context.log_id)
         
         if session and session.is_active:
-            if False and session.halt_audio_out:
+            if session.halt_audio_out:
+                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
+                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
+                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
+                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
+                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
+                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
+                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
+                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
+                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
+                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
+                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
+                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
+ 
                 session.halt_audio_out = False
                 return False
             else:
                 await session.send_audio(audio_chunk)
+                logger.debug(f"NOT HALTED. Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
+                logger.debug(f"NOT HALTED. Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
+                logger.debug(f"NOT HALTED. Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
+                logger.debug(f"NOT HALTED. Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
+                logger.debug(f"NOT HALTED. Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
+ 
                 logger.debug(f"Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
+                logger.debug(f"NOT HALTED. Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
+ 
                 return True
         else:
             logger.warning(f"No active SIP session found for log_id {context.log_id}")

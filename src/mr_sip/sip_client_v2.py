@@ -501,18 +501,32 @@ class MindRootSIPBotV2(BareSIP):
         """Handle TurnResumed event from Deepgram Flux."""
         # DEBUG TRACE
         print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
-        
+        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
+        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
+        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
+        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
+        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
+        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
+        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
+        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
+           
         # Set halt flag to stop TTS streaming immediately
         #self.session.halt_audio_out = True
-        #if self.context and self.context.log_id:
-        #    from .sip_manager import get_session_manager
-        #   session_manager = get_session_manager()
-        #    async def set_halt_flag():
-        #       session = await session_manager.get_session(self.context.log_id)
-        #        if session:
-        #            session.halt_audio_out = True
-        #            logger.info("[BARGE-IN] User speaking (StartOfTurn/TurnResumed) - halting TTS output")
-        #    self._schedule_coroutine(set_halt_flag())
+        if self.context and self.context.log_id:
+            from .sip_manager import get_session_manager
+           session_manager = get_session_manager()
+            async def set_halt_flag():
+               session = await session_manager.get_session(self.context.log_id)
+                if session:
+                    session.halt_audio_out = True
+                    logger.info("[BARGE-IN] User speaking (StartOfTurn/TurnResumed) - halting TTS output")
+                    logger.info("[BARGE-IN] User speaking (StartOfTurn/TurnResumed) - halting TTS output")
+                    logger.info("[BARGE-IN] User speaking (StartOfTurn/TurnResumed) - halting TTS output")
+                    logger.info("[BARGE-IN] User speaking (StartOfTurn/TurnResumed) - halting TTS output")
+                    logger.info("[BARGE-IN] User speaking (StartOfTurn/TurnResumed) - halting TTS output")
+                    logger.info("[BARGE-IN] User speaking (StartOfTurn/TurnResumed) - halting TTS output")
+     
+            self._schedule_coroutine(set_halt_flag())
         
         # Also clear the TTS queue
         #self._stop_tts_immediately()
