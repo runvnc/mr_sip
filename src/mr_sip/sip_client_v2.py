@@ -243,7 +243,7 @@ class MindRootSIPBotV2(BareSIP):
                 
             logger.error("🔍 DEBUG: About to start STT provider (this opens Deepgram connection)")
             try:
-            await self.stt.start()
+                await self.stt.start()
             except Exception as e:
                 logger.error(f"🔥 CRITICAL: STT start() failed with exception: {e}")
                 import traceback
