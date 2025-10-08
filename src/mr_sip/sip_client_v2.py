@@ -436,6 +436,7 @@ class MindRootSIPBotV2(BareSIP):
             logger.warning("Cannot cancel AI response: no context or log_id")
             return
             
+
         try:
             result = await service_manager.cancel_active_response(
                 log_id=self.context.log_id,
@@ -446,11 +447,41 @@ class MindRootSIPBotV2(BareSIP):
             self.active_ai_task_id = None
         except Exception as e:
             logger.error(f"Error cancelling AI response: {e}")
+
+    def _stop_tts_immediately(self):
+        """Immediately stop/flush any TTS playback already queued or streaming."""
+        try:
+            print("\033[91;107m[DEBUG TRACE 5/6] Stopping TTS immediately (flush queue, pause sender).\033[0m")
+            # Flush the local TTS queue so no additional audio is sent
+            if self.tts_audio_queue is not None:
+                try:
+                    # Drain queue non-blocking
+                    while not self.tts_audio_queue.empty():
+                        _ = self.tts_audio_queue.get_nowait()
+                except Exception as e:
+                    logger.debug(f"TTS queue drain exception (non-fatal): {e}")
+
+            # Signal JACK streamer to stop outputting already-buffered audio immediately
+            if hasattr(self, 'audio_handler') and self.audio_handler and self.audio_handler.jack_streamer:
+                try:
+                    self.audio_handler.jack_streamer.stop_streaming()
+                    # Restart streaming with a cleared buffer to resume cleanly afterwards
+                    self.audio_handler.jack_streamer.buffer.reset()
+                    self.audio_handler.jack_streamer.start_streaming()
+                    logger.info("TTS JACK stream flushed and restarted for clean state")
+                except Exception as e:
+                    logger.error(f"Failed to flush JACK TTS stream: {e}")
+        except Exception as e:
+            logger.error(f"_stop_tts_immediately encountered an error: {e}")
+
             
     def _handle_turn_resumed(self):
         """Handle TurnResumed event from Deepgram Flux."""
         # DEBUG TRACE
         print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
+        # Always stop any ongoing TTS playback right away so barge-in cuts audio
+        self._stop_tts_immediately()
+
         if self.draft_response_active:
             # DEBUG TRACE
             print("\033[91;107m[DEBUG TRACE 3/6] Scheduling _cancel_ai_response coroutine.\033[0m")

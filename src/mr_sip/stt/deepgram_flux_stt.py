@@ -375,6 +375,8 @@ class DeepgramFluxSTT(BaseSTTProvider):
     def _on_message(self, message) -> None:
         """Handle incoming message from Deepgram Flux."""
         # Print ALL message attributes for complete debugging
+        # DEBUG TRACE: entry into _on_message
+        print("\033[91;107m[DEBUG TRACE 0/6] STT _on_message invoked.\033[0m")
         msg_attrs = {}
         for attr in dir(message):
             if not attr.startswith('_'):
@@ -416,6 +418,8 @@ class DeepgramFluxSTT(BaseSTTProvider):
                 self._handle_end_of_turn(transcript, latency)
             else:
                 logger.debug(f"Unknown Flux event: {event}")
+        # DEBUG TRACE: exit of _on_message
+        print("\033[91;107m[DEBUG TRACE 0.5/6] STT _on_message processed event.\033[0m")
                 
         except Exception as e:
             logger.error(f"Error handling Flux message: {e}")
