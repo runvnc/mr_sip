@@ -513,9 +513,9 @@ class MindRootSIPBotV2(BareSIP):
             self._schedule_coroutine(set_halt_flag())
         
         # Also clear the TTS queue
-        self._stop_tts_immediately()
+        #self._stop_tts_immediately()
 
-        if self.draft_response_active:
+        if False and self.draft_response_active:
             # DEBUG TRACE
             print("\033[91;107m[DEBUG TRACE 3/6] Scheduling _cancel_ai_response coroutine.\033[0m")
             logger.info(f"[TURN RESUMED] Cancelling draft AI response")
