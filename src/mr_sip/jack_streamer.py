@@ -100,3 +100,11 @@ class JACKAudioStreamer:
         """Stop streaming audio."""
         self.streaming = False
         logger.info("JACK streaming stopped")
+        
+    def clear_buffer(self):
+        """Clear the ring buffer (for barge-in)."""
+        # Read and discard all data in the buffer
+        available = self.buffer.read_space
+        if available > 0:
+            _ = self.buffer.read(available)
+            logger.info(f"Cleared {available} bytes from JACK ring buffer")

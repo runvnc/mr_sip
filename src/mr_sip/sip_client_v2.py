@@ -492,6 +492,8 @@ class MindRootSIPBotV2(BareSIP):
             if hasattr(self, 'audio_handler') and self.audio_handler and self.audio_handler.jack_streamer:
                 try:
                     self.audio_handler.jack_streamer.muted = True
+                    # Also clear the buffer to remove already-queued audio
+                    self.audio_handler.jack_streamer.clear_buffer()
                     logger.info("JACK TTS output muted for barge-in")
                 except Exception as e:
                     logger.error(f"Failed to mute JACK TTS: {e}")
