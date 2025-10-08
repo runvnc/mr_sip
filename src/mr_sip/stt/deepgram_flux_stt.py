@@ -418,9 +418,9 @@ class DeepgramFluxSTT(BaseSTTProvider):
                 self._handle_end_of_turn(transcript, latency)
             else:
                 logger.debug(f"Unknown Flux event: {event}")
-        # DEBUG TRACE: exit of _on_message
-        print("\033[91;107m[DEBUG TRACE 0.5/6] STT _on_message processed event.\033[0m")
-                
+            # DEBUG TRACE: exit of _on_message
+            print("\033[91;107m[DEBUG TRACE 0.5/6] STT _on_message processed event.\033[0m")
+            
         except Exception as e:
             logger.error(f"Error handling Flux message: {e}")
             
