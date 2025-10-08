@@ -347,6 +347,12 @@ class MindRootSIPBotV2(BareSIP):
     async def _on_audio_chunk(self, audio_chunk: np.ndarray):
         """Callback for audio chunks from capture."""
         if self.stt and self.stt.is_running:
+            # Add periodic logging to verify audio is flowing
+            if not hasattr(self, '_audio_chunk_count'):
+                self._audio_chunk_count = 0
+            self._audio_chunk_count += 1
+            if self._audio_chunk_count % 100 == 0:
+                logger.info(f"Audio flowing to STT: {self._audio_chunk_count} chunks sent, STT running: {self.stt.is_running}")
             logger.debug(f"Sending audio chunk of size {len(audio_chunk)} to STT")
             try:
                 await self.stt.add_audio(audio_chunk)
