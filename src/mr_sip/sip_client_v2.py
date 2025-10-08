@@ -487,6 +487,14 @@ class MindRootSIPBotV2(BareSIP):
                     logger.info("TTS queue flushed on barge-in")
                 except Exception as e:
                     logger.debug(f"TTS queue drain exception (non-fatal): {e}")
+            
+            # Mute JACK output immediately to stop buffered audio
+            if hasattr(self, 'audio_handler') and self.audio_handler and self.audio_handler.jack_streamer:
+                try:
+                    self.audio_handler.jack_streamer.muted = True
+                    logger.info("JACK TTS output muted for barge-in")
+                except Exception as e:
+                    logger.error(f"Failed to mute JACK TTS: {e}")
             # Note: We do NOT stop/reset the JACK streamer here to avoid breaking the audio pipeline.
             # The queue flush prevents new TTS from being sent; existing buffered audio will finish quickly.
         except Exception as e:

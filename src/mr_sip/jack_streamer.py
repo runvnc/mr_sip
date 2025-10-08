@@ -29,13 +29,14 @@ class JACKAudioStreamer:
         # Ring buffer for streaming (20 seconds)
         self.buffer = jack.RingBuffer(self.samplerate * 20 * 4)
         self.streaming = False
+        self.muted = False  # Mute flag for barge-in
         
         # Set process callback
         self.client.set_process_callback(self.process)
         
     def process(self, frames):
         """JACK process callback - real-time audio thread."""
-        if not self.streaming:
+        if not self.streaming or self.muted:
             for port in self.outports:
                 port.get_array().fill(0)
             return

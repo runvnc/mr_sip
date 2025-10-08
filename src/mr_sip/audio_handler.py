@@ -68,6 +68,11 @@ class AudioHandler:
             logger.warning("JACK not available for audio output")
             return
             
+        # Unmute JACK if it was muted (from barge-in)
+        if self.jack_streamer.muted:
+            self.jack_streamer.muted = False
+            logger.info("JACK TTS unmuted for new speech")
+            
         try:
             # Decode μ-law to 16-bit PCM
             # ElevenLabs sends ulaw_8000 format (8-bit μ-law at 8000 Hz)
