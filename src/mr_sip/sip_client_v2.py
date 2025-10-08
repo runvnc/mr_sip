@@ -107,26 +107,13 @@ class MindRootSIPBotV2(BareSIP):
         self.tts_audio_queue = None
         self.tts_sender_task = None
      
-        self.session = None
-        
         # Store reference to main event loop
         try:
             self.main_loop = asyncio.get_running_loop()
         except RuntimeError:
             self.main_loop = None
 
-        if self.context and self.context.log_id:
-            self._schedule_coroutine(self.get_session())
          
-    async def get_session(self):
-        """Get the current session from the session manager."""
-        from .sip_manager import get_session_manager
-        session_manager = get_session_manager()
-        if self.context and self.context.log_id:
-            self.session = await session_manager.get_session(self.context.log_id)
-            return self.session
-        return None
-
     def __del__(self):
         """Destructor to ensure STT and audio capture are stopped."""
         logger.info(f"MindRootSIPBotV2 instance for context {self.context.log_id if self.context else 'N/A'} is being destroyed.")
