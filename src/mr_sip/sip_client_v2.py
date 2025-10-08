@@ -103,12 +103,9 @@ class MindRootSIPBotV2(BareSIP):
         # Audio processing
         self.audio_handler = AudioHandler()
         
-        # TTS audio output
+        # TTS audio output queue
         self.tts_audio_queue = None
         self.tts_sender_task = None
-        
-        # Barge-in state
-        self.tts_discarding = False  # When True, discard TTS chunks instead of sending
         
         # Store reference to main event loop
         try:
@@ -430,18 +427,6 @@ class MindRootSIPBotV2(BareSIP):
         else:
             # Send to MindRoot agent
             if self.on_utterance_callback:
-                # Reset TTS discard flag when user finishes speaking
-                if self.tts_discarding:
-                    self.tts_discarding = False
-                    logger.info("User finished speaking (EndOfTurn), TTS discard flag cleared")
-                    # Also unmute JACK so new TTS can play
-                    if hasattr(self, 'audio_handler') and self.audio_handler and self.audio_handler.jack_streamer:
-                        try:
-                            self.audio_handler.jack_streamer.muted = False
-                            logger.info("JACK unmuted, ready for new TTS")
-                        except Exception as e:
-                            logger.error(f"Failed to unmute JACK: {e}")
-                    
                 self._schedule_coroutine(
                     self._call_utterance_callback(
                         result.text,
@@ -490,32 +475,23 @@ class MindRootSIPBotV2(BareSIP):
             logger.error(f"Error cancelling AI response: {e}")
 
     def _stop_tts_immediately(self):
-        """Immediately stop/flush any TTS playback already queued or streaming."""
+        """Clear TTS queue on barge-in - don't touch JACK output."""
         try:
             print("\033[91;107m[DEBUG TRACE 5/6] Stopping TTS immediately (flush queue, pause sender).\033[0m")
-            # Only flush the local TTS queue; do NOT touch JACK streamer state
+            
+            # Clear the TTS audio queue to prevent queued audio from playing
             if self.tts_audio_queue is not None:
                 try:
-                    # Drain queue non-blocking
+                    # Drain queue completely
                     while not self.tts_audio_queue.empty():
                         _ = self.tts_audio_queue.get_nowait()
                     logger.info("TTS queue flushed on barge-in")
                 except Exception as e:
                     logger.debug(f"TTS queue drain exception (non-fatal): {e}")
             
-            # Mute JACK output immediately to stop buffered audio
-            if hasattr(self, 'audio_handler') and self.audio_handler and self.audio_handler.jack_streamer:
-                try:
-                    # Set flag to discard incoming TTS chunks
-                    self.tts_discarding = True
-                    self.audio_handler.jack_streamer.muted = True
-                    # Also clear the buffer to remove already-queued audio
-                    self.audio_handler.jack_streamer.clear_buffer()
-                    logger.info("JACK TTS output muted for barge-in")
-                except Exception as e:
-                    logger.error(f"Failed to mute JACK TTS: {e}")
-            # Note: We do NOT stop/reset the JACK streamer here to avoid breaking the audio pipeline.
-            # The queue flush prevents new TTS from being sent; existing buffered audio will finish quickly.
+            # Note: We do NOT mute JACK output here. JACK is for TTS playback.
+            # User speech detection (TurnResumed) should not mute the TTS output channel.
+            # Clearing the queue prevents new TTS from being sent.
         except Exception as e:
             logger.error(f"_stop_tts_immediately encountered an error: {e}")
 
@@ -602,11 +578,6 @@ class MindRootSIPBotV2(BareSIP):
                     audio_chunk = await asyncio.wait_for(self.tts_audio_queue.get(), timeout=1.0)
                     if audio_chunk is None:
                         break
-                    
-                    # If discarding (barge-in), drop the chunk instead of sending
-                    if self.tts_discarding:
-                        logger.debug("Discarding TTS chunk due to barge-in")
-                        continue
                     
                     await self.send_tts_audio(audio_chunk)
                 except asyncio.TimeoutError:
