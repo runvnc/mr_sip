@@ -170,7 +170,7 @@ async def sip_audio_out_chunk(audio_chunk: bytes, context=None) -> bool:
         session = await session_manager.get_session(context.log_id)
         
         if session and session.is_active:
-            if False and session.halt_audio_out:
+            if session.halt_audio_out:
                 session.halt_audio_out = False
                 return False
             else:
