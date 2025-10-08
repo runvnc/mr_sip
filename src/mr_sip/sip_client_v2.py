@@ -382,20 +382,6 @@ class MindRootSIPBotV2(BareSIP):
     def _on_partial_result(self, result: STTResult):
         """Callback for partial transcription results."""
         if result.text != self.last_partial_text:
-            # Trigger barge-in on ANY user speech (partial transcript)
-            if result.text and len(result.text.strip()) > 0:
-                # Set halt flag to stop TTS streaming
-                if self.context and self.context.log_id:
-                    from .sip_manager import get_session_manager
-                    session_manager = get_session_manager()
-                    # Schedule async call to set flag
-                    async def set_halt_flag():
-                        session = await session_manager.get_session(self.context.log_id)
-                        if session:
-                            session.halt_audio_out = True
-                            logger.info("[BARGE-IN] User speaking - halting TTS output")
-                    self._schedule_coroutine(set_halt_flag())
-            
             logger.debug(f"[PARTIAL] {result.text} (confidence: {result.confidence:.2f}, eager_eot: {result.is_eager_eot})")
             logger.info(f"[PARTIAL] {result.text} (confidence: {result.confidence:.2f}, eager_eot: {result.is_eager_eot})")
             self.last_partial_text = result.text
@@ -514,7 +500,19 @@ class MindRootSIPBotV2(BareSIP):
         """Handle TurnResumed event from Deepgram Flux."""
         # DEBUG TRACE
         print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
-        # Always stop any ongoing TTS playback right away so barge-in cuts audio
+        
+        # Set halt flag to stop TTS streaming immediately
+        if self.context and self.context.log_id:
+            from .sip_manager import get_session_manager
+            session_manager = get_session_manager()
+            async def set_halt_flag():
+                session = await session_manager.get_session(self.context.log_id)
+                if session:
+                    session.halt_audio_out = True
+                    logger.info("[BARGE-IN] User speaking (StartOfTurn/TurnResumed) - halting TTS output")
+            self._schedule_coroutine(set_halt_flag())
+        
+        # Also clear the TTS queue
         self._stop_tts_immediately()
 
         if self.draft_response_active:
