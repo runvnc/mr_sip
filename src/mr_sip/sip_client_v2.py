@@ -452,25 +452,17 @@ class MindRootSIPBotV2(BareSIP):
         """Immediately stop/flush any TTS playback already queued or streaming."""
         try:
             print("\033[91;107m[DEBUG TRACE 5/6] Stopping TTS immediately (flush queue, pause sender).\033[0m")
-            # Flush the local TTS queue so no additional audio is sent
+            # Only flush the local TTS queue; do NOT touch JACK streamer state
             if self.tts_audio_queue is not None:
                 try:
                     # Drain queue non-blocking
                     while not self.tts_audio_queue.empty():
                         _ = self.tts_audio_queue.get_nowait()
+                    logger.info("TTS queue flushed on barge-in")
                 except Exception as e:
                     logger.debug(f"TTS queue drain exception (non-fatal): {e}")
-
-            # Signal JACK streamer to stop outputting already-buffered audio immediately
-            if hasattr(self, 'audio_handler') and self.audio_handler and self.audio_handler.jack_streamer:
-                try:
-                    self.audio_handler.jack_streamer.stop_streaming()
-                    # Restart streaming with a cleared buffer to resume cleanly afterwards
-                    self.audio_handler.jack_streamer.buffer.reset()
-                    self.audio_handler.jack_streamer.start_streaming()
-                    logger.info("TTS JACK stream flushed and restarted for clean state")
-                except Exception as e:
-                    logger.error(f"Failed to flush JACK TTS stream: {e}")
+            # Note: We do NOT stop/reset the JACK streamer here to avoid breaking the audio pipeline.
+            # The queue flush prevents new TTS from being sent; existing buffered audio will finish quickly.
         except Exception as e:
             logger.error(f"_stop_tts_immediately encountered an error: {e}")
 
