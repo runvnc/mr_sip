@@ -230,10 +230,9 @@ class MindRootSIPBotV2(BareSIP):
             logger.error(f"🔍 DEBUG: STT callbacks set")
             
             # Set turn resumed callback for Deepgram Flux
-            # DISABLED: Barge-in detection causing issues with TTS playback
-            # if hasattr(self.stt, 'set_turn_resumed_callback'):
-            #     self.stt.set_turn_resumed_callback(self._handle_turn_resumed)
-            
+            if hasattr(self.stt, 'set_turn_resumed_callback'):
+                self.stt.set_turn_resumed_callback(self._handle_turn_resumed)
+                logger.info("Barge-in detection enabled (clears TTS queue only)")
             # Store main event loop reference for threading
             if hasattr(self.stt, 'main_loop'):
                 self.stt.main_loop = self.main_loop
@@ -323,10 +322,9 @@ class MindRootSIPBotV2(BareSIP):
             )
 
             # Deepgram Flux turn resumed callback support
-            # DISABLED: Barge-in detection causing issues with TTS playback
-            # if hasattr(self.stt, 'set_turn_resumed_callback'):
-            #     self.stt.set_turn_resumed_callback(self._handle_turn_resumed)
-            
+            if hasattr(self.stt, 'set_turn_resumed_callback'):
+                self.stt.set_turn_resumed_callback(self._handle_turn_resumed)
+                logger.info("Barge-in detection enabled (clears TTS queue only)")
             if hasattr(self.stt, 'main_loop'):
                 self.stt.main_loop = self.main_loop
 
