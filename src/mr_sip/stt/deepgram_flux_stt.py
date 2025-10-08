@@ -23,23 +23,6 @@ from .base_stt import BaseSTTProvider, STTResult
 
 logger = logging.getLogger(__name__)
 
-# Set up a dedicated logger for DEEPGRAM EVENTs to a separate file in JSONL format
-dg_event_file_logger = logging.getLogger('dg_events_file')
-dg_event_file_logger.setLevel(logging.INFO)
-dg_event_file_logger.propagate = False  # Prevent events from also going to the main log
-
-# Add a file handler only if one doesn't exist to avoid duplicates on reload
-if not dg_event_file_logger.handlers:
-    try:
-        fh = logging.FileHandler('/tmp/deepgram_events.log')
-        fh.setLevel(logging.INFO)
-        # Use a formatter that only outputs the message itself, which will be our JSON string
-        formatter = logging.Formatter('%(message)s')
-        fh.setFormatter(formatter)
-        dg_event_file_logger.addHandler(fh)
-    except Exception as e:
-        logger.error(f"Failed to set up file handler for /tmp/deepgram_events.log: {e}")
-
 # ANSI color codes for blue background with yellow text
 BLUE_BG_YELLOW_TEXT = '\033[44m\033[93m'
 RESET_COLOR = '\033[0m'
@@ -62,10 +45,13 @@ def print_deepgram_event(event_type: str, data: dict):
     # Create the JSON object for the dedicated log file
     log_payload = {'timestamp': datetime.utcnow().isoformat(), 'event_type': event_type, **data}
     try:
-        json_string = json.dumps(log_payload, default=str)
-        dg_event_file_logger.info(json_string)
+        # Write directly to the file to avoid multi-process logging issues
+        json_string = json.dumps(log_payload, default=str) + '\n'
+        with open('/tmp/deepgram_events.log', 'a') as f:
+            f.write(json_string)
     except Exception as e:
-        logger.error(f"Failed to serialize deepgram event to JSON: {e}")
+        # This will now catch serialization OR file write errors
+        logger.error(f"Failed to write deepgram event to log file: {e}")
 
 
 class DeepgramFluxSTT(BaseSTTProvider):
