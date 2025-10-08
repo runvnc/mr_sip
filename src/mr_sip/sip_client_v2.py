@@ -108,17 +108,16 @@ class MindRootSIPBotV2(BareSIP):
         self.tts_sender_task = None
      
         self.session = None
-        # we want to schedule a coroutine to get the session
-        
-        if self.context and self.context.log_id:
-            self._schedule_coroutine(self.get_session())
         
         # Store reference to main event loop
         try:
             self.main_loop = asyncio.get_running_loop()
         except RuntimeError:
             self.main_loop = None
-        
+
+        if self.context and self.context.log_id:
+            self._schedule_coroutine(self.get_session())
+         
     async def get_session(self):
         """Get the current session from the session manager."""
         from .sip_manager import get_session_manager
