@@ -111,7 +111,7 @@ class MindRootSIPBotV2(BareSIP):
         # we want to schedule a coroutine to get the session
         
         if self.context and self.context.log_id:
-            self.schedule_coroutine(self.get_session())
+            self._schedule_coroutine(self.get_session())
         
         # Store reference to main event loop
         try:
