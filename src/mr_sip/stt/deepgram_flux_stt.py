@@ -410,7 +410,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
             # Handle different event types
             if event == 'EagerEndOfTurn':
                 self._handle_eager_eot(transcript, latency)
-            elif event == 'TurnResumed':
+            elif event == 'TurnResumed' or event == 'StartOfTurn':
                 self._handle_turn_resumed(transcript, latency)
             elif event == 'EndOfTurn':
                 self._handle_end_of_turn(transcript, latency)
