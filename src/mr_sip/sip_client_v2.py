@@ -382,6 +382,20 @@ class MindRootSIPBotV2(BareSIP):
     def _on_partial_result(self, result: STTResult):
         """Callback for partial transcription results."""
         if result.text != self.last_partial_text:
+            # Trigger barge-in on ANY user speech (partial transcript)
+            if result.text and len(result.text.strip()) > 0:
+                # Set halt flag to stop TTS streaming
+                if self.context and self.context.log_id:
+                    from .sip_manager import get_session_manager
+                    session_manager = get_session_manager()
+                    # Schedule async call to set flag
+                    async def set_halt_flag():
+                        session = await session_manager.get_session(self.context.log_id)
+                        if session:
+                            session.halt_audio_out = True
+                            logger.info("[BARGE-IN] User speaking - halting TTS output")
+                    self._schedule_coroutine(set_halt_flag())
+            
             logger.debug(f"[PARTIAL] {result.text} (confidence: {result.confidence:.2f}, eager_eot: {result.is_eager_eot})")
             logger.info(f"[PARTIAL] {result.text} (confidence: {result.confidence:.2f}, eager_eot: {result.is_eager_eot})")
             self.last_partial_text = result.text

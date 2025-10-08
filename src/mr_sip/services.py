@@ -170,9 +170,13 @@ async def sip_audio_out_chunk(audio_chunk: bytes, context=None) -> bool:
         session = await session_manager.get_session(context.log_id)
         
         if session and session.is_active:
-            await session.send_audio(audio_chunk)
-            logger.debug(f"Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
-            return True
+            if session.halt_audio_out:
+                session.halt_audio_out = False
+                return False
+            else:
+                await session.send_audio(audio_chunk)
+                logger.debug(f"Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
+                return True
         else:
             logger.warning(f"No active SIP session found for log_id {context.log_id}")
             return False
