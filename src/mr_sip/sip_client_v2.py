@@ -434,6 +434,13 @@ class MindRootSIPBotV2(BareSIP):
                 if self.tts_discarding:
                     self.tts_discarding = False
                     logger.info("User finished speaking (EndOfTurn), TTS discard flag cleared")
+                    # Also unmute JACK so new TTS can play
+                    if hasattr(self, 'audio_handler') and self.audio_handler and self.audio_handler.jack_streamer:
+                        try:
+                            self.audio_handler.jack_streamer.muted = False
+                            logger.info("JACK unmuted, ready for new TTS")
+                        except Exception as e:
+                            logger.error(f"Failed to unmute JACK: {e}")
                     
                 self._schedule_coroutine(
                     self._call_utterance_callback(
