@@ -107,6 +107,9 @@ class MindRootSIPBotV2(BareSIP):
         self.tts_audio_queue = None
         self.tts_sender_task = None
         
+        # Barge-in state
+        self.tts_discarding = False  # When True, discard TTS chunks instead of sending
+        
         # Store reference to main event loop
         try:
             self.main_loop = asyncio.get_running_loop()
@@ -427,6 +430,11 @@ class MindRootSIPBotV2(BareSIP):
         else:
             # Send to MindRoot agent
             if self.on_utterance_callback:
+                # Reset TTS discard flag when user finishes speaking
+                if self.tts_discarding:
+                    self.tts_discarding = False
+                    logger.info("User finished speaking (EndOfTurn), TTS discard flag cleared")
+                    
                 self._schedule_coroutine(
                     self._call_utterance_callback(
                         result.text,
@@ -491,6 +499,8 @@ class MindRootSIPBotV2(BareSIP):
             # Mute JACK output immediately to stop buffered audio
             if hasattr(self, 'audio_handler') and self.audio_handler and self.audio_handler.jack_streamer:
                 try:
+                    # Set flag to discard incoming TTS chunks
+                    self.tts_discarding = True
                     self.audio_handler.jack_streamer.muted = True
                     # Also clear the buffer to remove already-queued audio
                     self.audio_handler.jack_streamer.clear_buffer()
@@ -585,6 +595,12 @@ class MindRootSIPBotV2(BareSIP):
                     audio_chunk = await asyncio.wait_for(self.tts_audio_queue.get(), timeout=1.0)
                     if audio_chunk is None:
                         break
+                    
+                    # If discarding (barge-in), drop the chunk instead of sending
+                    if self.tts_discarding:
+                        logger.debug("Discarding TTS chunk due to barge-in")
+                        continue
+                    
                     await self.send_tts_audio(audio_chunk)
                 except asyncio.TimeoutError:
                     continue
