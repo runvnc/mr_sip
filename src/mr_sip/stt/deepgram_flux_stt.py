@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """
+import json
 Deepgram Flux STT Provider
 
 Real-time conversational speech-to-text using Deepgram's Flux model.
@@ -7,7 +8,6 @@ Provides ultra-low latency turn detection with eager end-of-turn processing.
 """
 
 import asyncio
-import json
 import logging
 import time
 import threading
@@ -23,15 +23,49 @@ from .base_stt import BaseSTTProvider, STTResult
 
 logger = logging.getLogger(__name__)
 
+# Set up a dedicated logger for DEEPGRAM EVENTs to a separate file in JSONL format
+dg_event_file_logger = logging.getLogger('dg_events_file')
+dg_event_file_logger.setLevel(logging.INFO)
+dg_event_file_logger.propagate = False  # Prevent events from also going to the main log
+
+# Add a file handler only if one doesn't exist to avoid duplicates on reload
+if not dg_event_file_logger.handlers:
+    try:
+        fh = logging.FileHandler('/tmp/deepgram_events.log')
+        fh.setLevel(logging.INFO)
+        # Use a formatter that only outputs the message itself, which will be our JSON string
+        formatter = logging.Formatter('%(message)s')
+        fh.setFormatter(formatter)
+        dg_event_file_logger.addHandler(fh)
+    except Exception as e:
+        logger.error(f"Failed to set up file handler for /tmp/deepgram_events.log: {e}")
+
 # ANSI color codes for blue background with yellow text
 BLUE_BG_YELLOW_TEXT = '\033[44m\033[93m'
 RESET_COLOR = '\033[0m'
 
-def print_deepgram_event(message: str):
-    """Print message with blue background and yellow text."""
-    print(f"{BLUE_BG_YELLOW_TEXT}[DEEPGRAM EVENT] {message}{RESET_COLOR}")
-    # Also log it normally
-    logger.info(f"[DEEPGRAM EVENT] {message}")
+def print_deepgram_event(event_type: str, data: dict):
+    """Print a formatted event to console and log raw JSON to file."""
+    # Create a user-friendly string for the console
+    console_message_parts = [event_type]
+    for key, value in data.items():
+        # Avoid printing huge data structures to the console
+        value_str = str(value)
+        if len(value_str) > 150:
+            value_str = value_str[:150] + '...'
+        console_message_parts.append(f"{key}: '{value_str}'")
+    console_message = " - ".join(console_message_parts)
+    
+    print(f"{BLUE_BG_YELLOW_TEXT}[DEEPGRAM EVENT] {console_message}{RESET_COLOR}")
+    logger.info(f"[DEEPGRAM EVENT] {console_message}")
+    
+    # Create the JSON object for the dedicated log file
+    log_payload = {'timestamp': datetime.utcnow().isoformat(), 'event_type': event_type, **data}
+    try:
+        json_string = json.dumps(log_payload, default=str)
+        dg_event_file_logger.info(json_string)
+    except Exception as e:
+        logger.error(f"Failed to serialize deepgram event to JSON: {e}")
 
 
 class DeepgramFluxSTT(BaseSTTProvider):
@@ -169,7 +203,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
             self.debug_wav_file.setsampwidth(2)  # 16-bit
             self.debug_wav_file.setframerate(self.sample_rate)
             
-            print_deepgram_event(f"Audio debug WAV file created: {self.debug_wav_path}")
+            print_deepgram_event("AudioDebugFile", {"status": "created", "path": self.debug_wav_path})
             logger.info(f"Audio debug WAV file created: {self.debug_wav_path}")
         except Exception as e:
             logger.error(f"Failed to create debug WAV file: {e}")
@@ -179,7 +213,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         """Close the debug WAV file."""
         if self.debug_wav_file:
             self.debug_wav_file.close()
-            print_deepgram_event(f"Audio debug WAV file closed: {self.debug_wav_path}")
+            print_deepgram_event("AudioDebugFile", {"status": "closed", "path": self.debug_wav_path})
             
     async def _monitor_connection_health(self):
         """Monitor connection health; do not kill the process, and defer checks until SIP call is established and audio is flowing."""
@@ -322,19 +356,20 @@ class DeepgramFluxSTT(BaseSTTProvider):
                 
     def _on_open(self, *args) -> None:
         """Handle connection open event."""
-        print_deepgram_event("Connection OPENED - ready to receive audio")
+        print_deepgram_event("ConnectionStatus", {"status": "OPENED", "message": "ready to receive audio"})
         logger.info("Deepgram Flux connection opened - ready to receive audio")
         self.connection_healthy = True
         logger.debug("Deepgram Flux connection opened")
         
     def _on_close(self, *args) -> None:
         """Handle connection close event."""
-        print_deepgram_event(f"Connection CLOSED (args: {args})")
+        print_deepgram_event("ConnectionStatus", {"status": "CLOSED", "args": args})
         logger.info("Deepgram Flux connection closed")
         if self.is_running:
             # Unexpected close, try to reconnect with buffer
             self.connection_healthy = False
-            print_deepgram_event("Unexpected close detected - triggering reconnection")
+            print_deepgram_event("ReconnectionTrigger", {"reason": "unexpected close"})
+            logger.warning("\ud83d\udd04 TRIGGERING BUFFERED RECONNECTION due to unexpected close")
             logger.warning("🔄 TRIGGERING BUFFERED RECONNECTION due to unexpected close")
             self._schedule_coroutine_threadsafe(self._reconnect_with_buffer())
             
@@ -342,7 +377,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         """Handle connection error event."""
         error_str = str(error)
         logger.error(f"Deepgram Flux connection error: {error}")
-        print_deepgram_event(f"ERROR: {error_str}")
+        print_deepgram_event("ConnectionError", {"error": error_str})
         
         # Handle 1011 websocket errors and other connection issues
         if "1011" in error_str or "policy violation" in error_str.lower() or "connection" in error_str.lower():
@@ -362,7 +397,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
                 except:
                     pass
         
-        print_deepgram_event(f"MESSAGE - All attributes: {msg_attrs}")
+        print_deepgram_event("MessageReceived", msg_attrs)
         msg_type = getattr(message, 'type', 'unknown')
         logger.info(f"Received message from Deepgram Flux: {msg_type}")
         self.last_message_time = time.time()
@@ -401,7 +436,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         """Handle EagerEndOfTurn event - start preparing response."""
         self.total_eager_eots += 1
         self.draft_response_active = True
-        print_deepgram_event(f"EAGER EOT - Transcript: '{transcript}' (latency: {latency*1000:.0f}ms)")
+        print_deepgram_event("EagerEOT", {"transcript": transcript, "latency_ms": f"{latency*1000:.0f}"})
         
         logger.info(f"[EAGER EOT] {transcript} (latency: {latency*1000:.0f}ms)")
         
@@ -425,7 +460,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         """Handle TurnResumed event - cancel draft response."""
         self.total_turn_resumed += 1
         self.draft_response_active = False
-        print_deepgram_event(f"TURN RESUMED - User continued speaking (latency: {latency*1000:.0f}ms)")
+        print_deepgram_event("TurnResumed", {"message": "User continued speaking", "latency_ms": f"{latency*1000:.0f}"})
         
         logger.info(f"[TURN RESUMED] User continued speaking (latency: {latency*1000:.0f}ms)")
         # DEBUG TRACE
@@ -444,7 +479,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         self.total_finals += 1
         self.last_final_text = transcript
         self.draft_response_active = False
-        print_deepgram_event(f"END OF TURN (FINAL #{self.utterance_count}) - Transcript: '{transcript}' (latency: {latency*1000:.0f}ms)")
+        print_deepgram_event("EndOfTurn", {"utterance_num": self.utterance_count, "transcript": transcript, "latency_ms": f"{latency*1000:.0f}"})
         
         logger.info(f"[FINAL #{self.utterance_count}] {transcript} (latency: {latency*1000:.0f}ms)")
         
