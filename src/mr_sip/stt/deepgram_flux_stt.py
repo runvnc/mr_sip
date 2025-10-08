@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-import json
+
 Deepgram Flux STT Provider
 
 Real-time conversational speech-to-text using Deepgram's Flux model.
@@ -8,6 +8,7 @@ Provides ultra-low latency turn detection with eager end-of-turn processing.
 """
 
 import asyncio
+import json
 import logging
 import time
 import threading
@@ -41,7 +42,7 @@ def print_deepgram_event(event_type: str, data: dict):
     
     print(f"{BLUE_BG_YELLOW_TEXT}[DEEPGRAM EVENT] {console_message}{RESET_COLOR}")
     logger.info(f"[DEEPGRAM EVENT] {console_message}")
-    
+
     # Create the JSON object for the dedicated log file
     log_payload = {'timestamp': datetime.utcnow().isoformat(), 'event_type': event_type, **data}
     try:
@@ -49,8 +50,9 @@ def print_deepgram_event(event_type: str, data: dict):
         json_string = json.dumps(log_payload, default=str) + '\n'
         with open('/tmp/deepgram_events.log', 'a') as f:
             f.write(json_string)
+            f.flush()  # Ensure data is written immediately
     except Exception as e:
-        # This will now catch serialization OR file write errors
+        # Catch serialization OR file write errors
         logger.error(f"Failed to write deepgram event to log file: {e}")
 
 
