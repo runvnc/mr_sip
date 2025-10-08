@@ -76,6 +76,13 @@ class MindRootSIPBot(BareSIP):
         except RuntimeError:
             self.main_loop = None
         
+    def __del__(self):
+        """Destructor to ensure cleanup, especially for the transcriber thread."""
+        logger.info(f"MindRootSIPBot instance for context {self.context.log_id if self.context else 'N/A'} is being destroyed.")
+        if self.transcriber and self.transcriber.is_running:
+            logger.warning("Transcriber was still running. Forcing stop.")
+            self.transcriber.stop()
+
     def _schedule_coroutine(self, coro):
         """Schedule a coroutine to run in the main event loop from any thread."""
         if self.main_loop and not self.main_loop.is_closed():

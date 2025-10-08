@@ -113,6 +113,16 @@ class MindRootSIPBotV2(BareSIP):
         except RuntimeError:
             self.main_loop = None
             
+    def __del__(self):
+        """Destructor to ensure STT and audio capture are stopped."""
+        logger.info(f"MindRootSIPBotV2 instance for context {self.context.log_id if self.context else 'N/A'} is being destroyed.")
+        if self.stt and self.stt.is_running:
+            logger.warning("STT provider was still running. Forcing stop.")
+            self._schedule_coroutine(self.stt.stop())
+        if self.audio_capture and self.audio_capture.is_running:
+            logger.warning("Audio capture was still running. Forcing stop.")
+            self._schedule_coroutine(self.audio_capture.stop())
+
     def _schedule_coroutine(self, coro):
         """Schedule a coroutine to run in the main event loop from any thread."""
         logger.error(f"🔍 DEBUG: _schedule_coroutine called with: {coro}")
