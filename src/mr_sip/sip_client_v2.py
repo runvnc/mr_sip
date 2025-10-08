@@ -217,6 +217,7 @@ class MindRootSIPBotV2(BareSIP):
             # NOW create and start STT provider with audio ready to send
             logger.info(f"Creating STT provider: {self.stt_provider_name}")
             self.stt = create_stt_provider(self.stt_provider_name, **self.stt_config)
+            logger.error(f"🔍 DEBUG: STT provider created successfully: {self.stt}")
             
             # Update audio capture sample rate to match STT
             self.audio_capture.target_sample_rate = self.stt.sample_rate
@@ -226,6 +227,7 @@ class MindRootSIPBotV2(BareSIP):
                 on_partial=self._on_partial_result,
                 on_final=self._on_final_result
             )
+            logger.error(f"🔍 DEBUG: STT callbacks set")
             
             # Set turn resumed callback for Deepgram Flux
             if hasattr(self.stt, 'set_turn_resumed_callback'):
@@ -240,11 +242,21 @@ class MindRootSIPBotV2(BareSIP):
                 self.stt.set_sip_call_established(True)
                 
             logger.error("🔍 DEBUG: About to start STT provider (this opens Deepgram connection)")
+            try:
             await self.stt.start()
+            except Exception as e:
+                logger.error(f"🔥 CRITICAL: STT start() failed with exception: {e}")
+                import traceback
+                logger.error(f"🔥 Traceback: {traceback.format_exc()}")
+                raise
             logger.info(f"STT provider started: {self.stt_provider_name}")
             
             # Switch to normal audio processing
+            logger.error(f"🔄 DEBUG: Switching audio callback from pre-buffer to normal mode")
             self.audio_capture.chunk_callback = self._on_audio_chunk
+            logger.error(f"🔄 DEBUG: Callback switched successfully, callback is now: {self.audio_capture.chunk_callback.__name__}")
+            
+            logger.error(f"🔄 DEBUG: Audio capture callback verification: {self.audio_capture.chunk_callback == self._on_audio_chunk}")
             
             # Immediately send pre-buffered audio
             logger.error(f"🔍 DEBUG: Sending {len(self.audio_prebuffer)} pre-buffered chunks immediately")
@@ -258,6 +270,11 @@ class MindRootSIPBotV2(BareSIP):
         except Exception as e:
             logger.error(f"🔍 DEBUG: Exception in _setup_stt_and_capture: {e}")
             logger.error(f"Error setting up STT and capture: {e}")
+            import traceback
+            logger.critical(f"FATAL: STT setup failed, cannot continue without Deepgram")
+            logger.critical(traceback.format_exc())
+            import sys
+            sys.exit(1)
 
     async def _setup_stt_and_capture_jack(self):
         """Setup STT and JACK-based audio capture (no file I/O)."""
@@ -319,7 +336,10 @@ class MindRootSIPBotV2(BareSIP):
             logger.info(f"STT provider started: {self.stt_provider_name}")
 
             # Switch to normal audio processing
+            logger.error(f"🔄 DEBUG (JACK): Switching audio callback from pre-buffer to normal mode")
             self.audio_capture.chunk_callback = self._on_audio_chunk
+            logger.error(f"🔄 DEBUG (JACK): Callback switched, callback is now: {self.audio_capture.chunk_callback.__name__}")
+            logger.error(f"🔄 DEBUG (JACK): Verification: {self.audio_capture.chunk_callback == self._on_audio_chunk}")
 
             # Send pre-buffered audio
             logger.info(f"Sending {len(self.audio_prebuffer)} pre-buffered JACK chunks to STT...")
