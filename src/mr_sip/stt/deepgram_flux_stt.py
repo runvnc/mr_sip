@@ -428,6 +428,8 @@ class DeepgramFluxSTT(BaseSTTProvider):
         print_deepgram_event(f"TURN RESUMED - User continued speaking (latency: {latency*1000:.0f}ms)")
         
         logger.info(f"[TURN RESUMED] User continued speaking (latency: {latency*1000:.0f}ms)")
+        # DEBUG TRACE
+        print("\033[91;107m[DEBUG TRACE 1/6] Deepgram 'TurnResumed' event received by STT provider.\033[0m")
         
         # Emit cancellation signal to SIP client
         if self._on_turn_resumed_callback:

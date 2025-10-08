@@ -430,6 +430,8 @@ class MindRootSIPBotV2(BareSIP):
             
     async def _cancel_ai_response(self):
         """Cancel active AI response using service manager."""
+        # DEBUG TRACE
+        print("\033[91;107m[DEBUG TRACE 4/6] Executing _cancel_ai_response, calling core service.\033[0m")
         if not self.context or not self.context.log_id:
             logger.warning("Cannot cancel AI response: no context or log_id")
             return
@@ -447,7 +449,11 @@ class MindRootSIPBotV2(BareSIP):
             
     def _handle_turn_resumed(self):
         """Handle TurnResumed event from Deepgram Flux."""
+        # DEBUG TRACE
+        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
         if self.draft_response_active:
+            # DEBUG TRACE
+            print("\033[91;107m[DEBUG TRACE 3/6] Scheduling _cancel_ai_response coroutine.\033[0m")
             logger.info(f"[TURN RESUMED] Cancelling draft AI response")
             self._schedule_coroutine(self._cancel_ai_response())
         else:
