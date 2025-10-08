@@ -516,7 +516,7 @@ class MindRootSIPBotV2(BareSIP):
         print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
         
         # Set halt flag to stop TTS streaming immediately
-        self.session.halt_audio_out = True
+        #self.session.halt_audio_out = True
         #if self.context and self.context.log_id:
         #    from .sip_manager import get_session_manager
         #   session_manager = get_session_manager()
