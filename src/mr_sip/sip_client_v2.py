@@ -514,9 +514,9 @@ class MindRootSIPBotV2(BareSIP):
         #self.session.halt_audio_out = True
         if self.context and self.context.log_id:
             from .sip_manager import get_session_manager
-           session_manager = get_session_manager()
+            session_manager = get_session_manager()
             async def set_halt_flag():
-               session = await session_manager.get_session(self.context.log_id)
+                session = await session_manager.get_session(self.context.log_id)
                 if session:
                     session.halt_audio_out = True
                     logger.info("[BARGE-IN] User speaking (StartOfTurn/TurnResumed) - halting TTS output")
