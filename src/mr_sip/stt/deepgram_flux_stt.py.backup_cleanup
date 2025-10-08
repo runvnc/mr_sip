@@ -90,10 +90,6 @@ class DeepgramFluxSTT(BaseSTTProvider):
         # Deepgram client and connection
         self.client: Optional[DeepgramClient] = None
         self.connection = None
-        self.listen_thread = None
-        
-        # Shutdown flag to prevent reconnection during cleanup
-        self.shutting_down = False
         self.connection_task = None
         
         # Processing state
@@ -141,9 +137,6 @@ class DeepgramFluxSTT(BaseSTTProvider):
         if self.is_running:
             logger.warning("DeepgramFluxSTT already running")
             return
-            
-        # Clear shutdown flag when starting
-        self.shutting_down = False
             
         try:
             logger.info(f"Connecting to Deepgram Flux API (model: {self.model})...")
@@ -258,9 +251,9 @@ class DeepgramFluxSTT(BaseSTTProvider):
                 connection.on(EventType.CLOSE, self._on_close)
                 
                 # Start listening in thread (as shown in example)
-                self.listen_thread = threading.Thread(target=connection.start_listening, daemon=True)
-                self.listen_thread.start()
-                logger.info(f"Started Deepgram listen thread: {self.listen_thread.name}")
+                import threading
+                listen_thread = threading.Thread(target=connection.start_listening, daemon=True)
+                listen_thread.start()
                 
                 # Keep the connection alive
                 logger.info("Entering connection keep-alive loop")
@@ -279,66 +272,27 @@ class DeepgramFluxSTT(BaseSTTProvider):
         # Intentionally do not exit; lifecycle will be managed by caller.
             
     async def stop(self) -> None:
-        """Disconnect from Deepgram Flux API with comprehensive cleanup."""
+        """Disconnect from Deepgram Flux API."""
+        self._close_debug_wav_file()
         if not self.is_running:
-            logger.debug("DeepgramFluxSTT already stopped")
             return
             
-        logger.info("Stopping Deepgram Flux STT provider...")
-        
-        self.shutting_down = True
         self.is_running = False
         
         try:
-            try:
-                self._close_debug_wav_file()
-            except Exception as e:
-                logger.error(f"Error closing debug WAV file: {e}")
-            
-            if self.connection:
-                try:
-                    logger.info("Closing Deepgram connection...")
-                    if hasattr(self.connection, 'finish'):
-                        self.connection.finish()
-                    elif hasattr(self.connection, 'close'):
-                        self.connection.close()
-                except Exception as e:
-                    logger.error(f"Error closing connection: {e}")
-            
-            if self.listen_thread and self.listen_thread.is_alive():
-                try:
-                    logger.info("Waiting for listen thread to stop...")
-                    self.listen_thread.join(timeout=2.0)
-                    if self.listen_thread.is_alive():
-                        logger.warning("Listen thread did not stop in time")
-                except Exception as e:
-                    logger.error(f"Error joining listen thread: {e}")
-            
+            # Cancel the connection task
             if self.connection_task and not self.connection_task.done():
-                try:
-                    self.connection_task.cancel()
-                    logger.debug("Connection task cancelled")
-                except Exception as e:
-                    logger.error(f"Error cancelling connection task: {e}")
+                self.connection_task.cancel()
                 
+            # Cancel health monitor
             if hasattr(self, 'health_monitor_task') and not self.health_monitor_task.done():
-                try:
-                    self.health_monitor_task.cancel()
-                    logger.debug("Health monitor task cancelled")
-                except Exception as e:
-                    logger.error(f"Error cancelling health monitor: {e}")
-            
-            self.connection = None
-            self.client = None
-            self.listen_thread = None
-            self.audio_buffer.clear()
-            
-            logger.info("Deepgram Flux STT provider stopped and cleaned up")
+                self.health_monitor_task.cancel()
+                
+            logger.info("Disconnected from Deepgram Flux API")
             
         except Exception as e:
-            logger.error(f"Error during stop cleanup: {e}")
-
-
+            logger.error(f"Error stopping Deepgram Flux: {e}")
+            
     async def add_audio(self, audio_chunk: np.ndarray) -> None:
         """Send audio chunk to Deepgram Flux."""
         # Always buffer audio (keep last 10 chunks to prevent memory growth)
@@ -399,9 +353,6 @@ class DeepgramFluxSTT(BaseSTTProvider):
         """Handle connection close event."""
         print_deepgram_event("ConnectionStatus", {"status": "CLOSED", "args": args})
         logger.info("Deepgram Flux connection closed")
-        if self.shutting_down:
-            logger.info("Ignoring close event during shutdown")
-            return
         if self.is_running:
             # Unexpected close, try to reconnect with buffer
             self.connection_healthy = False
@@ -415,10 +366,6 @@ class DeepgramFluxSTT(BaseSTTProvider):
         error_str = str(error)
         logger.error(f"Deepgram Flux connection error: {error}")
         print_deepgram_event("ConnectionError", {"error": error_str})
-        
-        if self.shutting_down:
-            logger.info("Ignoring error event during shutdown")
-            return
         
         # Handle 1011 websocket errors and other connection issues
         if "1011" in error_str or "policy violation" in error_str.lower() or "connection" in error_str.lower():
@@ -543,11 +490,6 @@ class DeepgramFluxSTT(BaseSTTProvider):
         
     def _should_attempt_reconnect(self) -> bool:
         """Check if we should attempt reconnection."""
-        # Don't reconnect if shutting down
-        if self.shutting_down:
-            logger.info("Skipping reconnection - shutting down")
-            return False
-        
         # Don't reconnect if we don't have a proper SIP context yet
         # This prevents reconnection during call setup phase
         if not hasattr(self, 'sip_call_established') or not getattr(self, 'sip_call_established', False):
