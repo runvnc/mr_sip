@@ -415,10 +415,19 @@ class MindRootSIPBotV2(BareSIP):
             'confidence': result.confidence,
             'time_str': time.strftime("%H:%M:%S", time.localtime(result.timestamp or time.time()))
         }
+
+        from .sip_manager import get_session_manager
+        session_manager = get_session_manager()
+        async def unset_halt_flag():
+            session = await session_manager.get_session(self.context.log_id)
+            if session:
+                session.halt_audio_out = False
+        self._schedule_coroutine(set_halt_flag())
+  
         self.utterances.append(utterance_data)
         
         logger.info(f"[{utterance_data['time_str']}] Utterance #{utterance_data['number']}: {result.text} (confidence: {result.confidence:.2f})")
-        
+       
         # Check if we already have a draft response active
         if self.draft_response_active:
             logger.info(f"[FINAL] Draft response already active, using prepared response")
