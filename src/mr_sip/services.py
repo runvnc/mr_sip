@@ -189,7 +189,7 @@ async def sip_audio_out_chunk(audio_chunk: bytes, context=None) -> bool:
                 logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
                 logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
  
-                session.halt_audio_out = False
+                # REMOVED FOR BARGE-IN FIX:                 session.halt_audio_out = False
                 return False
             else:
                 await session.send_audio(audio_chunk)
