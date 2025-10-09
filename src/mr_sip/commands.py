@@ -90,7 +90,7 @@ async def call(destination: str, context=None) -> str:
             if result.get('stt_provider'):
                 msg += f" (Using {result['stt_provider']} for transcription)"
             
-            return msg
+            return None
         elif result["status"] == "call_failed":
             return f"Failed to establish call to {destination}: {result.get('error', 'Unknown error')}"
         else:
