@@ -143,7 +143,7 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
                         stt_config['eot_threshold'] = eot
                         logger.info(f"Using DEEPGRAM_EOT_SECONDS={eot}")
                 except ValueError:
-                    logger.warning(f"Invalid DEEPGRAM_EOT_SECONDS value: {os.environ.get('DEEPGRAM_EOT_SECONDS')} (must be a number)"
+                    logger.warning(f"Invalid DEEPGRAM_EOT_SECONDS value: {os.environ.get('DEEPGRAM_EOT_SECONDS')} (must be a number)")
 
             if os.environ.get("DEEPGRAM_EAGER_EOT_SECONDS", None) is not None:
                 try:
