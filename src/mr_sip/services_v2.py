@@ -152,7 +152,7 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
                         stt_config['eager_eot_threshold'] = eager_eot
                         logger.info(f"Using DEEPGRAM_EAGER_EOT_SECONDS={eager_eot}")
                 except ValueError:
-                    logger.warning(f"Invalid DEEPGRAM_EAGER_EOT_SECONDS value: {os.environ.get('DEEPGRAM_EAGER_EOT_SECONDS')} (must be a number)"
+                    logger.warning(f"Invalid DEEPGRAM_EAGER_EOT_SECONDS value: {os.environ.get('DEEPGRAM_EAGER_EOT_SECONDS')} (must be a number)")
 
         elif STT_PROVIDER == 'whisper_vad':
             stt_config['model_size'] = STT_MODEL_SIZE
