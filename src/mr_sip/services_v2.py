@@ -135,11 +135,30 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
             logger.info(f"{STT_PROVIDER} configuration prepared")
             # Skip test connection - will connect after call establishment
             logger.info(f"{STT_PROVIDER} will connect after call establishment")
-                
+
+            if os.environ.get("DEEPGRAM_EOT_SECONDS", None) is not None:
+                try:
+                    eot = float(os.environ.get("DEEPGRAM_EOT_SECONDS"))
+                    if eot > 0:
+                        stt_config['eot_threshold'] = eot
+                        logger.info(f"Using DEEPGRAM_EOT_SECONDS={eot}")
+                except ValueError:
+                    logger.warning(f"Invalid DEEPGRAM_EOT_SECONDS value: {os.environ.get('DEEPGRAM_EOT_SECONDS')} (must be a number)"
+
+            if os.environ.get("DEEPGRAM_EAGER_EOT_SECONDS", None) is not None:
+                try:
+                    eager_eot = float(os.environ.get("DEEPGRAM_EAGER_EOT_SECONDS"))
+                    if eager_eot > 0:
+                        stt_config['eager_eot_threshold'] = eager_eot
+                        logger.info(f"Using DEEPGRAM_EAGER_EOT_SECONDS={eager_eot}")
+                except ValueError:
+                    logger.warning(f"Invalid DEEPGRAM_EAGER_EOT_SECONDS value: {os.environ.get('DEEPGRAM_EAGER_EOT_SECONDS')} (must be a number)"
+
         elif STT_PROVIDER == 'whisper_vad':
             stt_config['model_size'] = STT_MODEL_SIZE
             logger.info(f"Whisper VAD configuration prepared (model: {STT_MODEL_SIZE})")
-        
+       
+
         # Create baresip bot with MindRoot integration and STT provider
         bot = MindRootSIPBotV2(
             user=SIP_USER,
