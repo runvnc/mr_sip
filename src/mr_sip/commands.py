@@ -280,3 +280,42 @@ async def send_dtmf(digits: str, context=None) -> None:
         logger.info(f"Sent DTMF digits '{digits}' for session {context.log_id}")
     except Exception as e:
         logger.error(f"Error in send_dtmf command: {e}")
+
+
+@command()
+async def wait(seconds:float, context=None) -> str:
+    """
+    Wait for a specified number of seconds during an active SIP call.
+    
+    This command pauses the MindRoot agent's processing for the given duration,
+    allowing for timed interactions during a SIP call.
+    You should use this if the transcribed text from the other party
+    looks like it may be incomplete.
+    
+    Args:
+        seconds: Number of seconds to wait (can be fractional)
+        context: MindRoot context (automatically provided)
+    
+    Returns:
+        str: Confirmation message after waiting
+    
+    Example:
+        { "wait": { "seconds": 2.5 } }
+    """
+    try:
+        if not context or not context.log_id:
+            return "Error: Valid MindRoot context is required"
+        
+        if seconds <= 0:
+            return "Error: Wait time must be greater than zero"
+        
+        logger.info(f"Waiting for {seconds} seconds during SIP call for session {context.log_id}")
+        
+        await asyncio.sleep(seconds)
+        
+        return f"Waited for {seconds} seconds."
+        
+    except Exception as e:
+        logger.error(f"Error in wait command: {e}")
+        return f"Error during wait: {str(e)}"
+
