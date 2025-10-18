@@ -9,6 +9,7 @@ import numpy as np
 from lib.providers.commands import command
 from .services import dial_service, end_call_service
 from .sip_manager import get_session_manager
+import asyncio 
 
 # Import V2 services if available
 try:

@@ -66,7 +66,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
                  model: str = "flux-general-en",
                  eager_eot_threshold: float = 0.7,
                  eot_threshold: float = 0.8,
-                 eot_timeout_ms: int = None):
+                 eot_timeout_ms: int = 5000):
         """
         Initialize Deepgram Flux STT provider.
         
