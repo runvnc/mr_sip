@@ -30,6 +30,7 @@ from .audio_handler import AudioHandler
 from .stt import create_stt_provider, BaseSTTProvider, STTResult
 from .audio import InotifyAudioCapture
 from .audio import JACKAudioCapture  # optional; may be None if JACK not available
+from .audio_combiner import AudioCombiner
 
 from lib.providers.services import service_manager
 
@@ -106,7 +107,9 @@ class MindRootSIPBotV2(BareSIP):
         # TTS audio output queue
         self.tts_audio_queue = None
         self.tts_sender_task = None
-     
+    
+             self.audio_combiner = AudioCombiner()
+
         # Store reference to main event loop
         try:
             self.main_loop = asyncio.get_running_loop()
@@ -657,6 +660,30 @@ class MindRootSIPBotV2(BareSIP):
     def handle_call_ended(self, reason):
         """When call ends, cleanup resources."""
         logger.info("=== CALL ENDED ===")
+        
+        # Combine audio files if both exist
+        if self.current_enc_file and self.current_dec_file:
+            if os.path.exists(self.current_enc_file) and os.path.exists(self.current_dec_file):
+                try:
+                    # Get output path using log_id from context
+                    output_path = self.audio_combiner.get_output_filename(
+                        log_id=self.context.log_id if self.context else None,
+                        base_dir="data/calls"
+                    )
+                    
+                    logger.info(f"Combining call audio: {self.current_enc_file} + {self.current_dec_file}")
+                    success = self.audio_combiner.combine_call_recording(
+                        enc_file=self.current_enc_file,
+                        dec_file=self.current_dec_file,
+                        output_path=output_path
+                    )
+                    
+                    if success:
+                        logger.info(f"Combined call recording saved to: {output_path}")
+                except Exception as e:
+                    logger.error(f"Failed to combine call audio files: {e}")
+            else:
+                logger.warning("One or both audio files do not exist, skipping combination")
         
         # Stop audio capture
         if self.audio_capture:
