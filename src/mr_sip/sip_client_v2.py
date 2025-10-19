@@ -662,28 +662,46 @@ class MindRootSIPBotV2(BareSIP):
         logger.info("=== CALL ENDED ===")
         
         # Combine audio files if both exist
-        if self.current_enc_file and self.current_dec_file:
-            if os.path.exists(self.current_enc_file) and os.path.exists(self.current_dec_file):
-                try:
-                    # Get output path using log_id from context
-                    output_path = self.audio_combiner.get_output_filename(
-                        log_id=self.context.log_id if self.context else None,
-                        base_dir="data/calls"
-                    )
-                    
-                    logger.info(f"Combining call audio: {self.current_enc_file} + {self.current_dec_file}")
-                    success = self.audio_combiner.combine_call_recording(
-                        enc_file=self.current_enc_file,
-                        dec_file=self.current_dec_file,
-                        output_path=output_path
-                    )
-                    
-                    if success:
-                        logger.info(f"Combined call recording saved to: {output_path}")
-                except Exception as e:
-                    logger.error(f"Failed to combine call audio files: {e}")
-            else:
-                logger.warning("One or both audio files do not exist, skipping combination")
+        logger.info(f"Audio file status - enc: {self.current_enc_file}, dec: {self.current_dec_file}")
+        
+        # Try to combine if we have at least one file
+        input_file = None
+        if self.current_dec_file and os.path.exists(self.current_dec_file):
+            input_file = self.current_dec_file
+            logger.info(f"Using dec file as input: {input_file}")
+        elif self.current_enc_file and os.path.exists(self.current_enc_file):
+            input_file = self.current_enc_file
+            logger.info(f"Using enc file as input: {input_file}")
+        
+        if input_file:
+            try:
+                # Get output path using log_id from context
+                output_path = self.audio_combiner.get_output_filename(
+                    log_id=self.context.log_id if self.context else None,
+                    base_dir="data/calls"
+                )
+                logger.info(f"Target output path: {output_path}")
+                
+                # Use combine_from_single_file which will find the matching file
+                logger.info(f"Attempting to combine audio from: {input_file}")
+                success = self.audio_combiner.combine_from_single_file(
+                    input_file=input_file,
+                    output_path=output_path
+                )
+                
+                if success:
+                    logger.info(f"✓ Combined call recording saved to: {output_path}")
+                    if os.path.exists(output_path):
+                        size = os.path.getsize(output_path)
+                        logger.info(f"✓ Combined file size: {size:,} bytes")
+                    else:
+                        logger.error(f"✗ Output file does not exist after combine: {output_path}")
+                else:
+                    logger.error(f"✗ Failed to combine audio files")
+            except Exception as e:
+                logger.error(f"Failed to combine call audio files: {e}")
+        else:
+            logger.warning("No audio files found to combine")
         
         # Stop audio capture
         if self.audio_capture:
