@@ -664,12 +664,39 @@ class MindRootSIPBotV2(BareSIP):
         # Find audio files if not already set (e.g., when using JACK capture)
         if not self.current_enc_file and not self.current_dec_file:
             logger.info("Audio files not set, searching for them now...")
-            # Run the async function synchronously since we're in a sync context
-            import asyncio
             try:
-                asyncio.get_event_loop().run_until_complete(self._find_current_audio_files())
+                # Do synchronous file search since we're in a sync context
+                import time
+                self.audio_dir = os.getcwd()
+                logger.info(f"Looking for audio files in: {self.audio_dir}")
+                
+                dec_files = []
+                enc_files = []
+                
+                for filename in os.listdir(self.audio_dir):
+                    if filename.startswith("dump-") and filename.endswith(".wav"):
+                        filepath = os.path.join(self.audio_dir, filename)
+                        file_time = os.path.getmtime(filepath)
+                        
+                        if "-dec.wav" in filename:
+                            dec_files.append((filepath, file_time))
+                        elif "-enc.wav" in filename:
+                            enc_files.append((filepath, file_time))
+                
+                if dec_files:
+                    dec_files.sort(key=lambda x: x[1], reverse=True)
+                    self.current_dec_file = dec_files[0][0]
+                    logger.info(f"Found decoded audio file: {self.current_dec_file}")
+                    
+                if enc_files:
+                    enc_files.sort(key=lambda x: x[1], reverse=True)
+                    self.current_enc_file = enc_files[0][0]
+                    logger.info(f"Found encoded audio file: {self.current_enc_file}")
+                    
             except Exception as e:
                 logger.error(f"Error finding audio files: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
         
         # Combine audio files if both exist
         logger.info(f"Audio file status - enc: {self.current_enc_file}, dec: {self.current_dec_file}")
