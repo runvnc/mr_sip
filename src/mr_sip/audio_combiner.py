@@ -76,13 +76,28 @@ class AudioCombiner:
                 logger.error(f"Input file not found: {file2_path}")
                 return False
             
+            # Check input file sizes
+            size1 = os.path.getsize(file1_path)
+            size2 = os.path.getsize(file2_path)
+            logger.info(f"Input file sizes - File1: {size1:,} bytes, File2: {size2:,} bytes")
+            
+            if size1 <= 44:
+                logger.error(f"File1 appears to be empty (only WAV header): {file1_path}")
+                return False
+            if size2 <= 44:
+                logger.error(f"File2 appears to be empty (only WAV header): {file2_path}")
+                return False
+            
             # Load both audio files
             logger.info(f"Loading audio files: {file1_path} and {file2_path}")
             audio1 = AudioSegment.from_wav(file1_path)
             audio2 = AudioSegment.from_wav(file2_path)
             
+            logger.info(f"Loaded audio - Audio1: {len(audio1)}ms, Audio2: {len(audio2)}ms")
+            
             # Ensure both files have the same duration
             max_len = max(len(audio1), len(audio2))
+            logger.info(f"Maximum duration: {max_len}ms")
             
             # Pad shorter audio with silence
             if len(audio1) < max_len:
@@ -98,6 +113,7 @@ class AudioCombiner:
             # Overlay the two audio tracks
             logger.info("Overlaying audio tracks...")
             combined = audio1.overlay(audio2)
+            logger.info(f"Combined audio duration: {len(combined)}ms")
             
             # Create output directory if it doesn't exist
             output_dir = os.path.dirname(output_path)
@@ -105,6 +121,7 @@ class AudioCombiner:
                 Path(output_dir).mkdir(parents=True, exist_ok=True)
             
             # Export the combined audio
+            logger.info(f"Exporting combined audio to: {output_path}")
             combined.export(output_path, format="wav")
             logger.info(f"Combined conversation saved to: {output_path}")
             
@@ -121,6 +138,8 @@ class AudioCombiner:
             
         except Exception as e:
             logger.error(f"Error combining audio files: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
     
     def combine_call_recording(self, enc_file: str, dec_file: str, output_path: str) -> bool:
@@ -153,6 +172,7 @@ class AudioCombiner:
         try:
             matching_file = self.find_matching_file(input_file)
             logger.info(f"Found matching file: {matching_file}")
+            logger.info(f"Combining {input_file} with {matching_file}")
             return self.combine_conversations(input_file, matching_file, output_path)
             
         except (ValueError, FileNotFoundError) as e:
