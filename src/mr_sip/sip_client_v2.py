@@ -107,8 +107,8 @@ class MindRootSIPBotV2(BareSIP):
         # TTS audio output queue
         self.tts_audio_queue = None
         self.tts_sender_task = None
-    
-             self.audio_combiner = AudioCombiner()
+        
+        self.audio_combiner = AudioCombiner()
 
         # Store reference to main event loop
         try:
