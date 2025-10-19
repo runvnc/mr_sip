@@ -90,10 +90,23 @@ class AudioCombiner:
             
             # Load both audio files
             logger.info(f"Loading audio files: {file1_path} and {file2_path}")
-            audio1 = AudioSegment.from_wav(file1_path)
-            audio2 = AudioSegment.from_wav(file2_path)
+            
+            # Use from_file with explicit format to handle various WAV formats better
+            try:
+                audio1 = AudioSegment.from_file(file1_path, format="wav")
+                audio2 = AudioSegment.from_file(file2_path, format="wav")
+            except Exception as e:
+                logger.error(f"Failed to load audio with from_file, trying from_wav: {e}")
+                try:
+                    audio1 = AudioSegment.from_wav(file1_path)
+                    audio2 = AudioSegment.from_wav(file2_path)
+                except Exception as e2:
+                    logger.error(f"Failed to load audio with from_wav: {e2}")
+                    return False
             
             logger.info(f"Loaded audio - Audio1: {len(audio1)}ms, Audio2: {len(audio2)}ms")
+            logger.info(f"Audio1 properties - channels: {audio1.channels}, frame_rate: {audio1.frame_rate}, sample_width: {audio1.sample_width}")
+            logger.info(f"Audio2 properties - channels: {audio2.channels}, frame_rate: {audio2.frame_rate}, sample_width: {audio2.sample_width}")
             
             # Ensure both files have the same duration
             max_len = max(len(audio1), len(audio2))

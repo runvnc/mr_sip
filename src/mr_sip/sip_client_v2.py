@@ -712,6 +712,11 @@ class MindRootSIPBotV2(BareSIP):
         
         if input_file:
             try:
+                # Give baresip a moment to finish writing and close the files
+                import time
+                time.sleep(0.5)
+                logger.info("Waited 0.5s for files to be fully written")
+                
                 # Get output path using log_id from context
                 output_path = self.audio_combiner.get_output_filename(
                     log_id=self.context.log_id if self.context else None,
