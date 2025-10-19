@@ -661,6 +661,16 @@ class MindRootSIPBotV2(BareSIP):
         """When call ends, cleanup resources."""
         logger.info("=== CALL ENDED ===")
         
+        # Find audio files if not already set (e.g., when using JACK capture)
+        if not self.current_enc_file and not self.current_dec_file:
+            logger.info("Audio files not set, searching for them now...")
+            # Run the async function synchronously since we're in a sync context
+            import asyncio
+            try:
+                asyncio.get_event_loop().run_until_complete(self._find_current_audio_files())
+            except Exception as e:
+                logger.error(f"Error finding audio files: {e}")
+        
         # Combine audio files if both exist
         logger.info(f"Audio file status - enc: {self.current_enc_file}, dec: {self.current_dec_file}")
         
