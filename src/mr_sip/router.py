@@ -112,6 +112,17 @@ async def get_audio_transcript(log_id: str):
     try:
         print(f"Audio transcript requested for log_id: {log_id}")
         
+        # Check if cached transcript exists
+        cache_dir = Path("data/calls/transcripts")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = cache_dir / f"{log_id}.json"
+        
+        if cache_file.exists():
+            print(f"Loading cached transcript from {cache_file}")
+            with open(cache_file, 'r') as f:
+                cached_data = json.load(f)
+                return JSONResponse(cached_data)
+        
         audio_path = Path(f"data/calls/{log_id}.wav")
         
         if not audio_path.exists():
@@ -137,12 +148,19 @@ async def get_audio_transcript(log_id: str):
         
         transcript_text = result["text"]
         
-        return JSONResponse({
+        response_data = {
             "success": True,
             "transcript": transcript_text,
             "agent_name": agent_name,
             "phone_number": phone_number
-        })
+        }
+        
+        # Cache the transcript
+        print(f"Caching transcript to {cache_file}")
+        with open(cache_file, 'w') as f:
+            json.dump(response_data, f, indent=2)
+        
+        return JSONResponse(response_data)
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()
