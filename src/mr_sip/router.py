@@ -19,7 +19,7 @@ async def list_calls(request: Request):
     
     # Set timezone to Chicago
     chicago_tz = pytz.timezone('America/Chicago')
-    calls = []
+    calls_dict = {}  # Use dict to deduplicate by log_id + phone_number
     
     if calls_dir.exists():
         for wav_file in sorted(calls_dir.glob("*.wav"), key=os.path.getmtime, reverse=True):
@@ -35,19 +35,30 @@ async def list_calls(request: Request):
                 phone_number = extract_phone_number(chatlog_path)
                 agent_name = extract_agent_name(chatlog_path)
             
+            # Create unique key from log_id and phone_number
+            unique_key = f"{log_id}_{phone_number}"
+            
+            # Skip if we've already processed this combination
+            if unique_key in calls_dict:
+                continue
+            
             # Get file modification time
             mtime_utc = datetime.fromtimestamp(wav_file.stat().st_mtime, tz=pytz.UTC)
             mtime_chicago = mtime_utc.astimezone(chicago_tz)
             mtime = mtime_chicago
             
-            calls.append({
+            calls_dict[unique_key] = {
                 "log_id": log_id,
                 "filename": wav_file.name,
-                "time": mtime.strftime("%Y-%m-%d %H:%M:%S"),
+                "date": mtime.strftime("%Y-%m-%d"),
+                "time": mtime.strftime("%I:%M %p"),
                 "agent_name": agent_name or "Unknown",
                 "phone_number": phone_number or "Unknown",
                 "session_path": f"/session/{agent_name}/{log_id}" if agent_name else None
             })
+    
+    # Convert dict to list for template
+    calls = list(calls_dict.values())
     
     html = await render('calls', {"calls": calls})
     return HTMLResponse(html)

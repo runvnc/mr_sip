@@ -19,7 +19,7 @@
         }
         
         .container {
-            max-width: 1200px;
+            max-width: 1400px;
             margin: 0 auto;
         }
         
@@ -31,80 +31,95 @@
             text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
         }
         
-        .calls-grid {
-            display: grid;
-            gap: 20px;
-            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-        }
-        
-        .call-card {
+        .table-container {
             background: white;
             border-radius: 12px;
             padding: 20px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            transition: transform 0.2s, box-shadow 0.2s;
+            overflow-x: auto;
         }
         
-        .call-card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 8px 12px rgba(0,0,0,0.15);
+        table {
+            width: 100%;
+            border-collapse: collapse;
         }
         
-        .call-header {
-            margin-bottom: 15px;
-            padding-bottom: 15px;
-            border-bottom: 2px solid #f0f0f0;
+        thead {
+            background: #667eea;
+            color: white;
+        }
+        
+        th {
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.95em;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        tbody tr {
+            border-bottom: 1px solid #f0f0f0;
+            transition: background-color 0.2s;
+        }
+        
+        tbody tr:hover {
+            background-color: #f8f9fa;
+        }
+        
+        tbody tr:last-child {
+            border-bottom: none;
+        }
+        
+        td {
+            padding: 15px;
+            vertical-align: middle;
         }
         
         .agent-name {
-            font-size: 1.2em;
             font-weight: 600;
             color: #667eea;
-            margin-bottom: 5px;
         }
         
         .phone-number {
-            font-size: 1.1em;
+            font-family: monospace;
             color: #333;
-            margin-bottom: 5px;
-            font-weight: 500;
         }
         
         .call-time {
             color: #666;
-            font-size: 0.9em;
+            white-space: nowrap;
         }
         
         .log-id {
-            color: #999;
-            font-size: 0.85em;
             font-family: monospace;
-            margin-top: 5px;
+            font-size: 0.85em;
+            color: #999;
         }
         
         .audio-player {
-            width: 100%;
-            margin: 15px 0;
+            width: 250px;
+            height: 32px;
         }
         
         .actions {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            margin-top: 15px;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
         }
         
         .btn {
-            padding: 10px 15px;
+            padding: 6px 12px;
             border: none;
-            border-radius: 6px;
-            font-size: 0.9em;
+            border-radius: 4px;
+            font-size: 0.85em;
             font-weight: 500;
             cursor: pointer;
             transition: all 0.2s;
             text-decoration: none;
             text-align: center;
             display: inline-block;
+            white-space: nowrap;
         }
         
         .btn-primary {
@@ -243,12 +258,29 @@
         }
         
         @media (max-width: 768px) {
-            .calls-grid {
-                grid-template-columns: 1fr;
-            }
-            
             h1 {
                 font-size: 2em;
+            }
+            
+            .table-container {
+                padding: 10px;
+            }
+            
+            th, td {
+                padding: 10px 8px;
+                font-size: 0.9em;
+            }
+            
+            .audio-player {
+                width: 200px;
+            }
+            
+            .actions {
+                flex-direction: column;
+            }
+            
+            .btn {
+                width: 100%;
             }
             
             .transcript-content {
@@ -278,35 +310,49 @@
         <h1>📞 Call Recordings</h1>
         
         {% if calls %}
-            <div class="calls-grid">
-                {% for call in calls %}
-                    <div class="call-card">
-                        <div class="call-header">
-                            <div class="agent-name">{{ call.agent_name }}</div>
-                            <div class="phone-number">📱 {{ call.phone_number }}</div>
-                            <div class="call-time">{{ call.time }}</div>
-                            <div class="log-id">{{ call.log_id }}</div>
-                        </div>
-                        
-                        <audio class="audio-player" controls preload="metadata">
-                            <source src="/calls/audio/{{ call.log_id }}" type="audio/wav">
-                            Your browser does not support the audio element.
-                        </audio>
-                        
-                        <div class="actions">
-                            {% if call.session_path %}
-                                <a href="{{ call.session_path }}" target="_blank" class="btn btn-primary">
-                                    View Session
-                                </a>
-                            {% endif %}
-                            <button class="btn btn-success" onclick="showTranscript('{{ call.log_id }}')">Show Transcript</button>
-                            <button class="btn btn-success" onclick="showAudioTranscript('{{ call.log_id }}')">Audio Transcript</button>
-                            <a href="/calls/audio/{{ call.log_id }}" download="{{ call.filename }}" class="btn btn-secondary">
-                                Download
-                            </a>
-                        </div>
-                    </div>
-                {% endfor %}
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Agent</th>
+                            <th>Phone Number</th>
+                            <th>Date</th>
+                            <th>Time</th>
+                            <th>Audio</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for call in calls %}
+                            <tr>
+                                <td class="agent-name">{{ call.agent_name }}</td>
+                                <td class="phone-number">📱 {{ call.phone_number }}</td>
+                                <td class="call-time">{{ call.date }}</td>
+                                <td class="call-time">{{ call.time }}</td>
+                                <td>
+                                    <audio class="audio-player" controls preload="metadata">
+                                        <source src="/calls/audio/{{ call.log_id }}" type="audio/wav">
+                                        Your browser does not support the audio element.
+                                    </audio>
+                                </td>
+                                <td>
+                                    <div class="actions">
+                                        {% if call.session_path %}
+                                            <a href="{{ call.session_path }}" target="_blank" class="btn btn-primary">
+                                                Session
+                                            </a>
+                                        {% endif %}
+                                        <button class="btn btn-success" onclick="showTranscript('{{ call.log_id }}')">Transcript</button>
+                                        <button class="btn btn-success" onclick="showAudioTranscript('{{ call.log_id }}')">Audio</button>
+                                        <a href="/calls/audio/{{ call.log_id }}" download="{{ call.filename }}" class="btn btn-secondary">
+                                            Download
+                                        </a>
+                                    </div>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
             </div>
         {% else %}
             <div class="no-calls">
@@ -343,7 +389,6 @@
                 if (data.success) {
                     infoDiv.innerHTML = `<strong>Agent:</strong> ${data.agent_name} | <strong>Phone:</strong> ${data.phone_number}`;
                     
-                    // Format transcript with styled lines
                     const transcript = data.transcript || 'No transcript available.';
                     const lines = transcript.split('\n\n').filter(line => line.trim());
                     
@@ -385,7 +430,6 @@
                 if (data.success) {
                     infoDiv.innerHTML = `<strong>Agent:</strong> ${data.agent_name} | <strong>Phone:</strong> ${data.phone_number} | <strong>Source:</strong> Audio (Whisper)`;
                     
-                    // Display as simple text since Whisper doesn't separate speakers
                     const div = document.createElement('div');
                     div.className = 'transcript-line';
                     div.innerHTML = `<div class="transcript-role">Audio Transcript</div><div>${data.transcript || 'No transcript available.'}</div>`;
@@ -403,7 +447,6 @@
             document.getElementById('transcriptModal').classList.remove('active');
         }
         
-        // Close modal when clicking outside
         document.getElementById('transcriptModal').addEventListener('click', function(e) {
             if (e.target === this) {
                 closeTranscript();
