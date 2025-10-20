@@ -35,12 +35,21 @@ async def calls_page(request: Request):
                 )
                 
                 if result.stdout.strip():
-                    # Parse path like ./admin/KatieRentalApplication/chatlog_F13tlVyjx4BZPpRoXeCWT.json
-                    chatlog_path = result.stdout.strip().split('\n')[0]
-                    parts = chatlog_path.split('/')
-                    if len(parts) >= 3:
-                        agent_name = parts[2]  # KatieRentalApplication
-                        session_path = f"/session/{agent_name}/{log_id}"
+                    # Filter for paths containing '/chat/' and parse them
+                    for line in result.stdout.strip().split('\n'):
+                        if '/chat/' in line:
+                            # Parse path like ./data/chat/admin/KatieRentalApplication/chatlog_F13tlVyjx4BZPpRoXeCWT.json
+                            parts = line.split('/')
+                            # Find the index of 'chat' and get the agent name after username
+                            try:
+                                chat_idx = parts.index('chat')
+                                if len(parts) > chat_idx + 2:
+                                    # parts[chat_idx+1] is username, parts[chat_idx+2] is agent name
+                                    agent_name = parts[chat_idx + 2]
+                                    session_path = f"/session/{agent_name}/{log_id}"
+                                    break
+                            except (ValueError, IndexError):
+                                continue
             except Exception as e:
                 print(f"Error finding agent for {log_id}: {e}")
             
