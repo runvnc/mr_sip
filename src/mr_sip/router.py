@@ -7,6 +7,7 @@ import json
 import re
 from pathlib import Path
 from datetime import datetime
+import pytz
 
 router = APIRouter()
 
@@ -14,6 +15,9 @@ router = APIRouter()
 async def list_calls(request: Request):
     """List all call recordings with metadata"""
     calls_dir = Path("data/calls")
+    
+    # Set timezone to Chicago
+    chicago_tz = pytz.timezone('America/Chicago')
     calls = []
     
     if calls_dir.exists():
@@ -31,7 +35,9 @@ async def list_calls(request: Request):
                 agent_name = extract_agent_name(chatlog_path)
             
             # Get file modification time
-            mtime = datetime.fromtimestamp(wav_file.stat().st_mtime)
+            mtime_utc = datetime.fromtimestamp(wav_file.stat().st_mtime, tz=pytz.UTC)
+            mtime_chicago = mtime_utc.astimezone(chicago_tz)
+            mtime = mtime_chicago
             
             calls.append({
                 "log_id": log_id,
