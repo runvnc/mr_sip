@@ -163,7 +163,9 @@ def generate_transcript(chatlog: dict):
     in_call = False
     
     for message in chatlog.get('messages', []):
-        if message.get('role') == 'assistant':
+        role = message.get('role')
+        
+        if role == 'assistant':
             content = message.get('content', [])
             if isinstance(content, list):
                 for item in content:
@@ -189,11 +191,22 @@ def generate_transcript(chatlog: dict):
                                         if 'speak' in cmd:
                                             speak_text = cmd['speak'].get('text', '')
                                             if speak_text:
-                                                transcript_lines.append(speak_text)
+                                                transcript_lines.append(f"AI: {speak_text}")
                             except:
                                 pass
         
-        if not in_call:
-            continue
+        elif role == 'user' and in_call:
+            # Extract user speech
+            content = message.get('content', '')
+            if isinstance(content, str) and content.strip():
+                # Skip system messages and commands
+                if not content.startswith('[') and not content.startswith('{'):
+                    transcript_lines.append(f"Human: {content.strip()}")
+            elif isinstance(content, list):
+                for item in content:
+                    if item.get('type') == 'text':
+                        text = item.get('text', '').strip()
+                        if text and not text.startswith('[') and not text.startswith('{'):
+                            transcript_lines.append(f"Human: {text}")
     
     return '\n\n'.join(transcript_lines)
