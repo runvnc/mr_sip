@@ -198,10 +198,38 @@
         }
         
         .transcript-text {
-            line-height: 1.8;
+            line-height: 1.6;
             color: #333;
-            white-space: pre-wrap;
+            font-size: 0.95em;
         }
+        
+        .transcript-line {
+            margin-bottom: 12px;
+            padding: 8px 12px;
+            border-radius: 6px;
+            background: #f8f9fa;
+        }
+        
+        .transcript-line.ai {
+            background: #e3f2fd;
+            border-left: 3px solid #667eea;
+        }
+        
+        .transcript-line.human {
+            background: #f1f8e9;
+            border-left: 3px solid #48bb78;
+        }
+        
+        .transcript-role {
+            font-weight: 600;
+            margin-bottom: 4px;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .transcript-role.ai { color: #667eea; }
+        .transcript-role.human { color: #48bb78; }
         
         .transcript-info {
             margin-bottom: 15px;
@@ -292,7 +320,24 @@
                 
                 if (data.success) {
                     infoDiv.innerHTML = `<strong>Agent:</strong> ${data.agent_name} | <strong>Phone:</strong> ${data.phone_number}`;
-                    textDiv.textContent = data.transcript || 'No transcript available.';
+                    
+                    // Format transcript with styled lines
+                    const transcript = data.transcript || 'No transcript available.';
+                    const lines = transcript.split('\n\n').filter(line => line.trim());
+                    
+                    textDiv.innerHTML = '';
+                    lines.forEach(line => {
+                        const div = document.createElement('div');
+                        const isAI = line.startsWith('AI:');
+                        const isHuman = line.startsWith('Human:');
+                        
+                        div.className = `transcript-line ${isAI ? 'ai' : isHuman ? 'human' : ''}`;
+                        const role = isAI ? 'AI' : isHuman ? 'Human' : '';
+                        const text = line.replace(/^(AI:|Human:)\s*/, '');
+                        
+                        div.innerHTML = role ? `<div class="transcript-role ${role.toLowerCase()}">${role}</div><div>${text}</div>` : text;
+                        textDiv.appendChild(div);
+                    });
                 } else {
                     textDiv.textContent = 'Error loading transcript: ' + (data.error || 'Unknown error');
                 }
