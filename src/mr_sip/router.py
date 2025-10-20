@@ -50,8 +50,8 @@ async def list_calls(request: Request):
             calls_dict[unique_key] = {
                 "log_id": log_id,
                 "filename": wav_file.name,
-                "date": mtime.strftime("%Y-%m-%d"),
-                "time": mtime.strftime("%I:%M %p"),
+                "date": mtime.strftime("%m/%d"),
+                "time": mtime.strftime("%I:%M %p").lstrip('0'),
                 "agent_name": agent_name or "Unknown",
                 "phone_number": phone_number or "Unknown",
                 "session_path": f"/session/{agent_name}/{log_id}" if agent_name else None
