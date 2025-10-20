@@ -9,6 +9,13 @@ setup(
     author="MindRoot Team",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
+    package_data={
+        "mr_sip": [
+            "templates/*.jinja2",
+            "static/js/*.js",
+            "static/*.css",
+        ],
+    },
     install_requires=[
         "baresipy",
         "faster-whisper>=0.10.0",
