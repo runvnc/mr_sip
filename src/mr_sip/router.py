@@ -55,7 +55,7 @@ async def list_calls(request: Request):
                 "agent_name": agent_name or "Unknown",
                 "phone_number": phone_number or "Unknown",
                 "session_path": f"/session/{agent_name}/{log_id}" if agent_name else None
-            })
+            }
     
     # Convert dict to list for template
     calls = list(calls_dict.values())
