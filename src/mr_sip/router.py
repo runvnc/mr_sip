@@ -1,89 +1,173 @@
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from lib.templates import render
 import os
 import subprocess
+import json
+import re
 from pathlib import Path
 from datetime import datetime
 
 router = APIRouter()
 
 @router.get("/calls")
-async def calls_page(request: Request):
-    """Display list of call recordings."""
-    user = request.state.user.username if hasattr(request.state, 'user') else 'guest'
-    
-    # Get list of .wav files from ./data/calls/
-    calls_dir = Path("./data/calls")
+async def list_calls(request: Request):
+    """List all call recordings with metadata"""
+    calls_dir = Path("data/calls")
     calls = []
     
     if calls_dir.exists():
-        for wav_file in calls_dir.glob("*.wav"):
-            log_id = wav_file.stem  # filename without extension
+        for wav_file in sorted(calls_dir.glob("*.wav"), key=os.path.getmtime, reverse=True):
+            log_id = wav_file.stem
             
-            # Find the agent name by searching for the chatlog file
+            # Find the chatlog file
+            chatlog_path = find_chatlog(log_id)
+            phone_number = None
             agent_name = None
-            session_path = None
             
-            try:
-                # Search for chatlog file with this log_id
-                result = subprocess.run(
-                    ["find", ".", "-name", f"*{log_id}.json"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
-                )
-                
-                if result.stdout.strip():
-                    # Filter for paths containing '/chat/' and parse them
-                    for line in result.stdout.strip().split('\n'):
-                        if '/chat/' in line:
-                            # Parse path like ./data/chat/admin/KatieRentalApplication/chatlog_F13tlVyjx4BZPpRoXeCWT.json
-                            parts = line.split('/')
-                            # Find the index of 'chat' and get the agent name after username
-                            try:
-                                chat_idx = parts.index('chat')
-                                if len(parts) > chat_idx + 2:
-                                    # parts[chat_idx+1] is username, parts[chat_idx+2] is agent name
-                                    agent_name = parts[chat_idx + 2]
-                                    session_path = f"/session/{agent_name}/{log_id}"
-                                    break
-                            except (ValueError, IndexError):
-                                continue
-            except Exception as e:
-                print(f"Error finding agent for {log_id}: {e}")
+            if chatlog_path:
+                # Extract phone number and agent name
+                phone_number = extract_phone_number(chatlog_path)
+                agent_name = extract_agent_name(chatlog_path)
             
             # Get file modification time
             mtime = datetime.fromtimestamp(wav_file.stat().st_mtime)
             
             calls.append({
-                'log_id': log_id,
-                'filename': wav_file.name,
-                'agent_name': agent_name or 'Unknown',
-                'session_path': session_path,
-                'time': mtime.strftime('%Y-%m-%d %H:%M:%S'),
-                'timestamp': mtime.timestamp()
+                "log_id": log_id,
+                "filename": wav_file.name,
+                "time": mtime.strftime("%Y-%m-%d %H:%M:%S"),
+                "agent_name": agent_name or "Unknown",
+                "phone_number": phone_number or "Unknown",
+                "session_path": f"/session/{agent_name}/{log_id}" if agent_name else None
             })
     
-    # Sort by timestamp, newest first
-    calls.sort(key=lambda x: x['timestamp'], reverse=True)
-    
-    html = await render('calls', {
-        "user": user,
-        "calls": calls
-    })
+    html = await render('calls', {"calls": calls})
     return HTMLResponse(html)
 
 @router.get("/calls/audio/{log_id}")
-async def serve_audio(log_id: str):
-    """Serve audio file for a specific call."""
-    audio_path = Path(f"./data/calls/{log_id}.wav")
+async def get_audio(log_id: str):
+    """Serve audio file for a call"""
+    audio_path = Path(f"data/calls/{log_id}.wav")
     
     if not audio_path.exists():
-        return HTMLResponse("Audio file not found", status_code=404)
+        return JSONResponse({"error": "Audio file not found"}, status_code=404)
     
-    return FileResponse(
-        audio_path,
-        media_type="audio/wav",
-        filename=f"{log_id}.wav"
+    return FileResponse(audio_path, media_type="audio/wav")
+
+@router.get("/calls/transcript/{log_id}")
+async def get_transcript(log_id: str):
+    """Generate and return transcript for a call"""
+    chatlog_path = find_chatlog(log_id)
+    
+    if not chatlog_path:
+        return JSONResponse({"error": "Chatlog not found"}, status_code=404)
+    
+    try:
+        with open(chatlog_path, 'r') as f:
+            chatlog = json.load(f)
+        
+        transcript = generate_transcript(chatlog)
+        
+        return JSONResponse({
+            "success": True,
+            "transcript": transcript,
+            "agent_name": extract_agent_name(chatlog_path),
+            "phone_number": extract_phone_number(chatlog_path)
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+def find_chatlog(log_id: str):
+    """Find chatlog file by log_id"""
+    # Search in data/chat directory
+    result = subprocess.run(
+        ["find", "data/chat", "-name", f"*{log_id}*.json"],
+        capture_output=True,
+        text=True
     )
+    
+    files = result.stdout.strip().split('\n')
+    # Filter for chatlog files (not context files)
+    chatlog_files = [f for f in files if f and 'chatlog_' in f]
+    
+    return chatlog_files[0] if chatlog_files else None
+
+def extract_phone_number(chatlog_path: str):
+    """Extract phone number from chatlog"""
+    try:
+        with open(chatlog_path, 'r') as f:
+            chatlog = json.load(f)
+        
+        for message in chatlog.get('messages', []):
+            if message.get('role') == 'assistant':
+                content = message.get('content', [])
+                if isinstance(content, list):
+                    for item in content:
+                        if item.get('type') == 'text':
+                            text = item.get('text', '')
+                            # Look for call command
+                            if '"call"' in text:
+                                try:
+                                    # Parse the JSON command
+                                    match = re.search(r'\[.*?\]', text, re.DOTALL)
+                                    if match:
+                                        commands = json.loads(match.group())
+                                        for cmd in commands:
+                                            if 'call' in cmd:
+                                                return cmd['call'].get('destination')
+                                except:
+                                    pass
+    except:
+        pass
+    
+    return None
+
+def extract_agent_name(chatlog_path: str):
+    """Extract agent name from file path"""
+    # Path format: data/chat/admin/AgentName/chatlog_xxx.json
+    parts = Path(chatlog_path).parts
+    if len(parts) >= 4:
+        return parts[-2]  # Agent name is second to last
+    return None
+
+def generate_transcript(chatlog: dict):
+    """Generate clean transcript from chatlog"""
+    transcript_lines = []
+    in_call = False
+    
+    for message in chatlog.get('messages', []):
+        if message.get('role') == 'assistant':
+            content = message.get('content', [])
+            if isinstance(content, list):
+                for item in content:
+                    if item.get('type') == 'text':
+                        text = item.get('text', '')
+                        
+                        # Check if call started
+                        if '"call"' in text:
+                            in_call = True
+                            continue
+                        
+                        # Check if call ended
+                        if '"hangup"' in text or '"end_call"' in text:
+                            break
+                        
+                        # Extract speak commands
+                        if in_call and '"speak"' in text:
+                            try:
+                                match = re.search(r'\[.*?\]', text, re.DOTALL)
+                                if match:
+                                    commands = json.loads(match.group())
+                                    for cmd in commands:
+                                        if 'speak' in cmd:
+                                            speak_text = cmd['speak'].get('text', '')
+                                            if speak_text:
+                                                transcript_lines.append(speak_text)
+                            except:
+                                pass
+        
+        if not in_call:
+            continue
+    
+    return '\n\n'.join(transcript_lines)

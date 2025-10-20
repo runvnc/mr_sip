@@ -63,6 +63,13 @@
             margin-bottom: 5px;
         }
         
+        .phone-number {
+            font-size: 1.1em;
+            color: #333;
+            margin-bottom: 5px;
+            font-weight: 500;
+        }
+        
         .call-time {
             color: #666;
             font-size: 0.9em;
@@ -81,13 +88,13 @@
         }
         
         .actions {
-            display: flex;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
             gap: 10px;
             margin-top: 15px;
         }
         
         .btn {
-            flex: 1;
             padding: 10px 15px;
             border: none;
             border-radius: 6px;
@@ -118,11 +125,87 @@
             background: #e0e0e0;
         }
         
+        .btn-success {
+            background: #48bb78;
+            color: white;
+        }
+        
+        .btn-success:hover {
+            background: #38a169;
+        }
+        
         .no-calls {
             text-align: center;
             color: white;
             font-size: 1.2em;
             margin-top: 50px;
+        }
+        
+        .transcript-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.7);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .transcript-modal.active {
+            display: flex;
+        }
+        
+        .transcript-content {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 800px;
+            max-height: 80vh;
+            overflow-y: auto;
+            position: relative;
+        }
+        
+        .transcript-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+        
+        .transcript-header h2 {
+            color: #667eea;
+            margin: 0;
+        }
+        
+        .close-btn {
+            background: #f0f0f0;
+            border: none;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            cursor: pointer;
+            font-size: 1.2em;
+            line-height: 1;
+        }
+        
+        .close-btn:hover {
+            background: #e0e0e0;
+        }
+        
+        .transcript-text {
+            line-height: 1.8;
+            color: #333;
+            white-space: pre-wrap;
+        }
+        
+        .transcript-info {
+            margin-bottom: 15px;
+            color: #666;
         }
         
         @media (max-width: 768px) {
@@ -132,6 +215,11 @@
             
             h1 {
                 font-size: 2em;
+            }
+            
+            .transcript-content {
+                margin: 20px;
+                max-width: calc(100% - 40px);
             }
         }
     </style>
@@ -146,6 +234,7 @@
                     <div class="call-card">
                         <div class="call-header">
                             <div class="agent-name">{{ call.agent_name }}</div>
+                            <div class="phone-number">📱 {{ call.phone_number }}</div>
                             <div class="call-time">{{ call.time }}</div>
                             <div class="log-id">{{ call.log_id }}</div>
                         </div>
@@ -161,6 +250,7 @@
                                     View Session
                                 </a>
                             {% endif %}
+                            <button class="btn btn-success" onclick="showTranscript('{{ call.log_id }}')">Show Transcript</button>
                             <a href="/calls/audio/{{ call.log_id }}" download="{{ call.filename }}" class="btn btn-secondary">
                                 Download
                             </a>
@@ -174,5 +264,53 @@
             </div>
         {% endif %}
     </div>
+    
+    <div id="transcriptModal" class="transcript-modal">
+        <div class="transcript-content">
+            <div class="transcript-header">
+                <h2>Call Transcript</h2>
+                <button class="close-btn" onclick="closeTranscript()">×</button>
+            </div>
+            <div id="transcriptInfo" class="transcript-info"></div>
+            <div id="transcriptText" class="transcript-text"></div>
+        </div>
+    </div>
+    
+    <script>
+        async function showTranscript(logId) {
+            const modal = document.getElementById('transcriptModal');
+            const infoDiv = document.getElementById('transcriptInfo');
+            const textDiv = document.getElementById('transcriptText');
+            
+            textDiv.textContent = 'Loading transcript...';
+            infoDiv.textContent = '';
+            modal.classList.add('active');
+            
+            try {
+                const response = await fetch(`/calls/transcript/${logId}`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    infoDiv.innerHTML = `<strong>Agent:</strong> ${data.agent_name} | <strong>Phone:</strong> ${data.phone_number}`;
+                    textDiv.textContent = data.transcript || 'No transcript available.';
+                } else {
+                    textDiv.textContent = 'Error loading transcript: ' + (data.error || 'Unknown error');
+                }
+            } catch (error) {
+                textDiv.textContent = 'Error loading transcript: ' + error.message;
+            }
+        }
+        
+        function closeTranscript() {
+            document.getElementById('transcriptModal').classList.remove('active');
+        }
+        
+        // Close modal when clicking outside
+        document.getElementById('transcriptModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeTranscript();
+            }
+        });
+    </script>
 </body>
 </html>
