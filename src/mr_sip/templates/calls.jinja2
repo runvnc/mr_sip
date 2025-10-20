@@ -220,6 +220,11 @@
             border-left: 3px solid #48bb78;
         }
         
+        .transcript-line.dtmf {
+            background: #fff3e0;
+            border-left: 3px solid #ff9800;
+        }
+        
         .transcript-role {
             font-weight: 600;
             margin-bottom: 4px;
@@ -230,6 +235,7 @@
         
         .transcript-role.ai { color: #667eea; }
         .transcript-role.human { color: #48bb78; }
+        .transcript-role.dtmf { color: #ff9800; }
         
         .transcript-info {
             margin-bottom: 15px;
@@ -249,6 +255,21 @@
                 margin: 20px;
                 max-width: calc(100% - 40px);
             }
+        }
+        
+        .loading-spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
     </style>
 </head>
@@ -279,6 +300,7 @@
                                 </a>
                             {% endif %}
                             <button class="btn btn-success" onclick="showTranscript('{{ call.log_id }}')">Show Transcript</button>
+                            <button class="btn btn-success" onclick="showAudioTranscript('{{ call.log_id }}')">Audio Transcript</button>
                             <a href="/calls/audio/{{ call.log_id }}" download="{{ call.filename }}" class="btn btn-secondary">
                                 Download
                             </a>
@@ -330,10 +352,11 @@
                         const div = document.createElement('div');
                         const isAI = line.startsWith('AI:');
                         const isHuman = line.startsWith('Human:');
+                        const isDTMF = line.startsWith('DTMF:');
                         
-                        div.className = `transcript-line ${isAI ? 'ai' : isHuman ? 'human' : ''}`;
-                        const role = isAI ? 'AI' : isHuman ? 'Human' : '';
-                        const text = line.replace(/^(AI:|Human:)\s*/, '');
+                        div.className = `transcript-line ${isAI ? 'ai' : isHuman ? 'human' : isDTMF ? 'dtmf' : ''}`;
+                        const role = isAI ? 'AI' : isHuman ? 'Human' : isDTMF ? 'DTMF' : '';
+                        const text = line.replace(/^(AI:|Human:|DTMF:)\s*/, '');
                         
                         div.innerHTML = role ? `<div class="transcript-role ${role.toLowerCase()}">${role}</div><div>${text}</div>` : text;
                         textDiv.appendChild(div);
@@ -343,6 +366,36 @@
                 }
             } catch (error) {
                 textDiv.textContent = 'Error loading transcript: ' + error.message;
+            }
+        }
+        
+        async function showAudioTranscript(logId) {
+            const modal = document.getElementById('transcriptModal');
+            const infoDiv = document.getElementById('transcriptInfo');
+            const textDiv = document.getElementById('transcriptText');
+            
+            textDiv.innerHTML = '<div class="loading-spinner"></div> Transcribing audio with Whisper... This may take a minute.';
+            infoDiv.textContent = '';
+            modal.classList.add('active');
+            
+            try {
+                const response = await fetch(`/calls/audio_transcript/${logId}`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    infoDiv.innerHTML = `<strong>Agent:</strong> ${data.agent_name} | <strong>Phone:</strong> ${data.phone_number} | <strong>Source:</strong> Audio (Whisper)`;
+                    
+                    // Display as simple text since Whisper doesn't separate speakers
+                    const div = document.createElement('div');
+                    div.className = 'transcript-line';
+                    div.innerHTML = `<div class="transcript-role">Audio Transcript</div><div>${data.transcript || 'No transcript available.'}</div>`;
+                    textDiv.innerHTML = '';
+                    textDiv.appendChild(div);
+                } else {
+                    textDiv.textContent = 'Error loading audio transcript: ' + (data.error || 'Unknown error');
+                }
+            } catch (error) {
+                textDiv.textContent = 'Error loading audio transcript: ' + error.message;
             }
         }
         

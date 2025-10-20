@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from datetime import datetime
 import pytz
+import whisper
 
 router = APIRouter()
 
@@ -99,6 +100,53 @@ async def get_transcript(log_id: str):
         import traceback
         error_trace = traceback.format_exc()
         print(f"Error in get_transcript: {str(e)}")
+        print(error_trace)
+        return JSONResponse({
+            "error": str(e),
+            "trace": error_trace
+        }, status_code=500)
+
+@router.get("/calls/audio_transcript/{log_id}")
+async def get_audio_transcript(log_id: str):
+    """Generate transcript from audio file using Whisper"""
+    try:
+        print(f"Audio transcript requested for log_id: {log_id}")
+        
+        audio_path = Path(f"data/calls/{log_id}.wav")
+        
+        if not audio_path.exists():
+            return JSONResponse({
+                "error": "Audio file not found",
+                "log_id": log_id
+            }, status_code=404)
+        
+        # Get metadata from chatlog if available
+        chatlog_path = find_chatlog(log_id)
+        agent_name = "Unknown"
+        phone_number = "Unknown"
+        
+        if chatlog_path:
+            agent_name = extract_agent_name(chatlog_path) or "Unknown"
+            phone_number = extract_phone_number(chatlog_path) or "Unknown"
+        
+        # Load Whisper model and transcribe
+        print(f"Loading Whisper model...")
+        model = whisper.load_model("base")
+        print(f"Transcribing audio file: {audio_path}")
+        result = model.transcribe(str(audio_path))
+        
+        transcript_text = result["text"]
+        
+        return JSONResponse({
+            "success": True,
+            "transcript": transcript_text,
+            "agent_name": agent_name,
+            "phone_number": phone_number
+        })
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"Error in get_audio_transcript: {str(e)}")
         print(error_trace)
         return JSONResponse({
             "error": str(e),
@@ -198,6 +246,20 @@ def generate_transcript(chatlog: dict):
                                             speak_text = cmd['speak'].get('text', '')
                                             if speak_text:
                                                 transcript_lines.append(f"AI: {speak_text}")
+                            except:
+                                pass
+                        
+                        # Extract DTMF commands
+                        if in_call and '"send_dtmf"' in text:
+                            try:
+                                match = re.search(r'\[.*?\]', text, re.DOTALL)
+                                if match:
+                                    commands = json.loads(match.group())
+                                    for cmd in commands:
+                                        if 'send_dtmf' in cmd:
+                                            digits = cmd['send_dtmf'].get('digits', '')
+                                            if digits:
+                                                transcript_lines.append(f"DTMF: {digits}")
                             except:
                                 pass
         
