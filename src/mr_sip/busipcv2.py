@@ -780,7 +780,7 @@ class MindRootSIPBotV2(BareSIP):
             stats = self.stt.get_stats()
             logger.info(f"STT Stats: {stats}")
         
-        self._schedule_coroutine(self.show_disconnected())
+        asyncio.create_task(self.show_disconnected())
           
     def get_transcript(self):
         """Get full transcript as a single string."""
@@ -797,6 +797,7 @@ class MindRootSIPBotV2(BareSIP):
             message=msg,
             context=self.context
         )
+        super().handle_call_ended(reason)
 
     def get_utterances(self):
         """Get all captured utterances."""
