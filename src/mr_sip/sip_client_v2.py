@@ -780,21 +780,25 @@ class MindRootSIPBotV2(BareSIP):
             stats = self.stt.get_stats()
             logger.info(f"STT Stats: {stats}")
         
-        await service_manager.backend_user_message(
-            message=text
-        )
-
-        await service_manager.send_message_to_agent(
-            session_id=ctx.log_id,
-            message=text,
-            context=ctx
-        )
-        super().handle_call_ended(reason)
-        
+        asyncio.create_task(self.show_disconnected())
+          
     def get_transcript(self):
         """Get full transcript as a single string."""
         return "\n".join([u['text'] for u in self.utterances])
-        
+
+    async def show_disconnected(self):  
+        msg = "\n\nSYSTEM:  -- CALL DISCONNECTED  --\n\n"
+        await service_manager.backend_user_message(
+            message=msg
+        )
+
+        await service_manager.send_message_to_agent(
+            session_id=self.context.log_id,
+            message=msg,
+            context=self.context
+        )
+        super().handle_call_ended(reason)
+
     def get_utterances(self):
         """Get all captured utterances."""
         return self.utterances
