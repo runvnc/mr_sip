@@ -660,7 +660,19 @@ class MindRootSIPBotV2(BareSIP):
     def handle_call_ended(self, reason):
         """When call ends, cleanup resources."""
         logger.info("=== CALL ENDED ===")
-        
+
+        # Stop audio capture
+        if self.audio_capture:
+            self._schedule_coroutine(self.audio_capture.stop())
+            
+        # Stop STT provider
+        if self.stt:
+            self._schedule_coroutine(self.stt.stop())
+            
+        # Stop TTS sender
+        if self.tts_sender_task:
+            self.tts_sender_task.cancel()
+         
         # Find audio files if not already set (e.g., when using JACK capture)
         if not self.current_enc_file and not self.current_dec_file:
             logger.info("Audio files not set, searching for them now...")
@@ -714,7 +726,7 @@ class MindRootSIPBotV2(BareSIP):
             try:
                 # Give baresip a moment to finish writing and close the files
                 import time
-                time.sleep(0.5)
+                time.sleep(1.0)
                 logger.info("Waited 0.5s for files to be fully written")
                 
                 # Get output path using log_id from context
@@ -745,18 +757,7 @@ class MindRootSIPBotV2(BareSIP):
         else:
             logger.warning("No audio files found to combine")
         
-        # Stop audio capture
-        if self.audio_capture:
-            self._schedule_coroutine(self.audio_capture.stop())
-            
-        # Stop STT provider
-        if self.stt:
-            self._schedule_coroutine(self.stt.stop())
-            
-        # Stop TTS sender
-        if self.tts_sender_task:
-            self.tts_sender_task.cancel()
-            
+           
         # Cleanup audio handler
         self.audio_handler.cleanup(self)
         
@@ -778,7 +779,16 @@ class MindRootSIPBotV2(BareSIP):
         if self.stt:
             stats = self.stt.get_stats()
             logger.info(f"STT Stats: {stats}")
-            
+        
+        await service_manager.backend_user_message(
+            message=text
+        )
+
+        await service_manager.send_message_to_agent(
+            session_id=ctx.log_id,
+            message=text,
+            context=ctx
+        )
         super().handle_call_ended(reason)
         
     def get_transcript(self):
