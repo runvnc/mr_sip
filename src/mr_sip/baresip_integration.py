@@ -60,6 +60,9 @@ class MindRootSIPBot(BareSIP):
         self.audio_dir = audio_dir or os.path.expanduser("~/.baresip")
         
         # Initialize baresipy
+        
+        logger.info(f"NOT Starting MindRoot SIP Bot with gateway {gateway} and user {user}...")
+        return
         super().__init__(user, password, gateway, block=False)
         
         # MindRoot integration
