@@ -73,17 +73,15 @@ async def call(destination: str, context=None) -> str:
         
         logger.info(f"Call command initiated to {destination} for session {context.log_id}")
         
-        # Use V2 if available and enabled
-        if USE_V2:
-            stt_provider = STT_PROVIDER
-            logger.info(f"Using V2 implementation with STT provider: {stt_provider}")
-            result = await dial_service_v2(destination=destination, context=context)
-        else:
-            if USE_V2 and not V2_AVAILABLE:
-                logger.warning("V2 requested but not available, falling back to V1")
-            logger.info("Using V1 implementation")
-            result = await dial_service(destination=destination, context=context)
-        
+        # strip punctuation from destination
+        destination = ''.join(filter(str.isalnum, destination + '@'))
+        # if it's just area code plus number, add default country code
+        if destination.isdigit() and len(destination) == 10:
+            destination = '1' + destination
+        stt_provider = STT_PROVIDER
+        logger.info(f"Using V2 implementation with STT provider: {stt_provider}")
+        result = await dial_service_v2(destination=destination, context=context)
+    
         if result["status"] == "call_established":
             msg = f"Call established to {destination}. Voice conversation is now active. Speak naturally and I will respond through the phone."
             
