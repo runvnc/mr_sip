@@ -11,6 +11,8 @@ from lib.providers.services import service, service_manager
 from lib.providers.hooks import hook
 from .sip_manager import get_session_manager
 from .sip_client import MindRootSIPBot, setup_sndfile_module
+from dotenv import load_dotenv
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
