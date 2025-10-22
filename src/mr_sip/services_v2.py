@@ -14,13 +14,16 @@ from lib.providers.services import service, service_manager
 from lib.providers.hooks import hook
 from .sip_manager import get_session_manager
 from .sip_client_v2 import MindRootSIPBotV2, setup_sndfile_module
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 # Configuration from environment
-SIP_GATEWAY = os.getenv('SIP_GATEWAY', 'chicago4.voip.ms')
-SIP_USER = os.getenv('SIP_USER', '498091')
-SIP_PASSWORD = os.getenv('SIP_PASSWORD', '3BM]ZEu:z4.]vXU')
+SIP_GATEWAY = os.getenv('SIP_GATEWAY', 'no sip gateway')
+SIP_USER = os.getenv('SIP_USER', 'nouser')
+SIP_PASSWORD = os.getenv('SIP_PASSWORD', 'no sip password')
 STT_PROVIDER = os.getenv('STT_PROVIDER', 'deepgram_flux')  # Default to deepgram_flux
 STT_MODEL_SIZE = os.getenv('STT_MODEL_SIZE', 'small')  # For Whisper
 DEEPGRAM_API_KEY = os.getenv('DEEPGRAM_API_KEY', '')  # For Deepgram
