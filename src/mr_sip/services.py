@@ -17,9 +17,9 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Configuration from environment
-SIP_GATEWAY = os.getenv('SIP_GATEWAY', 'chicago4.voip.ms')
-SIP_USER = os.getenv('SIP_USER', '498091')
-SIP_PASSWORD = os.getenv('SIP_PASSWORD', '3BM]ZEu:z4.]vXU')
+SIP_GATEWAY = os.getenv('SIP_GATEWAY', 'no sip gateway')
+SIP_USER = os.getenv('SIP_USER', 'no sip user')
+SIP_PASSWORD = os.getenv('SIP_PASSWORD', 'no sip password')
 WHISPER_MODEL = os.getenv('WHISPER_MODEL', 'small')
 AUDIO_DIR = os.getenv('AUDIO_DIR', os.path.expanduser('.'))
 
