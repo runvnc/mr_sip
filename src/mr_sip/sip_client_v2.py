@@ -531,15 +531,7 @@ class MindRootSIPBotV2(BareSIP):
     def _handle_turn_resumed(self):
         """Handle TurnResumed event from Deepgram Flux."""
         # DEBUG TRACE
-        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
-        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
-        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
-        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
-        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
-        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
-        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
-        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
-        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
+       print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
            
         # Set halt flag to stop TTS streaming immediately
         #self.session.halt_audio_out = True
@@ -550,12 +542,7 @@ class MindRootSIPBotV2(BareSIP):
                 session = await session_manager.get_session(self.context.log_id)
                 if session:
                     session.halt_audio_out = True
-                    logger.info("[BARGE-IN] User speaking (StartOfTurn/TurnResumed) - halting TTS output")
-                    logger.info("[BARGE-IN] User speaking (StartOfTurn/TurnResumed) - halting TTS output")
-                    logger.info("[BARGE-IN] User speaking (StartOfTurn/TurnResumed) - halting TTS output")
-                    logger.info("[BARGE-IN] User speaking (StartOfTurn/TurnResumed) - halting TTS output")
-                    logger.info("[BARGE-IN] User speaking (StartOfTurn/TurnResumed) - halting TTS output")
-                    logger.info("[BARGE-IN] User speaking (StartOfTurn/TurnResumed) - halting TTS output")
+                   logger.info("[BARGE-IN] User speaking (StartOfTurn/TurnResumed) - halting TTS output")
      
             self._schedule_coroutine(set_halt_flag())
         
