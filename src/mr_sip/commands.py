@@ -394,6 +394,7 @@ async def delegate_call_task(agent:str, phone_number:str, instructions: str, idl
 
     """
     log_id = nanoid.generate()
+    instructions = instructions + f"\n\n Call the phone number {phone_number} to accomplish the task."
     await command_manager.delegate_task(instructions, agent, log_id=log_id, context=context)
     result = await await_call_result(log_id,agent=agent, idle_timeout_seconds=idle_timeout_seconds, 
                                      finish_timeout_seconds=finish_timeout_seconds, context=context)
