@@ -101,9 +101,6 @@ class MindRootSIPBotV2(BareSIP):
         self.active_ai_task_id = None
         self.draft_response_active = False
         
-        # Track last eager EOT text to prevent duplicate sends
-        self.last_eager_eot_text = ""
-        
         # Audio processing
         self.audio_handler = AudioHandler()
         
@@ -398,9 +395,6 @@ class MindRootSIPBotV2(BareSIP):
                 logger.info(f"[EAGER EOT] Starting AI response preparation for: {result.text}")
                 self.draft_response_active = True
                 
-                # Store the eager EOT text to prevent duplicate sends
-                self.last_eager_eot_text = result.text
-                
                 # Send to AI agent immediately for eager processing
                 if self.on_utterance_callback:
                     utterance_num = len(self.utterances) + 1
@@ -443,27 +437,16 @@ class MindRootSIPBotV2(BareSIP):
         self.utterances.append(utterance_data)
         
         logger.info(f"[{utterance_data['time_str']}] Utterance #{utterance_data['number']}: {result.text} (confidence: {result.confidence:.2f})")
-        
-        # Check if this EndOfTurn text matches the EagerEOT text
-        if result.text == self.last_eager_eot_text and self.last_eager_eot_text:
-            logger.info(f"[FINAL] EndOfTurn text matches EagerEOT text - skipping duplicate send")
+       
+        # Check if we already have a draft response active
+        if self.draft_response_active:
+            logger.info(f"[FINAL] Draft response already active, using prepared response")
             self.draft_response_active = False
             self.active_ai_task_id = None
-            self.last_eager_eot_text = ""  # Clear the tracking
+            # Don't send to AI again, the eager response should handle it
         else:
-            # Check if we already have a draft response active (different text case)
-            if self.draft_response_active:
-                logger.info(f"[FINAL] Draft response active but text differs - cancelling and sending new text")
-                logger.info(f"[FINAL] Previous: '{self.last_eager_eot_text}' -> New: '{result.text}'")
-                # Cancel the old draft and send the new text
-                self._schedule_coroutine(self._cancel_ai_response())
-                self.draft_response_active = False
-                self.active_ai_task_id = None
-                self.last_eager_eot_text = ""  # Clear the tracking
-                
-            # Send to MindRoot agent (either no draft was active, or we cancelled it above)
-            if not self.draft_response_active and self.on_utterance_callback:
-                logger.info(f"[FINAL] Sending final text to agent: {result.text}")
+            # Send to MindRoot agent
+            if self.on_utterance_callback:
                 self._schedule_coroutine(
                     self._call_utterance_callback(
                         result.text,
@@ -480,7 +463,7 @@ class MindRootSIPBotV2(BareSIP):
         """Call the utterance callback."""
         try:
             if asyncio.iscoroutinefunction(self.on_utterance_callback):
-                await self.on_utterance_callback(text, utterance_num, timestamp, self.context, is_eager=is_eager)
+                await self.on_utterance_callback(text, utterance_num, timestamp, self.context)
             else:
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(
@@ -565,9 +548,6 @@ class MindRootSIPBotV2(BareSIP):
             self._schedule_coroutine(set_halt_flag())
         
         # Also clear the TTS queue
-        # Clear the eager EOT tracking since user interrupted
-        self.last_eager_eot_text = ""
-        
         #self._stop_tts_immediately()
 
         if self.draft_response_active:

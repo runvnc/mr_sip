@@ -110,21 +110,14 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
             logger.warning("sndfile module setup failed, audio recording may not work")
         
         # Create utterance callback that sends messages to MindRoot agent
-        async def on_utterance_callback(text: str, utterance_num: int, timestamp: float, ctx, is_eager: bool = False):
+        async def on_utterance_callback(text: str, utterance_num: int, timestamp: float, ctx):
             """Callback for when complete utterances are transcribed"""
             try:
                 logger.info(f"SIP_DEBUG Transcribed utterance #{utterance_num}: {text}")
                 
-                # Only cancel active responses if this is NOT an eager EOT
-                # For eager EOT, we want the agent to start responding immediately
-                # For final EOT, the SIP client already handled duplicate detection
-                if not is_eager:
-                    res = await service_manager.cancel_and_wait(ctx.log_id, ctx.username)
-                    logger.info(f"SIP_DEBUG cancel result: {res}")
-                else:
-                    logger.info(f"SIP_DEBUG Skipping cancel for eager EOT - letting agent start responding")
-                
-                # Send the user message to backend
+                res = await service_manager.cancel_and_wait(ctx.log_id, ctx.username)
+                logger.info(f"SIP_DEBUG cancel result: {res}")
+
                 await service_manager.backend_user_message(
                     message=text
                 )
