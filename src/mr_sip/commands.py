@@ -322,7 +322,7 @@ async def wait(seconds:float, context=None) -> str:
         return f"Error during wait: {str(e)}"
 
 @command()
-async def await_call_result(log_id: str, idle_timeout_seconds: int = 120, finish_timeout_seconds: int=20,)
+async def await_call_result(log_id: str, idle_timeout_seconds: int = 120, finish_timeout_seconds: int=20,
                             context=None)
     """
     Wait for the call to end or inactivity timeout for the given log_id.
