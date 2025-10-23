@@ -539,7 +539,7 @@ class MindRootSIPBotV2(BareSIP):
             async def set_halt_flag():
                 session = await session_manager.get_session(self.context.log_id)
                 if session:
-                    session.halt_audio_out = True
+                   session.halt_audio_out = True
                    logger.info("[BARGE-IN] User speaking (StartOfTurn/TurnResumed) - halting TTS output")
      
             self._schedule_coroutine(set_halt_flag())
