@@ -356,10 +356,10 @@ async def await_call_result(log_id: str, idle_timeout_seconds: int = 120, finish
                     logger.info(f"Call session {log_id} received task_result")
                     return cmd['task_result']
 
-            user_messages = [msg for msg in log.messages if msg.role == 'user']
+            user_messages = [msg for msg in log.messages if msg['role'] == 'user']
             for msg in user_messages:
-                if msg.content and isinstance(msg.content, list) and len(msg.content) > 0:
-                    text = msg.content[0].get('text', '')
+                if msg['content'] and isinstance(msg['content'], list) and len(msg['content']) > 0:
+                    text = msg['content'][0].get('text', '')
                     if "-- CALL DISCONNECTED --" in text:
                         logger.info(f"Call session {log_id} detected CALL DISCONNECTED message")
                         if idle >= finish_timeout_seconds:
