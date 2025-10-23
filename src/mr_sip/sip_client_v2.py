@@ -527,11 +527,9 @@ class MindRootSIPBotV2(BareSIP):
         except Exception as e:
             logger.error(f"_stop_tts_immediately encountered an error: {e}")
 
-            
     def _handle_turn_resumed(self):
         """Handle TurnResumed event from Deepgram Flux."""
-        # DEBUG TRACE
-        print("\033[91;107m[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.\033[0m")
+        print("[DEBUG TRACE 2/6] SIP client's _handle_turn_resumed callback triggered.")
            
         # Set halt flag to stop TTS streaming immediately
         #self.session.halt_audio_out = True
