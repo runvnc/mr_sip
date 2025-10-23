@@ -60,6 +60,8 @@ async def dial_service(destination: str, context=None) -> Dict[str, Any]:
             try:
                 logger.info(f"Transcribed utterance #{utterance_num}: {text}")
                 
+                await service_manager.cancel_and_wait(ctx.log_id, ctx.username)
+ 
                 # Update chat frontend with user message
                 await service_manager.backend_user_message(
                     message=text
