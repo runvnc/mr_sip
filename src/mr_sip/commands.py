@@ -339,7 +339,7 @@ async def await_call_result(log_id: str, idle_timeout_seconds: int = 120, finish
         { "await_call_result": { "log_id": "abc123", idle_timeout_seconds": 35, "finish_timeout_seconds": 5 } } 
     """
     try:
-        call_context = await get_context(log_id)
+        call_context = await get_context(log_id, context.username)
         log = call_context.chat_log
         finished = False
 
