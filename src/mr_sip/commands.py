@@ -6,10 +6,13 @@ MindRoot SIP Plugin - User Commands
 import os
 import logging
 import numpy as np
-from lib.providers.commands import command
+from lib.providers.commands import command, command_manager
+from lib.chatcontext import get_context
 from .services import dial_service, end_call_service
+import nanoid
 from .sip_manager import get_session_manager
 import asyncio 
+import traceback
 
 # Import V2 services if available
 try:
@@ -317,4 +320,76 @@ async def wait(seconds:float, context=None) -> str:
     except Exception as e:
         logger.error(f"Error in wait command: {e}")
         return f"Error during wait: {str(e)}"
+
+@command()
+async def await_call_result(log_id: str, idle_timeout_seconds: int = 120, finish_timeout_seconds: int=20,)
+                            context=None)
+    """
+    Wait for the call to end or inactivity timeout for the given log_id.
+    This will return when: 
+     
+    - the chat session has returned a task_result
+
+    - there is a CALL DISCONNECTED message in the log
+      and finish_timeout_seconds has passed since the last change
+
+    - idle_timeout_seconds has passed since the last change
+
+    Example:
+
+        { "await_call_result": { "log_id": "abc123", idle_timeout_seconds": 35, "finish_timeout_seconds": 5 } } 
+    """
+    try:
+        call_context = await get_context(log_id)
+        log = call_context.chat_log
+        finished = False
+
+        while not finished:
+            await asyncio.sleep(1)
+            idle = time.time() - log.last_modified
+            if idle >= idle_timeout_seconds:
+                logger.info(f"Call session {log_id} idle timeout reached ({idle_timeout_seconds}s)")
+                finished = True
+            commands = log.parsed_commands()
+            for cmd in commands:
+                if 'task_result' in cmd:
+                    logger.info(f"Call session {log_id} received task_result")
+                    return cmd['task_result']
+
+            user_messages = [msg for msg in chat.messages if msg.role == 'user']
+            for msg in user_messages:
+                if msg.content and isinstance(msg.content, list) and len(msg.content) > 0:
+                    text = msg.content[0].get('text', '')
+                    if "-- CALL DISCONNECTED --" in text:
+                        logger.info(f"Call session {log_id} detected CALL DISCONNECTED message")
+                        if idle >= finish_timeout_seconds:
+                            logger.info(f"Call session {log_id} finish timeout reached ({finish_timeout_seconds}s) after disconnect")
+                            finished = True
+
+        log_dump = json.dumps(log.messages)
+        return log_dump
+    except Exception as e:
+        trace = traceback.format_exc()
+        logger.error(f"Error in await_call_result: {e}\n\n{trace}")
+        return f"Error awaiting call result: {str(e)} \n\n{trace}"
+
+@command()
+async def delegate_call_task(agent:str, phone_number:str, instructions: str, idle_timeout_seconds: int = 120, finish_timeout_seconds: int=20,
+                             context=None)
+    """
+    Delegate a task to `agent` to call `phone_number` to accomplish task described in `instructions`.
+    Wait for the the call to complete and return the task result from the call
+    or the call session log if no task result.
+
+    Example:
+
+    { "delegate_call_task": { "agent": "CustomerService", "phone_number": "16822625850",
+                              "instructions": "Call the customer and inform them about their order status." } }
+
+    """
+    log_id = nanoid.generate()
+    await command_manager.delegate_task(instructions, agent, log_id=log_id, context=context)
+    result = await await_call_result(log_id, idle_timeout_seconds=idle_timeout_seconds, 
+                                     finish_timeout_seconds=finish_timeout_seconds, context=context)
+    return result
 
