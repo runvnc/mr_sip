@@ -4,46 +4,23 @@ Audio Combiner Module for MindRoot SIP
 
 Combines two WAV files (encoded and decoded) into a single overlayed audio file.
 Used for creating complete call recordings when calls end.
-
-This version uses FFmpeg for more reliable audio processing.
 """
 
 import os
 import re
 import logging
-import subprocess
-import tempfile
-import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
+from pydub import AudioSegment
 
 logger = logging.getLogger(__name__)
 
 class AudioCombiner:
-    """Combines encoded and decoded WAV files into a single overlayed recording using FFmpeg."""
+    """Combines encoded and decoded WAV files into a single overlayed recording."""
     
     def __init__(self):
         """Initialize the audio combiner."""
-        self._check_ffmpeg()
-    
-    def _check_ffmpeg(self) -> bool:
-        """Check if FFmpeg is available."""
-        try:
-            result = subprocess.run(
-                ['ffmpeg', '-version'],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            if result.returncode == 0:
-                logger.debug("FFmpeg is available")
-                return True
-            else:
-                logger.warning("FFmpeg check returned non-zero exit code")
-                return False
-        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-            logger.error(f"FFmpeg not found or not accessible: {e}")
-            return False
+        pass
     
     def find_matching_file(self, filepath: str) -> str:
         """
@@ -78,9 +55,9 @@ class AudioCombiner:
         else:
             raise FileNotFoundError(f"Matching file not found: {expected_filename}")
     
-    def _combine_conversations_internal(self, file1_path: str, file2_path: str, output_path: str) -> bool:
+    def combine_conversations(self, file1_path: str, file2_path: str, output_path: str) -> bool:
         """
-        Internal method to combine two WAV files by overlaying them using FFmpeg.
+        Combine two WAV files by overlaying them.
         
         Args:
             file1_path: Path to first WAV file
@@ -111,97 +88,72 @@ class AudioCombiner:
                 logger.error(f"File2 appears to be empty (only WAV header): {file2_path}")
                 return False
             
+            # Load both audio files
+            logger.info(f"Loading audio files: {file1_path} and {file2_path}")
+            
+            # Use from_file with explicit format to handle various WAV formats better
+            try:
+                audio1 = AudioSegment.from_file(file1_path, format="wav")
+                audio2 = AudioSegment.from_file(file2_path, format="wav")
+            except Exception as e:
+                logger.error(f"Failed to load audio with from_file, trying from_wav: {e}")
+                try:
+                    audio1 = AudioSegment.from_wav(file1_path)
+                    audio2 = AudioSegment.from_wav(file2_path)
+                except Exception as e2:
+                    logger.error(f"Failed to load audio with from_wav: {e2}")
+                    return False
+            
+            logger.info(f"Loaded audio - Audio1: {len(audio1)}ms, Audio2: {len(audio2)}ms")
+            logger.info(f"Audio1 properties - channels: {audio1.channels}, frame_rate: {audio1.frame_rate}, sample_width: {audio1.sample_width}")
+            logger.info(f"Audio2 properties - channels: {audio2.channels}, frame_rate: {audio2.frame_rate}, sample_width: {audio2.sample_width}")
+            
+            # Ensure both files have the same duration
+            max_len = max(len(audio1), len(audio2))
+            logger.info(f"Maximum duration: {max_len}ms")
+            
+            # Pad shorter audio with silence
+            if len(audio1) < max_len:
+                silence_duration = max_len - len(audio1)
+                audio1 = audio1 + AudioSegment.silent(duration=silence_duration)
+                logger.debug(f"Padded first audio with {silence_duration}ms of silence")
+            
+            if len(audio2) < max_len:
+                silence_duration = max_len - len(audio2)
+                audio2 = audio2 + AudioSegment.silent(duration=silence_duration)
+                logger.debug(f"Padded second audio with {silence_duration}ms of silence")
+            
+            # Overlay the two audio tracks
+            logger.info("Overlaying audio tracks...")
+            combined = audio1.overlay(audio2)
+            logger.info(f"Combined audio duration: {len(combined)}ms")
+            
             # Create output directory if it doesn't exist
             output_dir = os.path.dirname(output_path)
             if output_dir:
                 Path(output_dir).mkdir(parents=True, exist_ok=True)
             
-            logger.info(f"Combining audio files using FFmpeg: {file1_path} and {file2_path}")
-            
-            # Use FFmpeg to combine the audio files
-            # The amix filter mixes the two audio streams together
-            # We normalize the inputs and use a duration of longest to ensure we get all audio
-            cmd = [
-                'ffmpeg',
-                '-y',  # Overwrite output file if it exists
-                '-i', file1_path,
-                '-i', file2_path,
-                '-filter_complex',
-                '[0:a][1:a]amix=inputs=2:duration=longest:normalize=0',
-                '-ar', '8000',  # Sample rate for telephony
-                '-ac', '1',     # Mono
-                '-c:a', 'pcm_s16le',  # PCM 16-bit little-endian
-                output_path
-            ]
-            
-            logger.debug(f"Running FFmpeg command: {' '.join(cmd)}")
-            
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300  # 5 minute timeout
-            )
-            
-            if result.returncode != 0:
-                logger.error(f"FFmpeg failed with return code {result.returncode}")
-                logger.error(f"FFmpeg stderr: {result.stderr}")
-                return False
-            
-            # Verify output file was created and has content
-            if not os.path.exists(output_path):
-                logger.error(f"Output file was not created: {output_path}")
-                return False
-            
-            output_size = os.path.getsize(output_path)
-            if output_size <= 44:
-                logger.error(f"Output file appears to be empty (only WAV header): {output_path}")
-                return False
-            
+            # Export the combined audio
+            logger.info(f"Exporting combined audio to: {output_path}")
+            combined.export(output_path, format="wav")
             logger.info(f"Combined conversation saved to: {output_path}")
-            logger.info(f"File sizes - Original 1: {size1:,} bytes, "
-                       f"Original 2: {size2:,} bytes, "
-                       f"Combined: {output_size:,} bytes")
+            
+            # Log file sizes for verification
+            original_size1 = os.path.getsize(file1_path)
+            original_size2 = os.path.getsize(file2_path)
+            combined_size = os.path.getsize(output_path)
+            
+            logger.info(f"File sizes - Original 1: {original_size1:,} bytes, "
+                       f"Original 2: {original_size2:,} bytes, "
+                       f"Combined: {combined_size:,} bytes")
             
             return True
             
-        except subprocess.TimeoutExpired:
-            logger.error("FFmpeg command timed out")
-            return False
         except Exception as e:
             logger.error(f"Error combining audio files: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return False
-    
-    def combine_conversations(self, file1_path: str, file2_path: str, output_path: str) -> bool:
-        """
-        Combine two WAV files by overlaying them using FFmpeg.
-        Will retry once after 1 second if the first attempt fails.
-        
-        Args:
-            file1_path: Path to first WAV file
-            file2_path: Path to second WAV file  
-            output_path: Path where combined file will be saved
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        # First attempt
-        success = self._combine_conversations_internal(file1_path, file2_path, output_path)
-        
-        if not success:
-            logger.warning("First attempt to combine audio failed, waiting 1 second and retrying...")
-            time.sleep(1.0)
-            logger.info("Retrying audio combination...")
-            success = self._combine_conversations_internal(file1_path, file2_path, output_path)
-            
-            if success:
-                logger.info("Retry successful!")
-            else:
-                logger.error("Retry failed, giving up")
-        
-        return success
     
     def combine_call_recording(self, enc_file: str, dec_file: str, output_path: str) -> bool:
         """
