@@ -467,6 +467,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
                 pass
                 #self._handle_eager_eot(transcript, latency)
             elif event == 'TurnResumed': # or event == 'StartOfTurn':
+                pass
                 #self._handle_turn_resumed(transcript, latency, event)
             elif event == 'EndOfTurn':
                 self._handle_end_of_turn(transcript, latency)
