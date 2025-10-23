@@ -444,33 +444,28 @@ class MindRootSIPBotV2(BareSIP):
         
         logger.info(f"[{utterance_data['time_str']}] Utterance #{utterance_data['number']}: {result.text} (confidence: {result.confidence:.2f})")
         
-        # Check if this EndOfTurn text matches the EagerEOT text
+        # Simple logic: only skip if this exact text was already sent via EagerEOT
+        should_send = not (result.text == self.last_eager_eot_text and self.last_eager_eot_text)
+        
         if result.text == self.last_eager_eot_text and self.last_eager_eot_text:
-            logger.info(f"[FINAL] EndOfTurn text matches EagerEOT text - skipping duplicate send")
-            self.draft_response_active = False
-            self.active_ai_task_id = None
-            self.last_eager_eot_text = ""  # Clear the tracking
+            logger.info(f"[FINAL] Skipping duplicate - already sent via EagerEOT: '{result.text}'")
         else:
-            # Check if we already have a draft response active (different text case)
-            if self.draft_response_active:
-                logger.info(f"[FINAL] Draft response active but text differs - cancelling and sending new text")
-                logger.info(f"[FINAL] Previous: '{self.last_eager_eot_text}' -> New: '{result.text}'")
-                # Cancel the old draft and send the new text
-                self._schedule_coroutine(self._cancel_ai_response())
-                self.draft_response_active = False
-                self.active_ai_task_id = None
-                self.last_eager_eot_text = ""  # Clear the tracking
-                
-            # Send to MindRoot agent (either no draft was active, or we cancelled it above)
-            if not self.draft_response_active and self.on_utterance_callback:
-                logger.info(f"[FINAL] Sending final text to agent: {result.text}")
+            # Send to agent (either no EagerEOT, or text changed)
+            logger.info(f"[FINAL] Sending to agent: '{result.text}'")
+            if self.on_utterance_callback:
                 self._schedule_coroutine(
                     self._call_utterance_callback(
                         result.text,
                         utterance_data['number'],
-                        utterance_data['timestamp']
+                        utterance_data['timestamp'],
+                        is_eager=False
                     )
                 )
+        
+        # ALWAYS reset state after EndOfTurn - prevents stuck flags
+        self.draft_response_active = False
+        self.last_eager_eot_text = ""
+        self.active_ai_task_id = None
         
             
         # Clear partial text
