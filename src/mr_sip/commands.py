@@ -322,8 +322,7 @@ async def wait(seconds:float, context=None) -> str:
         return f"Error during wait: {str(e)}"
 
 @command()
-async def await_call_result(log_id: str, idle_timeout_seconds: int = 120, finish_timeout_seconds: int=20,
-                            context=None)
+async def await_call_result(log_id: str, idle_timeout_seconds: int = 120, finish_timeout_seconds: int=20,context=None):
     """
     Wait for the call to end or inactivity timeout for the given log_id.
     This will return when: 
@@ -374,8 +373,8 @@ async def await_call_result(log_id: str, idle_timeout_seconds: int = 120, finish
         return f"Error awaiting call result: {str(e)} \n\n{trace}"
 
 @command()
-async def delegate_call_task(agent:str, phone_number:str, instructions: str, idle_timeout_seconds: int = 120, finish_timeout_seconds: int=20,
-                             context=None)
+async def delegate_call_task(agent:str, phone_number:str, instructions: str, idle_timeout_seconds: int = 120,
+                             finish_timeout_seconds: int=20, context=None):
     """
     Delegate a task to `agent` to call `phone_number` to accomplish task described in `instructions`.
     Wait for the the call to complete and return the task result from the call
