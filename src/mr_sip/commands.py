@@ -8,6 +8,7 @@ import logging
 import numpy as np
 from lib.providers.commands import command, command_manager
 from lib.chatcontext import get_context
+from lib.chatlog import ChatLog
 from .services import dial_service, end_call_service
 import nanoid
 from .sip_manager import get_session_manager
