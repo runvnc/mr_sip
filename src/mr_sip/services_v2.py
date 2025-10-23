@@ -119,8 +119,8 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
                 # For eager EOT, we want the agent to start responding immediately
                 # For final EOT, the SIP client already handled duplicate detection
                 #if not is_eager:
-                #    res = await service_manager.cancel_and_wait(ctx.log_id, ctx.username)
-                #    logger.info(f"SIP_DEBUG cancel result: {res}")
+                res = await service_manager.cancel_and_wait(ctx.log_id, ctx.username)
+                logger.info(f"SIP_DEBUG cancel result: {res}")
                 #else:
                 #    logger.info(f"SIP_DEBUG Skipping cancel for eager EOT - letting agent start responding")
                 
@@ -136,7 +136,7 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
                 )
                 
             except Exception as e:
-                logger.error(f"Error processing utterance: {e}")
+                logger.error(f"SIP_DEBUG Error processing utterance: {e}")
         
         # Prepare STT configuration
         stt_config = {}
