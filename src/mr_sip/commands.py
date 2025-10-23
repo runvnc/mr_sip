@@ -348,34 +348,34 @@ async def await_call_result(log_id: str, idle_timeout_seconds: int = 120, finish
         while not finished:
             await asyncio.sleep(1)
             idle = time.time() - log.last_modified
-            logger.debug(f"Call session {log_id} idle time: {idle}s")
+            logger.debug(f"AWAIT_CALL_RESULT Call session {log_id} idle time: {idle}s")
             if idle >= idle_timeout_seconds:
-                logger.info(f"Call session {log_id} idle timeout reached ({idle_timeout_seconds}s)")
+                logger.info(f"AWAIT_CALL_RESULT Call session {log_id} idle timeout reached ({idle_timeout_seconds}s)")
                 finished = True
             commands = log.parsed_commands()
-            logger.debug(f"Call session {log_id} checking for task_result in commands: {str(commands)}")
+            logger.debug(f"AWAIT_CALL_RESULT Call session {log_id} checking for task_result in commands: {str(commands)}")
             for cmd in commands:
                 if 'task_result' in cmd:
-                    logger.info(f"Call session {log_id} received task_result")
+                    logger.info(f"AWAIT_CALL_RESULT Call session {log_id} received task_result")
                     return cmd['task_result']
 
             user_messages = [msg for msg in log.messages if msg['role'] == 'user']
-            logger.debug(f"Call session {log_id} checking user messages for CALL DISCONNECTED: {str(user_messages)}")
+            logger.debug(f"AWAIT_CALL_RESULT Call session {log_id} checking user messages for CALL DISCONNECTED: {str(user_messages)}")
             for msg in user_messages:
                 if msg['content'] and isinstance(msg['content'], list) and len(msg['content']) > 0:
                     text = msg['content'][0].get('text', '')
-                    logger.debug(f"Call session {log_id} user message content: {text}")
+                    logger.debug(f"AWAIT_CALL_RESULT Call session {log_id} user message content: {text}")
                     if "-- CALL DISCONNECTED --" in text:
-                        logger.info(f"Call session {log_id} detected CALL DISCONNECTED message")
+                        logger.info(f"AWAIT_CALL_RESULT Call session {log_id} detected CALL DISCONNECTED message")
                         if idle >= finish_timeout_seconds:
-                            logger.info(f"Call session {log_id} finish timeout reached ({finish_timeout_seconds}s) after disconnect")
+                            logger.info(f"AWAIT_CALL_RESULT Call session {log_id} finish timeout reached ({finish_timeout_seconds}s) after disconnect")
                             finished = True
 
         log_dump = json.dumps(log.messages)
         return log_dump
     except Exception as e:
         trace = traceback.format_exc()
-        logger.error(f"Error in await_call_result: {e}\n\n{trace}")
+        logger.error(f"AWAIT_CALL_RESULT Error in await_call_result: {e}\n\n{trace}")
         return f"Error awaiting call result: {str(e)} \n\n{trace}"
 
 @command()
