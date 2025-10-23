@@ -324,7 +324,7 @@ async def wait(seconds:float, context=None) -> str:
         return f"Error during wait: {str(e)}"
 
 @command()
-async def await_call_result(log_id: str, idle_timeout_seconds: int = 120, finish_timeout_seconds: int=20,context=None):
+async def await_call_result(log_id: str, agent:str, idle_timeout_seconds: int = 120, finish_timeout_seconds: int=20,context=None):
     """
     Wait for the call to end or inactivity timeout for the given log_id.
     This will return when: 
@@ -341,12 +341,11 @@ async def await_call_result(log_id: str, idle_timeout_seconds: int = 120, finish
         { "await_call_result": { "log_id": "abc123", idle_timeout_seconds": 35, "finish_timeout_seconds": 5 } } 
     """
     try:
-        call_context = await get_context(log_id, context.username)
-        log = call_context.chat_log
         finished = False
-
         while not finished:
             await asyncio.sleep(1)
+            log = ChatLog(log_id, agent=agent, user=context.username)
+
             idle = time.time() - log.last_modified
             logger.debug(f"AWAIT_CALL_RESULT Call session {log_id} idle time: {idle}s")
             if idle >= idle_timeout_seconds:
@@ -371,6 +370,7 @@ async def await_call_result(log_id: str, idle_timeout_seconds: int = 120, finish
                             logger.info(f"AWAIT_CALL_RESULT Call session {log_id} finish timeout reached ({finish_timeout_seconds}s) after disconnect")
                             finished = True
 
+        log = ChatLog(log_id, agent=agent, user=context.username)
         log_dump = json.dumps(log.messages)
         return log_dump
     except Exception as e:
@@ -394,7 +394,7 @@ async def delegate_call_task(agent:str, phone_number:str, instructions: str, idl
     """
     log_id = nanoid.generate()
     await command_manager.delegate_task(instructions, agent, log_id=log_id, context=context)
-    result = await await_call_result(log_id, idle_timeout_seconds=idle_timeout_seconds, 
+    result = await await_call_result(log_id,agent=agent, idle_timeout_seconds=idle_timeout_seconds, 
                                      finish_timeout_seconds=finish_timeout_seconds, context=context)
     return result
 
