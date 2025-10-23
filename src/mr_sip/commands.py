@@ -398,5 +398,5 @@ async def delegate_call_task(agent:str, phone_number:str, instructions: str, idl
     await command_manager.delegate_task(instructions, agent, log_id=log_id, context=context)
     result = await await_call_result(log_id,agent=agent, idle_timeout_seconds=idle_timeout_seconds, 
                                      finish_timeout_seconds=finish_timeout_seconds, context=context)
-    return result
+    return f"Log_id: {log_id}. Result: {result}"
 
