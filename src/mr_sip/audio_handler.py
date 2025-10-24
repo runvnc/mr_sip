@@ -9,7 +9,7 @@ import numpy as np
 import logging
 from scipy import signal
 from .jack_streamer import JACKAudioStreamer
-
+import traceback
 logger = logging.getLogger(__name__)
 
 class AudioHandler:
@@ -46,9 +46,10 @@ class AudioHandler:
                 # Use JACK for output playback so baresip exposes decoded audio to JACK.
                 # Pass a specific client name so ports appear as 'MR-STT:output_*'.
                 baresip_bot.do_command("/auplay jack,MR-STT")
-                logger.info("Configured baresip to use JACK (ausrc jack,MindRootSIP.*; auplay jack,MR-STT)")
+                logger.info("JACK_DEBUG Configured baresip to use JACK (ausrc jack,MindRootSIP.*; auplay jack,MR-STT)")
             except Exception as e:
-                logger.error(f"Failed to configure baresip JACK settings: {e}")
+                trace = traceback.format_exc()
+                logger.error(f"JACK_DEBUG Failed to configure baresip JACK settings: {e}\n{trace}")
     
     def connect_jack_to_baresip(self):
         """Connect JACK ports to baresip after call is established."""
