@@ -200,10 +200,10 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
         
         # Wait for call to be established (with timeout)
         max_wait = CALL_ESTABLISH_TIMEOUT  # seconds
-        wait_count = 0
+        wait_count = 0.0
         while not bot.call_established and wait_count < max_wait:
-            await asyncio.sleep(1)
-            wait_count += 1
+            await asyncio.sleep(0.2)
+            wait_count += 0.2
             
         if bot.call_established:
             session.is_active = True
