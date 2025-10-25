@@ -158,7 +158,7 @@ class MindRootSIPBotV2(BareSIP):
             time.sleep(0.2)
             
         # Connect JACK ports after call is established
-        time.sleep(0.3)
+        time.sleep(0.5)
         self.audio_handler.configure_baresip_jack(self)
         self.audio_handler.connect_jack_to_baresip()
         
