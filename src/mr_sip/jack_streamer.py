@@ -31,6 +31,13 @@ class JACKAudioStreamer:
         self.streaming = False
         self.muted = False  # Mute flag for barge-in
         
+        # Pre-fill buffer with silence to prevent white noise on startup
+        silence_duration = 1.0  # 1 second of silence
+        silence_samples = int(self.samplerate * silence_duration)
+        silence = np.zeros(silence_samples, dtype=np.float32)
+        self.write_audio(silence)
+        logger.info(f"Pre-filled JACK buffer with {silence_duration}s of silence")
+        
         # Set process callback
         self.client.set_process_callback(self.process)
         
