@@ -39,11 +39,21 @@ class AudioHandler:
         """
         if baresip_bot:
             try:
-                # Use JACK for audio input (TTS from us to baresip)
-                baresip_bot.do_command("/ausrc jack")
-                # Use JACK for audio output (call audio from baresip for STT)
-                baresip_bot.do_command("/auplay jack")
-                logger.info("JACK_DEBUG Configured baresip to use JACK (ausrc jack; auplay jack)")
+                if os.environ.get("BARESIP_JACK_V", "0") == "1":
+                    # Ensure JACK module is loaded in baresip
+                    baresip_bot.do_command("/module_load jack")
+                    # Use JACK for input source (microphone into baresip)
+                    baresip_bot.do_command("/ausrc jack,MindRootSIP.*")
+                    # Use JACK for output playback so baresip exposes decoded audio to JACK.
+                    # Pass a specific client name so ports appear as 'MR-STT:output_*'.
+                    baresip_bot.do_command("/auplay jack,MR-STT")
+                    logger.info("JACK_DEBUG Configured baresip to use JACK (ausrc jack,MindRootSIP.*; auplay jack,MR-STT)")
+                else:
+                    # Use JACK for audio input (TTS from us to baresip)
+                    baresip_bot.do_command("/ausrc jack")
+                    # Use JACK for audio output (call audio from baresip for STT)
+                    baresip_bot.do_command("/auplay jack")
+                    logger.info("JACK_DEBUG Configured baresip to use JACK (ausrc jack; auplay jack)")
             except Exception as e:
                 trace = traceback.format_exc()
                 logger.error(f"JACK_DEBUG Failed to configure baresip JACK settings: {e}\n{trace}")
