@@ -154,10 +154,12 @@ class MindRootSIPBotV2(BareSIP):
         # Setup JACK audio output
         if not self.audio_handler.jack_enabled:
             self.audio_handler.setup_jack_audio()
-            self.audio_handler.configure_baresip_jack(self)
+            # Give JACK time to register ports before configuring baresip
+            time.sleep(0.2)
             
         # Connect JACK ports after call is established
         time.sleep(0.5)
+        self.audio_handler.configure_baresip_jack(self)
         self.audio_handler.connect_jack_to_baresip()
         
         # Setup STT provider and audio capture
