@@ -5,6 +5,7 @@ Handles audio processing, format conversion, and JACK integration
 """
 
 import audioop
+import os
 import numpy as np
 import logging
 from scipy import signal
