@@ -86,7 +86,14 @@ async def call(destination: str, context=None) -> str:
             destination = '1' + destination
         stt_provider = STT_PROVIDER
         logger.info(f"Using V2 implementation with STT provider: {stt_provider}")
-        result = await dial_service_v2(destination=destination, context=context)
+        try:
+            result = await asyncio.wait_for(
+                dial_service_v2(destination=destination, context=context),
+                timeout=30.0
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"Dial service timed out after 30 seconds for destination {destination}")
+            return f"Call initiation timed out after 30 seconds. The dial service did not respond."
     
         if result["status"] == "call_established":
             msg = f"Call established to {destination}. Voice conversation is now active. Speak naturally and I will respond through the phone."
