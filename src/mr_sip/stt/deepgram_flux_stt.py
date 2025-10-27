@@ -442,7 +442,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         
         print_deepgram_event("MessageReceived", msg_attrs)
         msg_type = getattr(message, 'type', 'unknown')
-        logger.info(f"Received message from Deepgram Flux: {msg_type}")
+        logger.info(f"DEEPGRAM DEBUG Received message from Deepgram Flux: {msg_type}")
         self.last_message_time = time.time()
         
         try:
@@ -465,14 +465,17 @@ class DeepgramFluxSTT(BaseSTTProvider):
             # Handle different event types
             if event == 'EagerEndOfTurn':
                 #pass
+                logger.debug('DEEPGRAM DEBUG EagerEndOfTurn')
                 self._handle_eager_eot(transcript, latency)
             elif event == 'TurnResumed' or event == 'StartOfTurn':
                 #pass
+                logger.debug('DEEPGRAM DEBUG turnresumed for turnresumed or startofturn')
                 self._handle_turn_resumed(transcript, latency, event)
             elif event == 'EndOfTurn':
+                logger.debug('DEEPGRAM DEBUG end of turn') 
                 self._handle_end_of_turn(transcript, latency)
-            else:
-                logger.debug(f"Unknown Flux event: {event}")
+            else:                
+                logger.debug(f"DEEPGRAM DEBUG Unknown Flux event: {event}")
             # DEBUG TRACE: exit of _on_message
             print("\033[91;107m[DEBUG TRACE 0.5/6] STT _on_message processed event.\033[0m")
             

@@ -180,30 +180,14 @@ async def sip_audio_out_chunk(audio_chunk: bytes, context=None) -> bool:
         
         if session and session.is_active:
             if session.halt_audio_out:
-                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
-                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
-                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
-                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
-                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
-                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
-                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
-                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
-                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
-                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
-                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
-                logger.debug(f"RESETTING HALT AUDIO OUT TO FALSE")
+                logger.debug(f"SIP DEBUG AUDIO HALTED NOT OUTPUTTING CHUNK")
  
                 # REMOVED FOR BARGE-IN FIX:                 session.halt_audio_out = False
                 return False
             else:
                 await session.send_audio(audio_chunk)
-                logger.debug(f"NOT HALTED. Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
-                logger.debug(f"NOT HALTED. Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
-                logger.debug(f"NOT HALTED. Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
-                logger.debug(f"NOT HALTED. Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
-                logger.debug(f"NOT HALTED. Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
+                logger.debug(f"SIP DEBUG sip_audio_out_chunk active. Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
  
-                logger.debug(f"Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
                 logger.debug(f"NOT HALTED. Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
  
                 return True
