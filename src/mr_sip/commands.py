@@ -89,7 +89,7 @@ async def call(destination: str, context=None) -> str:
         try:
             result = await asyncio.wait_for(
                 dial_service_v2(destination=destination, context=context),
-                timeout=30.0
+                timeout=60.0
             )
         except asyncio.TimeoutError:
             logger.error(f"Dial service timed out after 30 seconds for destination {destination}")
