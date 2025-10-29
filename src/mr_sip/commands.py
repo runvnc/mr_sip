@@ -364,7 +364,10 @@ async def await_call_result(log_id: str, agent:str, idle_timeout_seconds: int = 
             for cmd in commands:
                 if 'task_result' in cmd:
                     logger.info(f"AWAIT_CALL_RESULT Call session {log_id} received task_result")
-                    return cmd['task_result']
+                    log = ChatLog(log_id, agent=agent, user=context.username)
+                    log_dump = json.dumps(log.messages)
+                    return log_dump
+                    #return cmd['task_result']
 
             user_messages = [msg for msg in log.messages if msg['role'] == 'user']
             logger.debug(f"AWAIT_CALL_RESULT Call session {log_id} checking user messages for CALL DISCONNECTED: {str(user_messages)}")
