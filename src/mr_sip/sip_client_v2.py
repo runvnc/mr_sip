@@ -675,6 +675,7 @@ class MindRootSIPBotV2(BareSIP):
         if self.tts_sender_task:
             self.tts_sender_task.cancel()
 
+        import time
         time.sleep(1)
          
         # Find audio files if not already set (e.g., when using JACK capture)
