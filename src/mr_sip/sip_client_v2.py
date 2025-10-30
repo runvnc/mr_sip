@@ -674,6 +674,8 @@ class MindRootSIPBotV2(BareSIP):
         # Stop TTS sender
         if self.tts_sender_task:
             self.tts_sender_task.cancel()
+
+        time.sleep(1)
          
         # Find audio files if not already set (e.g., when using JACK capture)
         if not self.current_enc_file and not self.current_dec_file:
@@ -728,7 +730,7 @@ class MindRootSIPBotV2(BareSIP):
             try:
                 # Give baresip a moment to finish writing and close the files
                 import time
-                time.sleep(1.0)
+                time.sleep(0.5)
                 logger.info("Waited 0.5s for files to be fully written")
                 
                 # Get output path using log_id from context
