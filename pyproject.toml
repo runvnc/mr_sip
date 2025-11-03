@@ -21,7 +21,11 @@ dependencies = [
     "asyncio",
     "inotify>=0.2.10",
     "websockets>=12.0",
-    "deepgram-sdk>=3.0.0"
+    "websocket-client",
+    "deepgram-sdk>=3.0.0",
+    "pyaudio>=0.2.14",
+    "simpleaudio>=1.0.4",
+    "soundfile>=0.13.1",
 ]
 
 [project.optional-dependencies]
