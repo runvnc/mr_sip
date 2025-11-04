@@ -27,25 +27,18 @@ You speak American English.
 
 # Instructions
 
-Respond appropriately. If you reach voicemail, request a callback and then hangup.
-Use a friendly voice. Do not make any function calls until you are finished speaking.
+Say hello, give them your name, then output the tone for digit '5'.
+Ignore anything the user says for now.
 
 # Output channel tool
 
-Use the output() function with the text argument to output non-verbal commands when appropriate.
+Use the output() function with the text argument to output non-verbal content.
 
 # JSON commands
 
-By example:
+Example:
 
 "send_dtmf": {"digits": "1234"}
-
-"hangup": {}
-
-# Initial testing
-
-For this test respond with voice, then do any function calls afterwards.
-So we expect voice and function call output.
 
 """
 
@@ -54,12 +47,11 @@ instr1 = {
   "session": {
     "type": "realtime",
     "instructions": sys,
-    "audio": {"output" : { "voice": "marin"} },
     "tools": [
         {
             "type": "function",
             "name": "output",
-            "description": "Call this function with JSON-encoded function calls if necessary.",
+            "description": "Call this function for all non-verbal outputs. You can output text or JSON-encoded function calls.",
             "parameters": {
                 "type": "object",
                 "strict": True,
@@ -73,6 +65,7 @@ instr1 = {
         }
     ],
     "tool_choice": "auto",
+    "audio": { "input": { "format": {"type": "audio/pcmu" } } }
   },
   "event_id": "5fc543c4-f59c-420f-8fb9-68c45d1546a7a2"
 }
@@ -82,26 +75,27 @@ instr2 = {
   "session": {
     "type": "realtime",
     "instructions": "You speak English. Please wait silently for speech input and then echo back the input speech or describe what you hear in order to verify the input audio format. We need as close as possibe to the exact thing the audio input said. We need the name of the person who's voicemail inbox this is",
-   #"instructions": "Your name is Erica. You will hear an answering machine message. Leave a voicemail greeting them by name and asking them to call you back.",
+    #"instructions": "Your name is Erica. You will hear an answering machine message. Leave a voicemail greeting them by name and asking them to call you back.",
+    "audio": { "input": { "format": {"type": "audio/pcmu" } } }
   },
  
   "event_id": "5fc543c4-f59c-420f-8fb9-68c45d1546a7a",
 }
 
 files = [
-    #'/files/upd6/mr_verification_dashboard/audio/voicemailpadded.wav',
-    '/files/upd6/mr_verification_dashboard/audio/voicemailpadded2_24000_pcm.wav'
+    '/files/upd6/mr_verification_dashboard/audio/voicemailpadded.wav',
+    #'/files/upd6/mr_verification_dashboard/audio/voicemailpadded2_24000_pcm.wav'
 ]
 
 def send_wavs():
     try:
         print("Top of send_wavs")
         for filename in files:
-            data, samplerate = sf.read(filename, dtype='float32')
-            channel_data = data[:, 0] if data.ndim > 1 else data
-            #base64_chunk = base64.b64encode(channel_data.tobytes()).decode('ascii')
-            base64_chunk = base64_encode_audio(channel_data)
-
+            data, samplerate = sf.read(filename, dtype='int16') # dtype='float32')
+            #channel_data = data[:, 0] if data.ndim > 1 else data
+            #base64_chunk = base64_encode_audio(channel_data)
+            base64_chunk = base64.b64encode(data).decode('ascii')
+ 
             # Send the client event
             event = {
                 "type": "input_audio_buffer.append",
@@ -116,7 +110,7 @@ def send_wavs():
 def on_open(ws):
     try: 
         print("Connected to server.")
-        ws.send(json.dumps(instr1))
+        ws.send(json.dumps(instr2))
         print("Sent instructions")
         send_wavs()
         print("Sent wavs")
