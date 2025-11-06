@@ -17,6 +17,13 @@ import traceback
 import time
 import json
 
+# Import S2S services if available
+try:
+    from .services_s2s import dial_service as dial_service_s2s, end_call_service as end_call_service_s2s
+    S2S_AVAILABLE = True
+except ImportError:
+    S2S_AVAILABLE = False
+
 # Import V2 services if available
 try:
     from .services_v2 import dial_service_v2, end_call_service_v2
@@ -25,10 +32,12 @@ except ImportError:
     V2_AVAILABLE = False
 
 # Import configuration
+SIP_PROVIDER = os.getenv('SIP_PROVIDER', 'deepgram').lower()
 REQUIRE_DEEPGRAM = os.getenv('REQUIRE_DEEPGRAM', 'true').lower() in ('true', '1', 'yes', 'on')
 STT_PROVIDER = os.getenv('STT_PROVIDER', 'deepgram' if REQUIRE_DEEPGRAM else 'whisper_vad')
 
 logger = logging.getLogger(__name__)
+logger.info(f"Commands module loaded with SIP_PROVIDER={SIP_PROVIDER}")
 
 # Check if V2 should be used (based on environment variable)
 USE_V2 = V2_AVAILABLE and os.getenv('SIP_USE_V2', 'true').lower() in ('true', '1', 'yes', 'on')
@@ -84,8 +93,21 @@ async def call(destination: str, context=None) -> str:
         # if it's just area code plus number, add default country code
         if destination.isdigit() and len(destination) == 10:
             destination = '1' + destination
-        stt_provider = STT_PROVIDER
-        logger.info(f"Using V2 implementation with STT provider: {stt_provider}")
+        
+        # Use the appropriate dial service based on SIP_PROVIDER
+        if SIP_PROVIDER == 's2s' and S2S_AVAILABLE:
+            logger.info(f"Using S2S implementation for call to {destination}")
+            try:
+                result = await asyncio.wait_for(
+                    dial_service_s2s(destination=destination, context=context),
+                    timeout=60.0
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"S2S dial service timed out after 60 seconds for destination {destination}")
+                return f"Call initiation timed out after 60 seconds. The dial service did not respond."
+        else:
+            # Use V2 implementation
+            logger.info(f"Using V2 implementation with STT provider: {STT_PROVIDER}")
         try:
             result = await asyncio.wait_for(
                 dial_service_v2(destination=destination, context=context),
@@ -136,7 +158,9 @@ async def hangup(context=None) -> str:
         logger.info(f"Hangup command initiated for session {context.log_id}")
         
         # Use the appropriate end call service based on version
-        if USE_V2:
+        if SIP_PROVIDER == 's2s' and S2S_AVAILABLE:
+            result = await end_call_service_s2s(context=context)
+        elif USE_V2:
             result = await end_call_service_v2(context=context)
         else:
             result = await end_call_service(context=context)
