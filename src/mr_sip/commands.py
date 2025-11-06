@@ -17,30 +17,28 @@ import traceback
 import time
 import json
 
-# Import S2S services if available
-try:
-    from .services_s2s import dial_service as dial_service_s2s, end_call_service as end_call_service_s2s
-    S2S_AVAILABLE = True
-except ImportError:
-    S2S_AVAILABLE = False
-
-# Import V2 services if available
-try:
-    from .services_v2 import dial_service_v2, end_call_service_v2
-    V2_AVAILABLE = True
-except ImportError:
-    V2_AVAILABLE = False
-
-# Import configuration
 SIP_PROVIDER = os.getenv('SIP_PROVIDER', 'deepgram').lower()
 REQUIRE_DEEPGRAM = os.getenv('REQUIRE_DEEPGRAM', 'true').lower() in ('true', '1', 'yes', 'on')
 STT_PROVIDER = os.getenv('STT_PROVIDER', 'deepgram' if REQUIRE_DEEPGRAM else 'whisper_vad')
+#USE_V2 = V2_AVAILABLE and os.getenv('SIP_USE_V2', 'true').lower() in ('true', '1', 'yes', 'on')
+USE_V2 = True
 
+if SIP_PROVIDER == 's2s':
+    try:
+        from .services_s2s import dial_service as dial_service_s2s, end_call_service as end_call_service_s2s
+        S2S_AVAILABLE = True
+    except ImportError:
+        S2S_AVAILABLE = False
+else:
+    try:
+        from .services_v2 import dial_service_v2, end_call_service_v2
+        V2_AVAILABLE = True
+    except ImportError:
+        V2_AVAILABLE = False
+
+# Import configuration
 logger = logging.getLogger(__name__)
 logger.info(f"Commands module loaded with SIP_PROVIDER={SIP_PROVIDER}")
-
-# Check if V2 should be used (based on environment variable)
-USE_V2 = V2_AVAILABLE and os.getenv('SIP_USE_V2', 'true').lower() in ('true', '1', 'yes', 'on')
 
 # Log configuration on module load
 logger.info(f"SIP Plugin Configuration: V2={'enabled' if USE_V2 else 'disabled'}, STT_PROVIDER={STT_PROVIDER}, REQUIRE_DEEPGRAM={REQUIRE_DEEPGRAM}")
