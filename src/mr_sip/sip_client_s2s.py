@@ -46,7 +46,7 @@ class MindRootSIPBotS2S(BareSIP):
         """
         # Set up audio directory
         self.audio_dir = audio_dir or os.path.expanduser("~/.baresip")
-        
+         
         # Initialize baresipy
         super().__init__(user, password, gateway, block=False)
         
@@ -55,7 +55,9 @@ class MindRootSIPBotS2S(BareSIP):
         
         # Call tracking
         self.call_start_time = None
-        
+
+        self.audio_ready = False
+
         # Audio processing
         self.audio_handler = AudioHandler()
         self.audio_capture = None
@@ -83,7 +85,7 @@ class MindRootSIPBotS2S(BareSIP):
         
         # Wait a bit for baresip to activate its JACK client
         logger.info("S2S_DEBUG: Waiting for baresip JACK client to activate...")
-        time.sleep(0.5)
+        time.sleep(0.1)
             
         # Connect JACK ports
         # Retry connection a few times since baresip may take time to activate
@@ -93,7 +95,7 @@ class MindRootSIPBotS2S(BareSIP):
             if ok:
                 break
             logger.warning(f"S2S_DEBUG: JACK connection attempt {attempt+1} failed, retrying...")
-            time.sleep(0.3)
+            time.sleep(0.1)
         
         if not ok:
             logger.error("S2S_DEBUG: Failed to connect JACK ports after 5 attempts")
@@ -102,6 +104,8 @@ class MindRootSIPBotS2S(BareSIP):
 
         # Setup audio capture
         self._schedule_coroutine(self._setup_audio_capture())
+        time.sleep(0.1)
+        self.audio_ready = True
         
     async def _setup_audio_capture(self):
         """Setup JACK audio capture to send to S2S system."""
