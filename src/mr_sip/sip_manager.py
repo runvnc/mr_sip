@@ -39,6 +39,9 @@ class SIPSession:
             
     async def stop_audio_sender(self):
         """Stop the audio sender task"""
+        logger.info(f"S2S_DEBUG: Stopping audio sender for session {self.log_id}")
+        trace = traceback.format_stack()
+        logger.debug(f"S2S_DEBUG: stop_audio_sender called for session {self.log_id}\n{''.join(trace)}")
         if self._audio_sender_task:
             self._audio_sender_task.cancel()
             try:
@@ -99,6 +102,7 @@ class SIPSession:
     async def end_session(self):
         """End the SIP session and cleanup resources"""
         logger.info(f"Ending SIP session {self.log_id}")
+
         self.is_active = False
         
         # Signal audio sender to stop
