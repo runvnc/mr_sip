@@ -137,7 +137,7 @@ class MindRootSIPBotS2S(BareSIP):
     async def _on_audio_chunk_from_jack(self, audio_chunk: np.ndarray):
         """Callback for audio chunks from JACK - send to S2S system."""
         try:
-            return
+            #return
             if not hasattr(self, '_audio_chunk_count'):
                 self._audio_chunk_count = 0
             self._audio_chunk_count += 1
@@ -147,8 +147,8 @@ class MindRootSIPBotS2S(BareSIP):
             if self._audio_chunk_count % 50 == 0:
                 logger.info(f"S2S_DEBUG: Audio input chunk #{self._audio_chunk_count}, size: {len(audio_chunk)}")
             
-            audio_bytes = (audio_chunk * 32767).astype(np.int16).tobytes()
-            logger.debug(f"S2S_DEBUG: Converted to {len(audio_bytes)} bytes PCM")
+            #audio_bytes = (audio_chunk * 32767).astype(np.int16).tobytes()
+            #logger.debug(f"S2S_DEBUG: Converted to {len(audio_bytes)} bytes PCM")
                 
             # Send to S2S system (OpenAI or other provider)
             logger.debug(f"S2S_DEBUG: Calling send_s2s_audio_chunk with context.log_id={self.context.log_id if self.context else None}")
