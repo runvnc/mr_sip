@@ -93,7 +93,10 @@ async def dial_service(destination: str, context=None) -> Dict[str, Any]:
             
         if bot.call_established:
             session.is_active = True
+            logger.info(f"S2S_DEBUG: Marking session {context.log_id} as active")
             await session.start_audio_sender()
+            logger.info(f"S2S_DEBUG: Audio sender started for session {context.log_id}")
+            logger.info(f"S2S_DEBUG: Session active={session.is_active}, sender_task={session._audio_sender_task}")
             logger.info(f"Call established to {destination} (S2S mode)")
             
             return {

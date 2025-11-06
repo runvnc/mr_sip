@@ -77,13 +77,26 @@ class MindRootSIPBotS2S(BareSIP):
         if not self.audio_handler.jack_enabled:
             self.audio_handler.setup_jack_audio()
             time.sleep(0.1)
+        
+        # Configure baresip to use JACK FIRST
+        self.audio_handler.configure_baresip_jack(self)
+        
+        # Wait a bit for baresip to activate its JACK client
+        logger.info("S2S_DEBUG: Waiting for baresip JACK client to activate...")
+        time.sleep(0.5)
             
         # Connect JACK ports
-        self.audio_handler.configure_baresip_jack(self)
-        ok = self.audio_handler.connect_jack_to_baresip()
-        # if not okay then record error message and hang up call
+        # Retry connection a few times since baresip may take time to activate
+        ok = False
+        for attempt in range(5):
+            ok = self.audio_handler.connect_jack_to_baresip()
+            if ok:
+                break
+            logger.warning(f"S2S_DEBUG: JACK connection attempt {attempt+1} failed, retrying...")
+            time.sleep(0.3)
+        
         if not ok:
-            logger.error("Error connecting JACK ports for audio capture.")
+            logger.error("S2S_DEBUG: Failed to connect JACK ports after 5 attempts")
             self._schedule_coroutine(self.hangup_call())
             return
 
