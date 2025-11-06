@@ -75,20 +75,24 @@ class JACKAudioStreamer:
         
     def connect_to_baresip(self) -> bool:
         """Connect output ports to baresip input ports."""
-        baresip_ports = self.client.get_ports('baresip', is_audio=True, is_input=True)
-        
-        if not baresip_ports:
-            logger.warning("No baresip input ports found")
+        try:
+            baresip_ports = self.client.get_ports('baresip', is_audio=True, is_input=True)
+            
+            if not baresip_ports:
+                logger.warning("No baresip input ports found")
+                return False
+                
+            logger.info(f"Found {len(baresip_ports)} baresip input port(s)")
+            
+            for i, baresip_port in enumerate(baresip_ports[:len(self.outports)]):
+                our_port = self.outports[i]
+                self.client.connect(our_port, baresip_port)
+                logger.info(f"Connected {our_port.name} -> {baresip_port.name}")
+                
+            return True
+        except Exception as e:
+            logger.error(f"Error connecting to baresip ports: {e}")
             return False
-            
-        logger.info(f"Found {len(baresip_ports)} baresip input port(s)")
-        
-        for i, baresip_port in enumerate(baresip_ports[:len(self.outports)]):
-            our_port = self.outports[i]
-            self.client.connect(our_port, baresip_port)
-            logger.info(f"Connected {our_port.name} -> {baresip_port.name}")
-            
-        return True
         
     def write_audio(self, audio_data: np.ndarray):
         """Write audio data to ring buffer."""
