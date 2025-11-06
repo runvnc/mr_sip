@@ -431,12 +431,7 @@ class MindRootSIPBotV2(BareSIP):
         session_manager = get_session_manager()
         async def unset_halt_flag():
             logger.debug(f"UNSET HALT AUDIO! text is {result.text}")
-            logger.debug(f"UNSET HALT AUDIO! text is {result.text}")
-            logger.debug(f"UNSET HALT AUDIO! text is {result.text}")
-            logger.debug(f"UNSET HALT AUDIO! text is {result.text}")
-            logger.debug(f"UNSET HALT AUDIO! text is {result.text}")
-            logger.debug(f"UNSET HALT AUDIO! text is {result.text}")
- 
+
             session = await session_manager.get_session(self.context.log_id)
             if session:
                 session.halt_audio_out = False

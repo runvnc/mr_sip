@@ -3,7 +3,10 @@
 MindRoot SIP Plugin - Main Module
 
 Provides SIP phone integration with MindRoot's AI agent system.
-Enables voice conversations through SIP protocols with real-time transcription and TTS.
+Supports multiple modes:
+- Deepgram + separate TTS (v1)
+- Deepgram Flux + separate TTS (v2)
+- Speech-to-Speech mode (s2s) - for OpenAI Realtime API or similar
 
 This refactored version imports commands and services from separate modules
 for better maintainability and testing.
@@ -15,9 +18,24 @@ import os
 import time
 from pathlib import Path
 
-# Import commands and services for plugin registration
+# Import commands (provider-agnostic)
 from .commands import *
-from .services import *
+
+# Determine which mode to use
+SIP_PROVIDER = os.getenv('SIP_PROVIDER', 'deepgram').lower()
+
+logger.info(f"SIP Plugin Configuration: PROVIDER={SIP_PROVIDER}")
+
+# Import the appropriate service implementation
+if SIP_PROVIDER == 's2s':
+    logger.info("Loading Speech-to-Speech service implementation")
+    from .services_s2s import *
+elif SIP_PROVIDER == 'deepgram_v2' or os.getenv('SIP_USE_V2', 'true').lower() in ('true', '1', 'yes', 'on'):
+    logger.info("Loading Deepgram V2 service implementation")
+    from .services_v2 import *
+else:
+    logger.info("Loading Deepgram V1 service implementation")
+    from .services import *
 
 # Plugin initialization
 logger = logging.getLogger(__name__)
@@ -104,5 +122,5 @@ else:
     logger.warning("MindRoot SIP plugin loaded but JACK daemon may not be running")
     
 logger.info("Available commands: call, hangup")
-logger.info("Available services: dial_service, sip_audio_out_chunk, end_call_service")
+logger.info(f"Available services: dial_service, sip_audio_out_chunk, end_call_service (mode: {SIP_PROVIDER})")
 logger.info("JACK logs available at: /tmp/mr_sip_logs/jack_startup.log")
