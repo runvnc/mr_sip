@@ -53,7 +53,7 @@ class SIPSession:
         try:
             while self.is_active:
                 try:
-                    audio_chunk = await asyncio.wait_for(self.audio_queue.get(), timeout=1.0)
+                    audio_chunk = await asyncio.wait_for(self.audio_queue.get(), timeout=30.0)
                     if audio_chunk is None:  # Sentinel to stop
                         break
                     await self._send_audio_to_sip(audio_chunk)
