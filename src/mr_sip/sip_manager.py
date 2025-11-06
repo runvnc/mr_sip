@@ -28,6 +28,8 @@ class SIPSession:
         self.halt_audio_out = False
         self.audio_queue = asyncio.Queue()
         self._audio_sender_task = None
+        self._audio_sent_count = 0
+        self._audio_queued_count = 0
         
     async def start_audio_sender(self):
         """Start the audio sender task for TTS output"""
@@ -46,6 +48,7 @@ class SIPSession:
             
     async def _audio_sender_loop(self):
         """Background task that sends audio chunks to the SIP call"""
+        logger.info(f"S2S_DEBUG: Audio sender loop started for session {self.log_id}")
         try:
             while self.is_active:
                 try:
@@ -53,8 +56,13 @@ class SIPSession:
                     if audio_chunk is None:  # Sentinel to stop
                         break
                     await self._send_audio_to_sip(audio_chunk)
+                    self._audio_sent_count += 1
+                    if self._audio_sent_count % 10 == 0:
+                        logger.info(f"S2S_DEBUG: Sent {self._audio_sent_count} audio chunks to SIP for session {self.log_id}")
                 except asyncio.TimeoutError:
                     continue
+                except asyncio.CancelledError:
+                    raise
                 except Exception as e:
                     logger.error(f"Error in audio sender loop: {e}")
                     break
@@ -63,6 +71,7 @@ class SIPSession:
             
     async def _send_audio_to_sip(self, audio_chunk: bytes):
         """Send audio chunk to the SIP call via JACK."""
+        logger.debug(f"S2S_DEBUG: _send_audio_to_sip called with {len(audio_chunk)} bytes")
         if self.baresip_bot and hasattr(self.baresip_bot, 'send_tts_audio'):
             try:
                 await self.baresip_bot.send_tts_audio(audio_chunk)
@@ -74,8 +83,12 @@ class SIPSession:
     async def send_audio(self, audio_chunk: bytes):
         """Queue audio chunk for sending to SIP call"""
         if self.is_active:
+            self._audio_queued_count += 1
             try:
                 await self.audio_queue.put(audio_chunk)
+                logger.debug(f"S2S_DEBUG: Queued audio chunk #{self._audio_queued_count}, queue size: {self.audio_queue.qsize()}")
+                if self._audio_queued_count % 10 == 0:
+                    logger.info(f"S2S_DEBUG: Total queued: {self._audio_queued_count}, sent: {self._audio_sent_count}, queue size: {self.audio_queue.qsize()}")
             except Exception as e:
                 logger.error(f"Failed to queue audio chunk: {e}")
         else:

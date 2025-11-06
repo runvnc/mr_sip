@@ -69,6 +69,8 @@ class MindRootSIPBotS2S(BareSIP):
     def handle_call_established(self):
         """When call connects, setup JACK and start audio capture."""
         logger.info("=== CALL ESTABLISHED (S2S Mode) ===")
+        logger.info(f"S2S_DEBUG: Main loop available: {self.main_loop is not None}")
+        logger.info(f"S2S_DEBUG: Main loop closed: {self.main_loop.is_closed() if self.main_loop else 'N/A'}")
         self.call_start_time = datetime.now()
         
         # Setup JACK audio output
@@ -91,6 +93,7 @@ class MindRootSIPBotS2S(BareSIP):
     async def _setup_audio_capture(self):
         """Setup JACK audio capture to send to S2S system."""
         try:
+            logger.info("S2S_DEBUG: _setup_audio_capture called")
             logger.info("Starting JACK audio capture for S2S mode...")
             
             # Create JACK audio capture
@@ -103,9 +106,11 @@ class MindRootSIPBotS2S(BareSIP):
                 agc_target_rms=0.15,
                 agc_max_gain=20.0
             )
+            logger.info("S2S_DEBUG: JACKAudioCapture created")
             
             await self.audio_capture.start()
-            logger.info("Audio capture started, sending to S2S system")
+            logger.info("S2S_DEBUG: Audio capture started successfully")
+            logger.info(f"S2S_DEBUG: Capture running: {self.audio_capture._running if hasattr(self.audio_capture, '_running') else 'unknown'}")
             
         except Exception as e:
             logger.error(f"Error setting up audio capture: {e}")
@@ -115,25 +120,32 @@ class MindRootSIPBotS2S(BareSIP):
     async def _on_audio_chunk_from_jack(self, audio_chunk: np.ndarray):
         """Callback for audio chunks from JACK - send to S2S system."""
         try:
+            if not hasattr(self, '_audio_chunk_count'):
+                self._audio_chunk_count = 0
+            self._audio_chunk_count += 1
+            
             # Convert numpy array to bytes (already at 24kHz from JACKAudioCapture)
             # OpenAI expects PCM 16-bit
-            logger.info("------------------ Trying to send bytes to S2S ----------------------")
-            logger.info("------------------ Trying to send bytes to S2S ----------------------")
-            logger.info("------------------ Trying to send bytes to S2S ----------------------")
-            logger.info("------------------ Trying to send bytes to S2S ----------------------")
-            logger.info("------------------ Trying to send bytes to S2S ----------------------")
-            logger.info("------------------ Trying to send bytes to S2S ----------------------")
-  
+            if self._audio_chunk_count % 50 == 0:
+                logger.info(f"S2S_DEBUG: Audio input chunk #{self._audio_chunk_count}, size: {len(audio_chunk)}")
+            
             audio_bytes = (audio_chunk * 32767).astype(np.int16).tobytes()
+            logger.debug(f"S2S_DEBUG: Converted to {len(audio_bytes)} bytes PCM")
                 
             # Send to S2S system (OpenAI or other provider)
+            logger.debug(f"S2S_DEBUG: Calling send_s2s_audio_chunk with context.log_id={self.context.log_id if self.context else None}")
             await service_manager.send_s2s_audio_chunk(
                 audio_bytes=audio_bytes,
                 context=self.context
             )
-            logger.info("Sent audio chunk to S2S system")
+            
+            if self._audio_chunk_count % 50 == 0:
+                logger.info(f"S2S_DEBUG: Successfully sent chunk #{self._audio_chunk_count} to S2S")
+                
         except Exception as e:
             logger.error(f"Error sending audio to S2S system: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             
     async def send_tts_audio(self, audio_chunk: bytes):
         """Send TTS audio chunk to the SIP call via JACK.
