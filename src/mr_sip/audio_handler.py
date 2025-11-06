@@ -83,9 +83,26 @@ class AudioHandler:
             logger.info("JACK TTS unmuted for new speech")
             
         try:
-            # Decode μ-law to 16-bit PCM
+            # Try to detect format - if it's already PCM, use directly
+            # OpenAI sends PCM 16-bit at 24kHz
             # ElevenLabs sends ulaw_8000 format (8-bit μ-law at 8000 Hz)
-            pcm_data = audioop.ulaw2lin(audio_chunk, 2)  # 2 = 16-bit output
+            
+            # Simple heuristic: ulaw is typically much smaller for same duration
+            # PCM 16-bit is 2 bytes per sample, ulaw is 1 byte per sample
+            # If chunk size suggests PCM (larger), try to use it directly
+            try:
+                # Try to interpret as PCM first
+                test_array = np.frombuffer(audio_chunk, dtype=np.int16)
+                # If this works and size is reasonable, it's likely PCM
+                if len(test_array) > 0:
+                    pcm_data = audio_chunk
+                    logger.debug(f"Detected PCM format, using directly")
+                else:
+                    raise ValueError("Empty array")
+            except:
+                # Fall back to ulaw decoding
+                pcm_data = audioop.ulaw2lin(audio_chunk, 2)  # 2 = 16-bit output
+                logger.debug(f"Decoded ulaw to PCM")
             
             # Convert PCM bytes to numpy array
             audio_array = np.frombuffer(pcm_data, dtype=np.int16)
@@ -93,8 +110,22 @@ class AudioHandler:
             # Convert to float32 normalized to -1.0 to 1.0 for JACK
             audio_float = audio_array.astype(np.float32) / 32768.0
             
-            # No resampling needed - audio is already at 8000 Hz from ElevenLabs
-            # JACK is also running at 8000 Hz, so we can send directly
+            # Resample if needed
+            # OpenAI sends 24kHz, ElevenLabs sends 8kHz, JACK might be at different rate
+            jack_rate = self.jack_streamer.samplerate
+            # Estimate input sample rate based on format
+            # If we decoded from ulaw, it's 8kHz (ElevenLabs)
+            # If it's PCM, assume 24kHz (OpenAI)
+            input_rate = 8000 if pcm_data != audio_chunk else 24000
+            
+            if input_rate != jack_rate:
+                # Resample to JACK rate
+                from scipy.signal import resample_poly
+                from math import gcd
+                g = gcd(jack_rate, input_rate)
+                audio_float = resample_poly(audio_float, jack_rate // g, input_rate // g)
+                logger.debug(f"Resampled audio from {input_rate}Hz to {jack_rate}Hz")
+            
             if len(audio_float) > 0:
                 # Feed to JACK ring buffer
                 self.jack_streamer.write_audio(audio_float)

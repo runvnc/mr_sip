@@ -78,6 +78,8 @@ class SIPSession:
                 await self.audio_queue.put(audio_chunk)
             except Exception as e:
                 logger.error(f"Failed to queue audio chunk: {e}")
+        else:
+            raise RuntimeError("Failed to queue audio chunk: SIP session is not active")
                 
     async def end_session(self):
         """End the SIP session and cleanup resources"""

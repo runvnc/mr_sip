@@ -135,6 +135,23 @@ class MindRootSIPBotS2S(BareSIP):
         except Exception as e:
             logger.error(f"Error sending audio to S2S system: {e}")
             
+    async def send_tts_audio(self, audio_chunk: bytes):
+        """Send TTS audio chunk to the SIP call via JACK.
+        
+        This is called by the session manager when audio needs to be sent to the phone.
+        OpenAI sends PCM 16-bit at 24kHz, but we need to convert it for JACK.
+        """
+        try:
+            # OpenAI sends PCM 16-bit at 24kHz
+            # Convert to format expected by audio_handler
+            import numpy as np
+            audio_array = np.frombuffer(audio_chunk, dtype=np.int16)
+            # audio_handler expects the same format, so we can pass through
+            await self.audio_handler.send_tts_audio(audio_chunk)
+            logger.debug(f"Sent {len(audio_chunk)} bytes TTS audio to JACK")
+        except Exception as e:
+            logger.error(f"Error sending TTS audio: {e}")
+            
     async def hangup_call(self):
         """Initiate call hangup and cleanup."""
         logger.info("Hangup requested. Performing cleanup...")
@@ -152,8 +169,14 @@ class MindRootSIPBotS2S(BareSIP):
         # Cleanup audio handler
         self.audio_handler.cleanup(self)
         
-        # Show disconnect message
-        self._schedule_coroutine(self.show_disconnected())
+        # Show disconnect message - but only if we have a valid event loop
+        try:
+            if self.main_loop and not self.main_loop.is_closed():
+                self._schedule_coroutine(self.show_disconnected())
+            else:
+                logger.warning("Cannot send disconnect message - no event loop available")
+        except Exception as e:
+            logger.error(f"Error scheduling disconnect message: {e}")
         
     async def show_disconnected(self):
         """Send disconnect message to agent."""
