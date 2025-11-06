@@ -34,8 +34,11 @@ class SIPSession:
         
     async def start_audio_sender(self):
         """Start the audio sender task for TTS output"""
+        logger.info(f"S2S_DEBUG: start_audio_sender called for session {self.log_id}")
+        logger.info(f"S2S_DEBUG: Current task status: {self._audio_sender_task}")
         if self._audio_sender_task is None:
             self._audio_sender_task = asyncio.create_task(self._audio_sender_loop())
+            logger.info(f"S2S_DEBUG: Created new audio sender task: {self._audio_sender_task}")
             
     async def stop_audio_sender(self):
         """Stop the audio sender task"""
@@ -53,8 +56,11 @@ class SIPSession:
     async def _audio_sender_loop(self):
         """Background task that sends audio chunks to the SIP call"""
         logger.info(f"S2S_DEBUG: Audio sender loop started for session {self.log_id}")
+        logger.info(f"S2S_DEBUG: Session is_active={self.is_active}")
+        logger.info(f"S2S_DEBUG: About to enter while loop")
         try:
             while self.is_active:
+                logger.debug(f"S2S_DEBUG: In while loop, waiting for audio...")
                 try:
                     audio_chunk = await asyncio.wait_for(self.audio_queue.get(), timeout=30.0)
                     if audio_chunk is None:  # Sentinel to stop
@@ -73,6 +79,8 @@ class SIPSession:
         except asyncio.CancelledError:
             trace = traceback.format_exc()
             logger.info(f"Audio sender cancelled for session {self.log_id}\n{trace}")
+        finally:
+            logger.info(f"S2S_DEBUG: Audio sender loop exiting for session {self.log_id}")
             
     async def _send_audio_to_sip(self, audio_chunk: bytes):
         """Send audio chunk to the SIP call via JACK."""
