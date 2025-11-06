@@ -147,8 +147,8 @@ class MindRootSIPBotS2S(BareSIP):
             if self._audio_chunk_count % 50 == 0:
                 logger.info(f"S2S_DEBUG: Audio input chunk #{self._audio_chunk_count}, size: {len(audio_chunk)}")
             
-            #audio_bytes = (audio_chunk * 32767).astype(np.int16).tobytes()
-            #logger.debug(f"S2S_DEBUG: Converted to {len(audio_bytes)} bytes PCM")
+            audio_bytes = (audio_chunk * 32767).astype(np.int16).tobytes()
+            logger.debug(f"S2S_DEBUG: Converted to {len(audio_bytes)} bytes PCM")
                 
             # Send to S2S system (OpenAI or other provider)
             logger.debug(f"S2S_DEBUG: Calling send_s2s_audio_chunk with context.log_id={self.context.log_id if self.context else None}")
