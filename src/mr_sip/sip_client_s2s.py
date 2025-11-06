@@ -117,14 +117,21 @@ class MindRootSIPBotS2S(BareSIP):
         try:
             # Convert numpy array to bytes (already at 24kHz from JACKAudioCapture)
             # OpenAI expects PCM 16-bit
+            logger.info("------------------ Trying to send bytes to S2S ----------------------")
+            logger.info("------------------ Trying to send bytes to S2S ----------------------")
+            logger.info("------------------ Trying to send bytes to S2S ----------------------")
+            logger.info("------------------ Trying to send bytes to S2S ----------------------")
+            logger.info("------------------ Trying to send bytes to S2S ----------------------")
+            logger.info("------------------ Trying to send bytes to S2S ----------------------")
+  
             audio_bytes = (audio_chunk * 32767).astype(np.int16).tobytes()
-            
+                
             # Send to S2S system (OpenAI or other provider)
             await service_manager.send_s2s_audio_chunk(
                 audio_bytes=audio_bytes,
                 context=self.context
             )
-            
+            logger.info("Sent audio chunk to S2S system")
         except Exception as e:
             logger.error(f"Error sending audio to S2S system: {e}")
             
