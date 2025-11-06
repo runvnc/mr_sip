@@ -78,8 +78,13 @@ class MindRootSIPBotS2S(BareSIP):
             
         # Connect JACK ports
         self.audio_handler.configure_baresip_jack(self)
-        self.audio_handler.connect_jack_to_baresip()
-        
+        ok = self.audio_handler.connect_jack_to_baresip()
+        # if not okay then record error message and hang up call
+        if not ok:
+            logger.error("Error connecting JACK ports for audio capture.")
+            self.hangup_call()
+            return
+
         # Setup audio capture
         self._schedule_coroutine(self._setup_audio_capture())
         
