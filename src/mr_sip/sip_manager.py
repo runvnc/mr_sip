@@ -11,6 +11,7 @@ import threading
 import logging
 from typing import Dict, Optional, Any
 from datetime import datetime
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,8 @@ class SIPSession:
                     logger.error(f"Error in audio sender loop: {e}")
                     break
         except asyncio.CancelledError:
-            logger.info(f"Audio sender cancelled for session {self.log_id}")
+            trace = traceback.format_exc()
+            logger.info(f"Audio sender cancelled for session {self.log_id}\n{trace}")
             
     async def _send_audio_to_sip(self, audio_chunk: bytes):
         """Send audio chunk to the SIP call via JACK."""
