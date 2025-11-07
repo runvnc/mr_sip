@@ -71,6 +71,14 @@ class MindRootSIPBotS2S(BareSIP):
     def handle_call_established(self):
         """When call connects, setup JACK and start audio capture."""
         logger.info("=== CALL ESTABLISHED (S2S Mode) ===")
+        
+        # Phase 3 optimization: Check active codec
+        try:
+            codec_info = self.do_command("/call_status")
+            logger.info(f"Active codec: {codec_info}")
+        except Exception as e:
+            logger.debug(f"Could not retrieve codec info: {e}")
+        
         logger.info(f"S2S_DEBUG: Main loop available: {self.main_loop is not None}")
         logger.info(f"S2S_DEBUG: Main loop closed: {self.main_loop.is_closed() if self.main_loop else 'N/A'}")
         self.call_start_time = datetime.now()
@@ -117,10 +125,10 @@ class MindRootSIPBotS2S(BareSIP):
             # Target 24kHz for OpenAI (will be resampled from JACK rate)
             self.audio_capture = JACKAudioCapture(
                 target_sample_rate=24000,  # OpenAI expects 24kHz
-                chunk_duration_s=0.1,
+                chunk_duration_s=0.020,  # 20ms chunks (was 100ms) - Phase 1 optimization
                 chunk_callback=self._on_audio_chunk_from_jack,
                 stereo_mix=True,
-                agc_target_rms=0.15,
+                agc_target_rms=0.0,  # Disable AGC - Phase 1 optimization (phone audio already normalized)
                 agc_max_gain=20.0
             )
             logger.info("S2S_DEBUG: JACKAudioCapture created")

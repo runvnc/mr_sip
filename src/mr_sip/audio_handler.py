@@ -40,6 +40,14 @@ class AudioHandler:
         """
         if baresip_bot:
             try:
+                # Phase 3 optimization: Try to load opus module for better audio quality and lower latency
+                try:
+                    baresip_bot.do_command("/module_load opus")
+                    logger.info("Loaded Opus codec module")
+                except Exception as e:
+                    logger.warning(f"Could not load Opus module: {e}")
+                
+                # Configure JACK audio routing
                 if os.environ.get("BARESIP_JACK_V", "0") == "1":
                     # Ensure JACK module is loaded in baresip
                     baresip_bot.do_command("/module_load jack")
@@ -96,7 +104,7 @@ class AudioHandler:
                 # If this works and size is reasonable, it's likely PCM
                 if len(test_array) > 0:
                     pcm_data = audio_chunk
-                    logger.debug(f"Detected PCM format, using directly")
+                    #logger.debug(f"Detected PCM format, using directly")
                 else:
                     raise ValueError("Empty array")
             except:
@@ -124,13 +132,13 @@ class AudioHandler:
                 from math import gcd
                 g = gcd(jack_rate, input_rate)
                 audio_float = resample_poly(audio_float, jack_rate // g, input_rate // g)
-                logger.debug(f"Resampled audio from {input_rate}Hz to {jack_rate}Hz")
+                #logger.debug(f"Resampled audio from {input_rate}Hz to {jack_rate}Hz")
             
             if len(audio_float) > 0:
                 # Feed to JACK ring buffer
                 self.jack_streamer.write_audio(audio_float)
                 
-                logger.debug(f"Sent {len(audio_chunk)} bytes TTS audio to JACK")
+                #logger.debug(f"Sent {len(audio_chunk)} bytes TTS audio to JACK")
                 
         except Exception as e:
             logger.error(f"Error sending TTS audio: {e}")

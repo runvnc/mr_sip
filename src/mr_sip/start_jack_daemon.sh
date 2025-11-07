@@ -8,9 +8,9 @@ killall -9 jackd 2>/dev/null
 sleep 1
 
 # JACK Configuration
-SAMPLE_RATE=8000       # Telephony standard (resampled to 16000 in capture code)
-PERIOD_SIZE=256        # Smaller period = less latency, smoother audio (32ms at 8000 Hz)
-WAIT_TIME=32000        # Microseconds between engine processes (match period time)
+SAMPLE_RATE=24000      # Phase 3 optimization: Match OpenAI and Opus! (eliminates resampling)
+PERIOD_SIZE=128        # 5.3ms at 24kHz (was 16ms at 8kHz)
+WAIT_TIME=5333         # Phase 3 optimization: Match period time in microseconds (128/24000 * 1000000)
 
 echo "Starting JACK daemon..."
 echo "Sample Rate: ${SAMPLE_RATE} Hz"

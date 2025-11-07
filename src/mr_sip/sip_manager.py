@@ -27,7 +27,7 @@ class SIPSession:
         self.created_at = datetime.now()
         self.is_active = False
         self.halt_audio_out = False
-        self.audio_queue = asyncio.Queue()
+        self.audio_queue = asyncio.Queue(maxsize=10)  # Phase 1 optimization: Limit to ~200ms of audio
         self._audio_sender_task = None
         self._audio_sent_count = 0
         self._audio_queued_count = 0
@@ -98,10 +98,18 @@ class SIPSession:
         if self.is_active:
             self._audio_queued_count += 1
             try:
-                await self.audio_queue.put(audio_chunk)
-                logger.debug(f"S2S_DEBUG: Queued audio chunk #{self._audio_queued_count}, queue size: {self.audio_queue.qsize()}")
+                # Phase 1 optimization: Non-blocking put with timeout to prevent queue buildup
+                await asyncio.wait_for(
+                    self.audio_queue.put(audio_chunk),
+                    timeout=0.1
+                )
+                #logger.debug(f"S2S_DEBUG: Queued audio chunk #{self._audio_queued_count}, queue size: {self.audio_queue.qsize()}")
                 if self._audio_queued_count % 10 == 0:
                     logger.info(f"S2S_DEBUG: Total queued: {self._audio_queued_count}, sent: {self._audio_sent_count}, queue size: {self.audio_queue.qsize()}")
+            except asyncio.TimeoutError:
+                # Queue full - drop this chunk to prevent latency accumulation
+                logger.warning(f"Audio queue full for session {self.log_id}, dropping chunk")
+                return
             except Exception as e:
                 logger.error(f"Failed to queue audio chunk: {e}")
         else:
