@@ -144,22 +144,22 @@ class MindRootSIPBotS2S(BareSIP):
             
             # Convert numpy array to bytes (already at 24kHz from JACKAudioCapture)
             # OpenAI expects PCM 16-bit
-            if self._audio_chunk_count % 50 == 0:
-                logger.info(f"S2S_DEBUG: Audio input chunk #{self._audio_chunk_count}, size: {len(audio_chunk)}")
+            #if self._audio_chunk_count % 50 == 0:
+            #    logger.info(f"S2S_DEBUG: Audio input chunk #{self._audio_chunk_count}, size: {len(audio_chunk)}")
             
             audio_bytes = (audio_chunk * 32767).astype(np.int16).tobytes()
-            logger.debug(f"S2S_DEBUG: Converted to {len(audio_bytes)} bytes PCM")
+            #logger.debug(f"S2S_DEBUG: Converted to {len(audio_bytes)} bytes PCM")
                 
             # Send to S2S system (OpenAI or other provider)
-            logger.debug(f"S2S_DEBUG: Calling send_s2s_audio_chunk with context.log_id={self.context.log_id if self.context else None}")
+            #logger.debug(f"S2S_DEBUG: Calling send_s2s_audio_chunk with context.log_id={self.context.log_id if self.context else None}")
             
             await service_manager.send_s2s_audio_chunk(
                 audio_bytes=audio_bytes,
                 context=self.context
             )
             
-            if self._audio_chunk_count % 50 == 0:
-                logger.info(f"S2S_DEBUG: Successfully sent chunk #{self._audio_chunk_count} to S2S")
+            #if self._audio_chunk_count % 50 == 0:
+            #    logger.info(f"S2S_DEBUG: Successfully sent chunk #{self._audio_chunk_count} to S2S")
                 
         except Exception as e:
             logger.error(f"Error sending audio to S2S system: {e}")
