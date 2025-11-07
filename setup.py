@@ -26,6 +26,7 @@ setup(
         "numpy>=1.21.0",
         "scipy>=1.7.0",
         "pydub>=0.25.0",
+        "PySIPio"
     ],
     python_requires=">=3.8",
     classifiers=[

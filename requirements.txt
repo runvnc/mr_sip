@@ -5,6 +5,9 @@ scipy>=1.11.0
 numpy>=1.24.0
 JACK-Client>=0.5.4
 
+# PySIP for S2S mode (replaces baresip/JACK for S2S)
+PySIP>=1.8.0
+
 # New dependencies for STT provider interface
 inotify>=0.2.10
 websockets>=12.0

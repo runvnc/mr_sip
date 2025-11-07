@@ -1,237 +1,283 @@
 #!/usr/bin/env python3
 """
-SIP Client for Speech-to-Speech Mode
+SIP Client for Speech-to-Speech Mode using PySIP
 
-This client variant is designed for use with OpenAI Realtime API or other
-speech-to-speech systems. It only handles audio INPUT - capturing from JACK
-and sending to the S2S system. Audio OUTPUT is handled by the agent calling
-sip_audio_out_chunk.
+This client uses PySIP library instead of baresip/JACK for SIP call handling.
+It handles both audio input (phone -> OpenAI) and output (OpenAI -> phone).
 
-Key differences from sip_client_v2.py:
-- No STT provider setup (S2S handles this)
-- No transcription callbacks (S2S handles this)
-- No audio output routing (agent handles this)
-- Just captures audio and sends to send_s2s_audio_chunk service
+Key features:
+- No JACK dependencies
+- No baresip dependencies  
+- Direct ulaw 8kHz audio (no conversion needed for OpenAI Realtime API)
+- Async/await based architecture
+- Preserves send_tts_audio() interface for session manager compatibility
 """
 
-import os
-import time
 import asyncio
 import logging
-import numpy as np
-from baresipy import BareSIP
+import queue
 from datetime import datetime
-from pathlib import Path
+from typing import Optional
+from PySIP import SipCall
+from PySIP.filters import CallState
 from lib.providers.services import service_manager
-from .audio_handler import AudioHandler
-from .audio.jack_input_capture import JACKAudioCapture
 
 logger = logging.getLogger(__name__)
 
-class MindRootSIPBotS2S(BareSIP):
-    """SIP phone bot for Speech-to-Speech mode.
+class MindRootSIPBotS2S:
+    """SIP phone bot for Speech-to-Speech mode using PySIP.
     
-    This client only handles audio INPUT from the phone call.
-    Audio OUTPUT is handled by the agent via sip_audio_out_chunk.
+    Handles bidirectional audio:
+    - Input: Phone audio -> OpenAI (via on_frame_received callback)
+    - Output: OpenAI audio -> Phone (via send_tts_audio method)
     """
     
-    def __init__(self, user, password, gateway, audio_dir=".", context=None):
+    def __init__(self, user: str, password: str, gateway: str, audio_dir: str = ".", context=None):
         """
         Args:
             user: SIP username
             password: SIP password
-            gateway: SIP gateway
-            audio_dir: Directory for audio files
+            gateway: SIP gateway (format: "host:port")
+            audio_dir: Unused, kept for compatibility
             context: MindRoot ChatContext
         """
-        # Set up audio directory
-        self.audio_dir = audio_dir or os.path.expanduser("~/.baresip")
-         
-        # Initialize baresipy
-        super().__init__(user, password, gateway, block=False)
-        
-        # MindRoot integration
+        self.sip_username = user
+        self.sip_password = password
+        self.sip_server = gateway
         self.context = context
         
-        # Call tracking
-        self.call_start_time = None
-
-        self.audio_ready = False
-
-        # Audio processing
-        self.audio_handler = AudioHandler()
-        self.audio_capture = None
+        # Call state tracking
+        self.call: Optional[SipCall] = None
+        self.is_active = False
+        self.call_established = False
+        self.call_start_time: Optional[datetime] = None
         
-        # Store reference to main event loop
-        try:
-            self.main_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            self.main_loop = None
+        # Audio output queue for sending to phone
+        self.audio_output_queue: Optional[queue.Queue] = None
+        self._audio_sender_task: Optional[asyncio.Task] = None
+        
+        # Frame counters for debugging
+        self._input_frame_count = 0
+        self._output_frame_count = 0
+        
+    async def make_call(self, destination: str):
+        """Initiate outbound call.
+        
+        Args:
+            destination: Phone number or SIP URI to call
+        """
+        logger.info(f"=== INITIATING CALL TO {destination} (PySIP S2S Mode) ===")
+        
+        # Create SipCall instance
+        self.call = SipCall(
+            username=self.sip_username,
+            password=self.sip_password,
+            route=self.sip_server,
+            callee=destination
+        )
+        
+        # Register callbacks
+        @self.call.on_call_state_changed
+        async def on_state(state: CallState):
+            logger.info(f"Call state changed: {state}")
+            if state == CallState.ANSWERED:
+                await self._on_call_answered()
+            elif state in [CallState.ENDED, CallState.FAILED, CallState.BUSY]:
+                await self._on_call_ended(state)
+        
+        @self.call.on_frame_received
+        async def on_frame(frame: bytes):
+            """Receive audio from phone and send to OpenAI.
             
-    def handle_call_established(self):
-        """When call connects, setup JACK and start audio capture."""
-        logger.info("=== CALL ESTABLISHED (S2S Mode) ===")
+            PySIP provides ulaw 8kHz frames (typically 160 bytes = 20ms).
+            OpenAI Realtime API accepts ulaw 8kHz directly - no conversion needed!
+            """
+            self._input_frame_count += 1
+            
+            # Debug logging every 50 frames (~1 second)
+            if self._input_frame_count % 50 == 0:
+                logger.debug(f"Received frame #{self._input_frame_count}, size: {len(frame)} bytes")
+            
+            try:
+                # Send directly to OpenAI S2S system
+                await service_manager.send_s2s_audio_chunk(
+                    audio_bytes=frame,
+                    context=self.context
+                )
+            except Exception as e:
+                logger.error(f"Error sending audio to S2S system: {e}")
         
-        # Phase 3 optimization: Check active codec
-        try:
-            codec_info = self.do_command("/call_status")
-            logger.info(f"Active codec: {codec_info}")
-        except Exception as e:
-            logger.debug(f"Could not retrieve codec info: {e}")
+        # Start the call
+        logger.info("Starting PySIP call...")
+        await self.call.start()
+    
+    async def _on_call_answered(self):
+        """Called when call connects and is answered."""
+        logger.info("=== CALL ANSWERED (PySIP S2S Mode) ===")
         
-        logger.info(f"S2S_DEBUG: Main loop available: {self.main_loop is not None}")
-        logger.info(f"S2S_DEBUG: Main loop closed: {self.main_loop.is_closed() if self.main_loop else 'N/A'}")
+        self.is_active = True
+        self.call_established = True
         self.call_start_time = datetime.now()
         
-        # Setup JACK audio output
-        if not self.audio_handler.jack_enabled:
-            self.audio_handler.setup_jack_audio()
-            time.sleep(0.1)
+        # Create queue for audio output (OpenAI -> phone)
+        self.audio_output_queue = queue.Queue(maxsize=50)  # ~1 second buffer
         
-        # Configure baresip to use JACK FIRST
-        self.audio_handler.configure_baresip_jack(self)
+        # Start audio output sender task
+        self._audio_sender_task = asyncio.create_task(self._audio_output_loop())
+        logger.info("Audio output loop started")
+    
+    async def _on_call_ended(self, state: CallState):
+        """Called when call ends.
         
-        # Wait a bit for baresip to activate its JACK client
-        logger.info("S2S_DEBUG: Waiting for baresip JACK client to activate...")
-        time.sleep(0.1)
-            
-        # Connect JACK ports
-        # Retry connection a few times since baresip may take time to activate
-        ok = False
-        for attempt in range(5):
-            ok = self.audio_handler.connect_jack_to_baresip()
-            if ok:
-                break
-            logger.warning(f"S2S_DEBUG: JACK connection attempt {attempt+1} failed, retrying...")
-            time.sleep(0.1)
-        
-        if not ok:
-            logger.error("S2S_DEBUG: Failed to connect JACK ports after 5 attempts")
-            self._schedule_coroutine(self.hangup_call())
-            return
-
-        # Setup audio capture
-        self._schedule_coroutine(self._setup_audio_capture())
-        time.sleep(0.1)
-        self.audio_ready = True
-        
-    async def _setup_audio_capture(self):
-        """Setup JACK audio capture to send to S2S system."""
-        try:
-            logger.info("S2S_DEBUG: _setup_audio_capture called")
-            logger.info("Starting JACK audio capture for S2S mode...")
-            
-            # Create JACK audio capture
-            # Target 24kHz for OpenAI (will be resampled from JACK rate)
-            self.audio_capture = JACKAudioCapture(
-                target_sample_rate=24000,  # OpenAI expects 24kHz
-                chunk_duration_s=0.020,  # 20ms chunks (was 100ms) - Phase 1 optimization
-                chunk_callback=self._on_audio_chunk_from_jack,
-                stereo_mix=True,
-                agc_target_rms=0.0,  # Disable AGC - Phase 1 optimization (phone audio already normalized)
-                agc_max_gain=20.0
-            )
-            logger.info("S2S_DEBUG: JACKAudioCapture created")
-            
-            await self.audio_capture.start()
-            logger.info("S2S_DEBUG: Audio capture started successfully")
-            logger.info(f"S2S_DEBUG: Capture running: {self.audio_capture._running if hasattr(self.audio_capture, '_running') else 'unknown'}")
-            
-        except Exception as e:
-            logger.error(f"Error setting up audio capture: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            
-    async def _on_audio_chunk_from_jack(self, audio_chunk: np.ndarray):
-        """Callback for audio chunks from JACK - send to S2S system."""
-        try:
-            #return
-            if not hasattr(self, '_audio_chunk_count'):
-                self._audio_chunk_count = 0
-            self._audio_chunk_count += 1
-            
-            # Convert numpy array to bytes (already at 24kHz from JACKAudioCapture)
-            # OpenAI expects PCM 16-bit
-            #if self._audio_chunk_count % 50 == 0:
-            #    logger.info(f"S2S_DEBUG: Audio input chunk #{self._audio_chunk_count}, size: {len(audio_chunk)}")
-            
-            audio_bytes = (audio_chunk * 32767).astype(np.int16).tobytes()
-            #logger.debug(f"S2S_DEBUG: Converted to {len(audio_bytes)} bytes PCM")
-                
-            # Send to S2S system (OpenAI or other provider)
-            #logger.debug(f"S2S_DEBUG: Calling send_s2s_audio_chunk with context.log_id={self.context.log_id if self.context else None}")
-            
-            await service_manager.send_s2s_audio_chunk(
-                audio_bytes=audio_bytes,
-                context=self.context
-            )
-            
-            #if self._audio_chunk_count % 50 == 0:
-            #    logger.info(f"S2S_DEBUG: Successfully sent chunk #{self._audio_chunk_count} to S2S")
-                
-        except Exception as e:
-            logger.error(f"Error sending audio to S2S system: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            
-    async def send_tts_audio(self, audio_chunk: bytes):
-        """Send TTS audio chunk to the SIP call via JACK.
-        
-        This is called by the session manager when audio needs to be sent to the phone.
-        OpenAI sends PCM 16-bit at 24kHz, but we need to convert it for JACK.
+        Args:
+            state: Final call state (ENDED, FAILED, or BUSY)
         """
+        logger.info(f"=== CALL ENDED: {state} (PySIP S2S Mode) ===")
+        
+        self.is_active = False
+        self.call_established = False
+        
+        # Stop audio output
+        if self.audio_output_queue:
+            try:
+                self.audio_output_queue.put(None, block=False)
+            except:
+                pass
+        
+        if self._audio_sender_task:
+            self._audio_sender_task.cancel()
+            try:
+                await self._audio_sender_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Send disconnect message to agent
+        await self._show_disconnected()
+        
+        # Log statistics
+        logger.info(f"Call statistics - Input frames: {self._input_frame_count}, Output frames: {self._output_frame_count}")
+    
+    async def _audio_output_loop(self):
+        """Background task that sends audio from queue to phone via RTP.
+        
+        This reads from audio_output_queue and feeds frames to PySIP's RTP session.
+        """
+        logger.info("Audio output loop starting...")
+        
         try:
-            # OpenAI sends PCM 16-bit at 24kHz
-            # Convert to format expected by audio_handler
-            import numpy as np
-            audio_array = np.frombuffer(audio_chunk, dtype=np.int16)
-            # audio_handler expects the same format, so we can pass through
-            await self.audio_handler.send_tts_audio(audio_chunk)
-            logger.debug(f"Sent {len(audio_chunk)} bytes TTS audio to JACK")
-        except Exception as e:
-            logger.error(f"Error sending TTS audio: {e}")
+            while self.is_active:
+                try:
+                    # Get audio chunk from queue (with timeout)
+                    audio_chunk = await asyncio.wait_for(
+                        asyncio.to_thread(self.audio_output_queue.get, timeout=1.0),
+                        timeout=2.0
+                    )
+                    
+                    if audio_chunk is None:  # Sentinel to stop
+                        logger.info("Received stop signal in audio output loop")
+                        break
+                    
+                    # Send to RTP session
+                    await self._send_to_rtp(audio_chunk)
+                    self._output_frame_count += 1
+                    
+                    if self._output_frame_count % 50 == 0:
+                        logger.debug(f"Sent frame #{self._output_frame_count} to RTP, queue size: {self.audio_output_queue.qsize()}")
+                    
+                except queue.Empty:
+                    continue
+                except asyncio.TimeoutError:
+                    continue
+                except Exception as e:
+                    logger.error(f"Error in audio output loop: {e}")
+                    await asyncio.sleep(0.1)
+                    
+        except asyncio.CancelledError:
+            logger.info("Audio output loop cancelled")
+        finally:
+            logger.info("Audio output loop exiting")
+    
+    async def _send_to_rtp(self, audio_chunk: bytes):
+        """Send audio chunk to PySIP RTP session.
+        
+        Args:
+            audio_chunk: Audio data to send (ulaw 8kHz)
+        """
+        if not self.call or not self.call._rtp_session:
+            logger.warning("Cannot send audio - no RTP session")
+            return
+        
+        # PySIP expects 160-byte frames for 8kHz ulaw (20ms)
+        # Chunk the data if needed
+        FRAME_SIZE = 160
+        
+        for i in range(0, len(audio_chunk), FRAME_SIZE):
+            frame = audio_chunk[i:i+FRAME_SIZE]
             
+            # Only send complete frames
+            if len(frame) == FRAME_SIZE:
+                try:
+                    # Put frame in RTP session's input queue
+                    await asyncio.to_thread(
+                        self.call._rtp_session._input_queue.put_nowait,
+                        frame
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to queue RTP frame: {e}")
+    
+    async def send_tts_audio(self, audio_chunk: bytes):
+        """Send TTS audio chunk to the SIP call.
+        
+        This is the REQUIRED interface called by the session manager.
+        OpenAI sends ulaw 8kHz audio which we pass through directly.
+        
+        Args:
+            audio_chunk: Audio data from OpenAI (ulaw 8kHz)
+        """
+        if not self.is_active or not self.audio_output_queue:
+            logger.warning("Cannot send audio - call not active")
+            return
+        
+        try:
+            # Queue audio for sending to phone
+            # Use non-blocking put to avoid delays
+            self.audio_output_queue.put_nowait(audio_chunk)
+        except queue.Full:
+            logger.warning("Audio output queue full, dropping chunk to prevent latency buildup")
+        except Exception as e:
+            logger.error(f"Failed to queue audio: {e}")
+    
     async def hangup_call(self):
         """Initiate call hangup and cleanup."""
         logger.info("Hangup requested. Performing cleanup...")
-        self.handle_call_ended("Hangup command received")
-        self.hang()
         
-    def handle_call_ended(self, reason):
-        """When call ends, cleanup resources."""
-        logger.info("=== CALL ENDED (S2S Mode) ===")
-        
-        # Stop audio capture
-        if self.audio_capture:
-            self._schedule_coroutine(self.audio_capture.stop())
-            
-        # Cleanup audio handler
-        self.audio_handler.cleanup(self)
-        
-        # Show disconnect message - but only if we have a valid event loop
-        try:
-            if self.main_loop and not self.main_loop.is_closed():
-                self._schedule_coroutine(self.show_disconnected())
-            else:
-                logger.warning("Cannot send disconnect message - no event loop available")
-        except Exception as e:
-            logger.error(f"Error scheduling disconnect message: {e}")
-        
-    async def show_disconnected(self):
+        if self.call:
+            await self.call.stop("Agent hangup")
+    
+    async def _show_disconnected(self):
         """Send disconnect message to agent."""
         msg = "\n\nSYSTEM: -- CALL DISCONNECTED --\n\n"
-        await service_manager.backend_user_message(message=msg)
-        await service_manager.send_message_to_agent(
-            session_id=self.context.log_id,
-            message=msg,
-            context=self.context
-        )
         
-    def _schedule_coroutine(self, coro):
-        """Schedule a coroutine to run in the main event loop."""
-        if self.main_loop and not self.main_loop.is_closed():
+        try:
+            await service_manager.backend_user_message(message=msg)
+            await service_manager.send_message_to_agent(
+                session_id=self.context.log_id,
+                message=msg,
+                context=self.context
+            )
+        except Exception as e:
+            logger.error(f"Error sending disconnect message: {e}")
+    
+    def hang(self):
+        """Synchronous hangup method for compatibility.
+        
+        This is called by session manager cleanup code.
+        """
+        if self.call:
+            # Schedule async hangup
             try:
-                return asyncio.run_coroutine_threadsafe(coro, self.main_loop)
+                loop = asyncio.get_event_loop()
+                if not loop.is_closed():
+                    asyncio.create_task(self.hangup_call())
             except Exception as e:
-                logger.error(f"Failed to schedule coroutine: {e}")
-        return None
+                logger.error(f"Error scheduling hangup: {e}")
