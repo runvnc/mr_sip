@@ -86,6 +86,9 @@ class MindRootSIPBotS2S:
         self._input_frame_count = 0
         self._output_frame_count = 0
         
+        # Event to signal when call is fully answered and RTP ready
+        self.call_answered = asyncio.Event()
+        
         logger.info(f"PySIP S2S Bot initialized for user {user} on gateway {gateway}")
         
     async def make_call(self, destination: str):
@@ -119,9 +122,6 @@ class MindRootSIPBotS2S:
             async def on_state(state: CallState):
                 try:
                     logger.info(f"Call state changed: {state}")
-                    if state == CallState.ANSWERED:
-                        await asyncio.sleep(1)
-                        await self._on_call_answered()
                     elif state in [CallState.ENDED, CallState.FAILED, CallState.BUSY]:
                         await self._on_call_ended(state)
                 except Exception as e:
@@ -136,6 +136,16 @@ class MindRootSIPBotS2S:
                 OpenAI Realtime API accepts ulaw 8kHz directly - no conversion needed!
                 """
                 try:
+                    # On first frame, set up audio output stream
+                    if not self.audio_stream and self.call and self.call._rtp_session:
+                        self.audio_stream = AudioStreamAdapter()
+                        self.call._rtp_session.set_audio_stream(self.audio_stream)
+                        logger.info("Audio stream set on RTP session (triggered by first frame)")
+                        
+                        # Signal that call is fully ready
+                        self.call_answered.set()
+                        logger.info("Call fully answered and ready for audio")
+                    
                     self._input_frame_count += 1
                     
                     # Debug logging every 50 frames (~1 second)
@@ -164,40 +174,6 @@ class MindRootSIPBotS2S:
             logger.error(f"Error in make_call: {e}")
             logger.error(traceback.format_exc())
             raise
-    
-    async def _on_call_answered(self):
-        """Called when call connects and is answered."""
-        try:
-            logger.info("=== CALL ANSWERED (PySIP S2S Mode) ===")
-            
-            self.is_active = True
-            self.call_established = True
-            self.call_start_time = datetime.now()
-            
-            # Create audio stream adapter for output
-            self.audio_stream = AudioStreamAdapter()
-            logger.info("Audio stream adapter created")
-            
-            # Wait a bit for RTP session to be fully initialized
-            await asyncio.sleep(0.5)
-            
-            # Set the audio stream on the RTP session
-            if self.call and self.call._rtp_session:
-                self.call._rtp_session.set_audio_stream(self.audio_stream)
-                logger.info("Audio stream set on RTP session")
-            else:
-                logger.warning("RTP session not available yet")
-                # Try again after a longer delay
-                await asyncio.sleep(0.5)
-                if self.call and self.call._rtp_session:
-                    self.call._rtp_session.set_audio_stream(self.audio_stream)
-                    logger.info("Audio stream set on RTP session (retry)")
-                else:
-                    logger.error("RTP session still not available after retry")
-                    
-        except Exception as e:
-            logger.error(f"Error in _on_call_answered: {e}")
-            logger.error(traceback.format_exc())
     
     async def _on_call_ended(self, state: CallState):
         """Called when call ends.

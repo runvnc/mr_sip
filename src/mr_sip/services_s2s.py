@@ -83,31 +83,20 @@ async def dial_service(destination: str, context=None) -> Dict[str, Any]:
         # Start the call in a task so we can monitor it
         call_task = asyncio.create_task(bot.make_call(destination))
         
-        # Wait for call to be established (with timeout)
+        # Wait for call to be answered and RTP ready (with timeout)
         max_wait = CALL_ESTABLISH_TIMEOUT
-        wait_count = 0.0
         
-        logger.info(f"Waiting for call to establish (timeout: {max_wait}s)...")
+        logger.info(f"Waiting for call to be answered (timeout: {max_wait}s)...")
         
-        while not bot.call_established and wait_count < max_wait:
-            # Check if call task failed
-            if call_task.done():
-                try:
-                    await call_task
-                except Exception as e:
-                    logger.error(f"Call task failed: {e}")
-                    await session_manager.end_session(context.log_id)
-                    return {
-                        "status": "call_failed",
-                        "log_id": context.log_id,
-                        "destination": destination,
-                        "error": f"Call task failed: {str(e)}"
-                    }
+        try:
+            # Wait for the call_answered event (set when first RTP frame received)
+            await asyncio.wait_for(bot.call_answered.wait(), timeout=max_wait)
             
-            await asyncio.sleep(0.2)
-            wait_count += 0.2
+            # Call is answered and RTP is ready!
+            bot.is_active = True
+            bot.call_established = True
+            bot.call_start_time = datetime.now()
             
-        if bot.call_established:
             # Mark session as active and start audio sender
             session.is_active = True
             logger.info(f"S2S_DEBUG: Marking session {context.log_id} as active")
@@ -115,7 +104,7 @@ async def dial_service(destination: str, context=None) -> Dict[str, Any]:
             await session.start_audio_sender()
             logger.info(f"S2S_DEBUG: Audio sender started for session {context.log_id}")
             logger.info(f"S2S_DEBUG: Session active={session.is_active}, sender_task={session._audio_sender_task}")
-            logger.info(f"Call established to {destination} (PySIP S2S mode)")
+            logger.info(f"Call answered and ready to {destination} (PySIP S2S mode)")
             
             return {
                 "status": "call_established",
@@ -124,10 +113,11 @@ async def dial_service(destination: str, context=None) -> Dict[str, Any]:
                 "mode": "s2s_pysip",
                 "session_created_at": session.created_at.isoformat()
             }
-        else:
-            # Call failed to establish
+            
+        except asyncio.TimeoutError:
+            # Call not answered in time
             await session_manager.end_session(context.log_id)
-            logger.error(f"Failed to establish call to {destination} within {max_wait}s")
+            logger.error(f"Call to {destination} not answered within {max_wait}s")
             
             # Cancel the call task if still running
             if not call_task.done():
@@ -141,7 +131,7 @@ async def dial_service(destination: str, context=None) -> Dict[str, Any]:
                 "status": "call_failed",
                 "log_id": context.log_id,
                 "destination": destination,
-                "error": "Call failed to establish within timeout"
+                "error": "Call not answered within timeout"
             }
             
     except Exception as e:
