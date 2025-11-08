@@ -250,7 +250,7 @@ class MindRootSIPBotS2S:
             
             # PySIP expects 160-byte frames for 8kHz ulaw (20ms)
             # Chunk the data if needed
-            FRAME_SIZE = 160
+            FRAME_SIZE = 80 #160
             
             for i in range(0, len(audio_chunk), FRAME_SIZE):
                 frame = audio_chunk[i:i+FRAME_SIZE]
