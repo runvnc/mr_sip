@@ -26,7 +26,7 @@ dependencies = [
     "pyaudio>=0.2.14",
     "simpleaudio>=1.0.4",
     "soundfile>=0.13.1",
-    "PySIPio>=1.8.0"
+    "PySIP @ git+https://github.com/runvnc/PySIP.git"
 ]
 
 [project.optional-dependencies]

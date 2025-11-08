@@ -100,6 +100,8 @@ class MindRootSIPBotS2S:
         import logging as pysip_logging
         pysip_logging.getLogger('PySIP').setLevel(pysip_logging.DEBUG)
         
+        logger.info("About to create SipCall instance...")
+        
         try:
             # Create SipCall instance
             self.call = SipCall(
@@ -109,6 +111,8 @@ class MindRootSIPBotS2S:
                 callee=destination
             )
             logger.info(f"SipCall instance created for {destination}")
+            
+            logger.info("Registering callbacks...")
             
             # Register callbacks with error handling
             @self.call.on_call_state_changed
@@ -148,9 +152,11 @@ class MindRootSIPBotS2S:
             
             logger.info("Callbacks registered, starting PySIP call...")
             
+            logger.info("Calling self.call.start()...")
             # Start the call
             await self.call.start()
             
+            # This line should only be reached when call ends
             logger.info("PySIP call.start() completed")
             
         except Exception as e:

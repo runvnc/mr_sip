@@ -26,7 +26,7 @@ setup(
         "numpy>=1.21.0",
         "scipy>=1.7.0",
         "pydub>=0.25.0",
-        "PySIPio"
+        "PySIP @ git+https://github.com/runvnc/PySIP.git"
     ],
     python_requires=">=3.8",
     classifiers=[
