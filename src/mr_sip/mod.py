@@ -114,13 +114,14 @@ def start_jack_daemon():
 
 # Start JACK daemon on plugin load
 logger.info("MindRoot SIP plugin initializing...")
-jack_started = start_jack_daemon()
-
-if jack_started:
-    logger.info("MindRoot SIP plugin loaded with JACK audio support")
-else:
-    logger.warning("MindRoot SIP plugin loaded but JACK daemon may not be running")
+#jack_started = start_jack_daemon()
+jack_started=True
+#if jack_started:
+#    logger.info("MindRoot SIP plugin loaded with JACK audio support")
+#else:
+#    logger.warning("MindRoot SIP plugin loaded but JACK daemon may not be running")
     
 logger.info("Available commands: call, hangup")
 logger.info(f"Available services: dial_service, sip_audio_out_chunk, end_call_service (mode: {SIP_PROVIDER})")
 logger.info("JACK logs available at: /tmp/mr_sip_logs/jack_startup.log")
+
