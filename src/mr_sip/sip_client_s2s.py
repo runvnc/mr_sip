@@ -34,7 +34,7 @@ class AudioStreamAdapter:
     that it reads audio frames from.
     """
     def __init__(self):
-        self.input_q = queue.Queue(maxsize=50)
+        self.input_q = queue.Queue(maxsize=200)  # Increased for larger audio bursts from OpenAI
         self.stream_id = "tts_output"
         self._done = False
     
