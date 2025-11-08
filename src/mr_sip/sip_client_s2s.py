@@ -34,7 +34,7 @@ class AudioStreamAdapter:
     that it reads audio frames from.
     """
     def __init__(self):
-        self.input_q = queue.Queue(maxsize=50)  # Reduced to minimize latency
+        self.input_q = queue.Queue(maxsize=100)  # Balanced for quality and latency
         self.stream_id = "tts_output"
         self._done = False
         self.pre_encoded = True  # Flag to indicate audio is already ulaw encoded
@@ -232,12 +232,14 @@ class MindRootSIPBotS2S:
             for i in range(0, len(audio_chunk), FRAME_SIZE):
                 frame = audio_chunk[i:i+FRAME_SIZE]
                 
-                # Only send complete frames
+                # Handle incomplete frames by padding with silence
+                if len(frame) < FRAME_SIZE:
+                    # Pad with ulaw silence (0xFF) to make complete frame
+                    frame = frame + b'\xff' * (FRAME_SIZE - len(frame))
+                    logger.debug(f"Padded incomplete frame: {len(audio_chunk[i:i+FRAME_SIZE])} -> {FRAME_SIZE} bytes")
+                
                 if len(frame) == FRAME_SIZE:
                     try:
-                        # Rate limit to prevent queue buildup (match RTP send rate)
-                        await asyncio.sleep(0.020)  # 20ms per frame
-                        
                         # Queue the frame
                         self.audio_stream.input_q.put_nowait(frame)
                         self._output_frame_count += 1
@@ -246,10 +248,6 @@ class MindRootSIPBotS2S:
                             logger.debug(f"Queued frame #{self._output_frame_count}, queue size: {self.audio_stream.input_q.qsize()}")
                     except queue.Full:
                         logger.warning("Audio queue full, dropping frame to prevent latency buildup")
-                else:
-                    # Log incomplete frames for debugging
-                    if len(frame) > 0:
-                        logger.debug(f"Skipping incomplete frame of {len(frame)} bytes (expected {FRAME_SIZE})")
                         
         except Exception as e:
             logger.error(f"Error in send_tts_audio: {e}")
