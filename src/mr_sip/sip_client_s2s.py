@@ -178,7 +178,7 @@ class MindRootSIPBotS2S:
             logger.info("Audio stream adapter created")
             
             # Wait a bit for RTP session to be fully initialized
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.5)
             
             # Set the audio stream on the RTP session
             if self.call and self.call._rtp_session:
