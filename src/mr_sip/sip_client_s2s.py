@@ -224,10 +224,10 @@ class MindRootSIPBotS2S:
                 logger.warning("Cannot send audio - audio stream not initialized")
                 return
             
-            # PySIP expects 80-byte frames for 8kHz ulaw (10ms)
+            # PySIP expects 160-byte frames for 8kHz ulaw (20ms)
             # Rate-limit queuing to match RTP send rate
-            FRAME_SIZE = 80
-            FRAME_INTERVAL = 0.01  # 10ms per frame for 8kHz ulaw
+            FRAME_SIZE = 160
+            FRAME_INTERVAL = 0.02  # 20ms per frame for 8kHz ulaw
             
             for i in range(0, len(audio_chunk), FRAME_SIZE):
                 frame = audio_chunk[i:i+FRAME_SIZE]
