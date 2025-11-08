@@ -234,11 +234,6 @@ class MindRootSIPBotS2S:
                 # Only send complete frames
                 if len(frame) == FRAME_SIZE:
                     try:
-                        # Wait if queue is getting full to prevent overflow
-                        # This provides backpressure to match RTP send rate
-                        while self.audio_stream.input_q.qsize() > 100:
-                            await asyncio.sleep(0.001)  # 1ms wait
-                        
                         # Queue the frame
                         self.audio_stream.input_q.put_nowait(frame)
                         self._output_frame_count += 1
