@@ -63,7 +63,14 @@ class MindRootSIPBotS2S:
         """
         self.sip_username = user
         self.sip_password = password
-        self.sip_server = gateway
+        
+        # Parse gateway - add default port 5060 if not specified
+        if ':' in gateway:
+            self.sip_server = gateway
+        else:
+            self.sip_server = f"{gateway}:5060"
+            logger.info(f"No port specified in gateway, using default: {self.sip_server}")
+        
         self.context = context
         
         # Call state tracking
