@@ -34,7 +34,7 @@ class AudioStreamAdapter:
     that it reads audio frames from.
     """
     def __init__(self):
-        self.input_q = queue.Queue(maxsize=200)  # Increased for larger audio bursts from OpenAI
+        self.input_q = queue.Queue(maxsize=50)  # Reduced to minimize latency
         self.stream_id = "tts_output"
         self._done = False
         self.pre_encoded = True  # Flag to indicate audio is already ulaw encoded
@@ -102,7 +102,7 @@ class MindRootSIPBotS2S:
         
         # Enable PySIP debug logging to see SIP messages
         import logging as pysip_logging
-        pysip_logging.getLogger('PySIP').setLevel(pysip_logging.DEBUG)
+        pysip_logging.getLogger('PySIP').setLevel(pysip_logging.CRITICAL)  # Disable logging
         
         logger.info("About to create SipCall instance...")
         
@@ -235,6 +235,9 @@ class MindRootSIPBotS2S:
                 # Only send complete frames
                 if len(frame) == FRAME_SIZE:
                     try:
+                        # Rate limit to prevent queue buildup (match RTP send rate)
+                        await asyncio.sleep(0.020)  # 20ms per frame
+                        
                         # Queue the frame
                         self.audio_stream.input_q.put_nowait(frame)
                         self._output_frame_count += 1
