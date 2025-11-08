@@ -37,6 +37,7 @@ class AudioStreamAdapter:
         self.input_q = queue.Queue(maxsize=200)  # Increased for larger audio bursts from OpenAI
         self.stream_id = "tts_output"
         self._done = False
+        self.pre_encoded = True  # Flag to indicate audio is already ulaw encoded
     
     def stream_done(self):
         """Mark stream as done."""
