@@ -122,7 +122,7 @@ class MindRootSIPBotS2S:
             async def on_state(state: CallState):
                 try:
                     logger.info(f"Call state changed: {state}")
-                    elif state in [CallState.ENDED, CallState.FAILED, CallState.BUSY]:
+                    if state in [CallState.ENDED, CallState.FAILED, CallState.BUSY]:
                         await self._on_call_ended(state)
                 except Exception as e:
                     logger.error(f"Error in on_call_state_changed callback: {e}")
