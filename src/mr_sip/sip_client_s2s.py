@@ -18,7 +18,7 @@ import logging
 import queue
 from datetime import datetime
 from typing import Optional
-from PySIP import SipCall
+from PySIP.sip_call import SipCall
 from PySIP.filters import CallState
 from lib.providers.services import service_manager
 
