@@ -120,6 +120,7 @@ class MindRootSIPBotS2S:
                 try:
                     logger.info(f"Call state changed: {state}")
                     if state == CallState.ANSWERED:
+                        await asyncio.sleep(1)
                         await self._on_call_answered()
                     elif state in [CallState.ENDED, CallState.FAILED, CallState.BUSY]:
                         await self._on_call_ended(state)
