@@ -34,7 +34,7 @@ class AudioStreamAdapter:
     that it reads audio frames from.
     """
     def __init__(self):
-        self.input_q = queue.Queue(maxsize=100)  # Balanced for quality and latency
+        self.input_q = queue.Queue(maxsize=0)  # Unlimited - OpenAI sends full speech
         self.stream_id = "tts_output"
         self._done = False
         self.pre_encoded = True  # Flag to indicate audio is already ulaw encoded
@@ -232,22 +232,15 @@ class MindRootSIPBotS2S:
             for i in range(0, len(audio_chunk), FRAME_SIZE):
                 frame = audio_chunk[i:i+FRAME_SIZE]
                 
-                # Handle incomplete frames by padding with silence
-                if len(frame) < FRAME_SIZE:
-                    # Pad with ulaw silence (0xFF) to make complete frame
-                    frame = frame + b'\xff' * (FRAME_SIZE - len(frame))
-                    logger.debug(f"Padded incomplete frame: {len(audio_chunk[i:i+FRAME_SIZE])} -> {FRAME_SIZE} bytes")
-                
+                # Only send complete frames (incomplete frames at end are dropped)
+                # This may cause slight cutoff but avoids padding artifacts
                 if len(frame) == FRAME_SIZE:
                     try:
                         # Queue the frame
                         self.audio_stream.input_q.put_nowait(frame)
                         self._output_frame_count += 1
-                        
-                        if self._output_frame_count % 50 == 0:
-                            logger.debug(f"Queued frame #{self._output_frame_count}, queue size: {self.audio_stream.input_q.qsize()}")
-                    except queue.Full:
-                        logger.warning("Audio queue full, dropping frame to prevent latency buildup")
+                    except Exception as e:
+                        logger.error(f"Error queuing frame: {e}")
                         
         except Exception as e:
             logger.error(f"Error in send_tts_audio: {e}")
