@@ -24,6 +24,7 @@ from typing import Optional
 from PySIP.sip_call import SipCall
 from PySIP.filters import CallState
 from lib.providers.services import service_manager
+from .call_recorder import CallRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ class MindRootSIPBotS2S:
     - Output: OpenAI audio -> Phone (via send_tts_audio method)
     """
     
-    def __init__(self, user: str, password: str, gateway: str, audio_dir: str = ".", context=None):
+    def __init__(self, user: str, password: str, gateway: str, audio_dir: str = ".", context=None, enable_recording: bool = False, recording_dir: str = "recordings", record_separate: bool = False):
         """
         Args:
             user: SIP username
@@ -61,6 +62,9 @@ class MindRootSIPBotS2S:
             gateway: SIP gateway (format: "host:port")
             audio_dir: Unused, kept for compatibility
             context: MindRoot ChatContext
+            enable_recording: Enable call recording
+            recording_dir: Directory to save recordings
+            record_separate: If True, save separate incoming/outgoing files in addition to combined
         """
         self.sip_username = user
         self.sip_password = password
@@ -89,6 +93,12 @@ class MindRootSIPBotS2S:
         
         # Event to signal when call is fully answered and RTP ready
         self.call_answered = asyncio.Event()
+        
+        # Call recording
+        self.enable_recording = enable_recording
+        self.recording_dir = recording_dir
+        self.record_separate = record_separate
+        self.recorder: Optional[CallRecorder] = None
         
         logger.info(f"PySIP S2S Bot initialized for user {user} on gateway {gateway}")
         
@@ -146,12 +156,22 @@ class MindRootSIPBotS2S:
                         # Signal that call is fully ready
                         self.call_answered.set()
                         logger.info("Call fully answered and ready for audio")
+                        
+                        # Start recording if enabled
+                        if self.enable_recording:
+                            self.recorder = CallRecorder(self.context.log_id, self.recording_dir, 
+                                                        record_separate=self.record_separate, record_combined=True)
+                            await self.recorder.start_recording()
                     
                     self._input_frame_count += 1
                     
                     # Debug logging every 50 frames (~1 second)
                     if self._input_frame_count % 50 == 0:
                         logger.debug(f"Received frame #{self._input_frame_count}, size: {len(frame)} bytes")
+                    
+                    # Record incoming audio
+                    if self.recorder:
+                        await self.recorder.record_incoming(frame)
                     
                     # Send directly to OpenAI S2S system
                     await service_manager.send_s2s_audio_chunk(
@@ -197,6 +217,11 @@ class MindRootSIPBotS2S:
                 except Exception as e:
                     logger.warning(f"Error stopping audio stream: {e}")
             
+            # Stop recording
+            if self.recorder:
+                await self.recorder.stop_recording()
+                self.recorder = None
+            
             # Send disconnect message to agent
             await self._show_disconnected()
             
@@ -213,6 +238,9 @@ class MindRootSIPBotS2S:
         This is the REQUIRED interface called by the session manager.
         OpenAI sends ulaw 8kHz audio which we pass through directly.
         
+        Now queues the full chunk to minimize service manager overhead.
+        The RTP sender will split into frames internally.
+        
         Args:
             audio_chunk: Audio data from OpenAI (ulaw 8kHz)
         """
@@ -225,22 +253,25 @@ class MindRootSIPBotS2S:
                 logger.warning("Cannot send audio - audio stream not initialized")
                 return
             
-            # PySIP expects 160-byte frames for 8kHz ulaw (20ms)
-            # Queue frames quickly - RTP sender will pace at 20ms intervals
-            FRAME_SIZE = 160
+            # Record outgoing audio (split into frames for recording)
+            if self.recorder:
+                FRAME_SIZE = 160
+                for i in range(0, len(audio_chunk), FRAME_SIZE):
+                    frame = audio_chunk[i:i+FRAME_SIZE]
+                    if len(frame) == FRAME_SIZE:
+                        try:
+                            await self.recorder.record_outgoing(frame)
+                        except Exception as e:
+                            logger.debug(f"Error recording outgoing frame: {e}")
             
-            for i in range(0, len(audio_chunk), FRAME_SIZE):
-                frame = audio_chunk[i:i+FRAME_SIZE]
-                
-                # Only send complete frames (incomplete frames at end are dropped)
-                # This may cause slight cutoff but avoids padding artifacts
-                if len(frame) == FRAME_SIZE:
-                    try:
-                        # Queue the frame
-                        self.audio_stream.input_q.put_nowait(frame)
-                        self._output_frame_count += 1
-                    except Exception as e:
-                        logger.error(f"Error queuing frame: {e}")
+            # Queue the full chunk - RTP sender will split into 160-byte frames
+            # This minimizes service manager overhead (1 call instead of N calls)
+            try:
+                self.audio_stream.input_q.put_nowait(audio_chunk)
+                # Estimate frame count for statistics
+                self._output_frame_count += len(audio_chunk) // 160
+            except Exception as e:
+                logger.error(f"Error queuing audio chunk: {e}")
                         
         except Exception as e:
             logger.error(f"Error in send_tts_audio: {e}")

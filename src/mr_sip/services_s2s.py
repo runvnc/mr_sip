@@ -27,9 +27,13 @@ SIP_USER = os.getenv('SIP_USER', 'nouser')
 SIP_PASSWORD = os.getenv('SIP_PASSWORD', 'no sip password')
 AUDIO_DIR = os.getenv('AUDIO_DIR', os.path.expanduser('.'))
 CALL_ESTABLISH_TIMEOUT = int(os.getenv('SIP_CALL_ESTABLISH_TIMEOUT', '120'))
+# Recording configuration
+ENABLE_RECORDING = os.getenv('SIP_ENABLE_RECORDING', 'false').lower() == 'true'
+RECORDING_DIR = os.getenv('SIP_RECORDING_DIR', 'data/calls')
+RECORD_SEPARATE = os.getenv('SIP_RECORD_SEPARATE', 'false').lower() == 'true'
 
 @service()
-async def dial_service(destination: str, context=None) -> Dict[str, Any]:
+async def dial_service(destination: str, context=None, enable_recording: bool = None) -> Dict[str, Any]:
     """
     Service to initiate SIP calls in Speech-to-Speech mode using PySIP.
     
@@ -39,6 +43,7 @@ async def dial_service(destination: str, context=None) -> Dict[str, Any]:
     Args:
         destination: Phone number or SIP URI to call
         context: MindRoot context (required for session linking)
+        enable_recording: Override default recording setting (optional)
 
     Returns:
         dict: Session information including log_id, destination, and status
@@ -48,6 +53,9 @@ async def dial_service(destination: str, context=None) -> Dict[str, Any]:
         SIP_USER: SIP username
         SIP_PASSWORD: SIP password
         SIP_PROVIDER: Must be 's2s' to use this implementation
+        SIP_ENABLE_RECORDING: Enable call recording (default: false)
+        SIP_RECORDING_DIR: Directory for recordings (default: recordings)
+        SIP_RECORD_SEPARATE: Save separate incoming/outgoing files (default: false)
     """
     if not context or not context.log_id:
         raise ValueError("Context with log_id is required for SIP calls")
@@ -60,6 +68,9 @@ async def dial_service(destination: str, context=None) -> Dict[str, Any]:
         # If it's just area code plus number, add default country code
         if destination.isdigit() and len(destination) == 10:
             destination = '1' + destination
+        
+        # Determine recording setting
+        record_call = enable_recording if enable_recording is not None else ENABLE_RECORDING
             
         # Create PySIP bot for S2S mode
         bot = MindRootSIPBotS2S(
@@ -67,7 +78,10 @@ async def dial_service(destination: str, context=None) -> Dict[str, Any]:
             password=SIP_PASSWORD,
             gateway=SIP_GATEWAY,
             audio_dir=AUDIO_DIR,  # Unused but kept for compatibility
-            context=context
+            context=context,
+            enable_recording=record_call,
+            recording_dir=RECORDING_DIR,
+            record_separate=RECORD_SEPARATE
         )
         
         # Create SIP session
@@ -112,7 +126,8 @@ async def dial_service(destination: str, context=None) -> Dict[str, Any]:
                 "log_id": context.log_id,
                 "destination": destination,
                 "mode": "s2s_pysip",
-                "session_created_at": session.created_at.isoformat()
+                "session_created_at": session.created_at.isoformat(),
+                "recording_enabled": record_call
             }
             
         except asyncio.TimeoutError:
