@@ -115,6 +115,25 @@ class SIPSession:
         else:
             raise RuntimeError("Failed to queue audio chunk: SIP session is not active")
                 
+    def clear_audio_queue(self):
+        """Clear all queued audio (for interruption)."""
+        try:
+            # Clear session queue
+            cleared_count = 0
+            while not self.audio_queue.empty():
+                try:
+                    self.audio_queue.get_nowait()
+                    cleared_count += 1
+                except:
+                    break
+            logger.info(f"Cleared {cleared_count} chunks from session audio queue")
+            
+            # Clear bot's queue if available
+            if self.baresip_bot and hasattr(self.baresip_bot, 'clear_audio_queue'):
+                self.baresip_bot.clear_audio_queue()
+        except Exception as e:
+            logger.error(f"Error clearing audio queue: {e}")
+                
     async def end_session(self):
         """End the SIP session and cleanup resources"""
         logger.info(f"Ending SIP session {self.log_id}")

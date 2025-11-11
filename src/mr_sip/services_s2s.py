@@ -219,5 +219,49 @@ async def end_call_service(context=None) -> Dict[str, Any]:
             "error": str(e)
         }
 
+@service()
+async def sip_clear_audio_queue(context=None) -> Dict[str, Any]:
+    """
+    Service to clear all queued audio for interruption.
+    
+    Called when OpenAI detects user interruption to immediately
+    stop playing the current response.
+    
+    Args:
+        context: MindRoot context (required for session identification)
+    
+    Returns:
+        dict: Status information
+    """
+    if not context or not context.log_id:
+        return {
+            "status": "error",
+            "error": "Context with log_id is required"
+        }
+    
+    try:
+        session_manager = get_session_manager()
+        session = await session_manager.get_session(context.log_id)
+        
+        if session and session.is_active:
+            session.clear_audio_queue()
+            logger.info(f"Cleared audio queue for session {context.log_id}")
+            return {
+                "status": "cleared",
+                "log_id": context.log_id
+            }
+        else:
+            return {
+                "status": "no_active_session",
+                "log_id": context.log_id
+            }
+    except Exception as e:
+        logger.error(f"Error in sip_clear_audio_queue: {e}")
+        return {
+            "status": "error",
+            "log_id": context.log_id,
+            "error": str(e)
+        }
+
 # Note: sip_audio_out_chunk service is reused from services.py
 # It already handles routing audio to the active SIP session via session manager

@@ -238,8 +238,7 @@ class MindRootSIPBotS2S:
         This is the REQUIRED interface called by the session manager.
         OpenAI sends ulaw 8kHz audio which we pass through directly.
         
-        Now queues the full chunk to minimize service manager overhead.
-        The RTP sender will split into frames internally.
+        Queues individual 160-byte frames to allow interruption.
         
         Args:
             audio_chunk: Audio data from OpenAI (ulaw 8kHz)
@@ -253,29 +252,45 @@ class MindRootSIPBotS2S:
                 logger.warning("Cannot send audio - audio stream not initialized")
                 return
             
-            # Record outgoing audio (split into frames for recording)
-            if self.recorder:
-                FRAME_SIZE = 160
-                for i in range(0, len(audio_chunk), FRAME_SIZE):
-                    frame = audio_chunk[i:i+FRAME_SIZE]
-                    if len(frame) == FRAME_SIZE:
-                        try:
-                            await self.recorder.record_outgoing(frame)
-                        except Exception as e:
-                            logger.debug(f"Error recording outgoing frame: {e}")
+            # Split into 160-byte frames for frame-by-frame queueing
+            # This allows interruption by clearing the queue
+            FRAME_SIZE = 160
             
-            # Queue the full chunk - RTP sender will split into 160-byte frames
-            # This minimizes service manager overhead (1 call instead of N calls)
-            try:
-                self.audio_stream.input_q.put_nowait(audio_chunk)
-                # Estimate frame count for statistics
-                self._output_frame_count += len(audio_chunk) // 160
-            except Exception as e:
-                logger.error(f"Error queuing audio chunk: {e}")
+            for i in range(0, len(audio_chunk), FRAME_SIZE):
+                frame = audio_chunk[i:i+FRAME_SIZE]
+                
+                # Only send complete frames
+                if len(frame) == FRAME_SIZE:
+                    try:
+                        # Record outgoing audio
+                        if self.recorder:
+                            await self.recorder.record_outgoing(frame)
                         
+                        # Queue the frame
+                        self.audio_stream.input_q.put_nowait(frame)
+                        self._output_frame_count += 1
+                    except Exception as e:
+                        logger.error(f"Error queuing frame: {e}")
         except Exception as e:
             logger.error(f"Error in send_tts_audio: {e}")
             logger.error(traceback.format_exc())
+    
+    def clear_audio_queue(self):
+        """Clear all queued audio frames (for interruption)."""
+        if self.audio_stream:
+            # Drain the queue
+            cleared_count = 0
+            if self.recorder:
+            try:
+                while not self.audio_stream.input_q.empty():
+                    try:
+                        self.audio_stream.input_q.get_nowait()
+                        cleared_count += 1
+                    except:
+                        break
+                logger.info(f"Cleared {cleared_count} audio frames from queue")
+            except Exception as e:
+                logger.error(f"Error clearing audio queue: {e}")
     
     async def hangup_call(self):
         """Initiate call hangup and cleanup."""
