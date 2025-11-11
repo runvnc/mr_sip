@@ -109,6 +109,7 @@ class CallRecorder:
         try:
             self.incoming_queue.put_nowait(audio_data)
             self._incoming_count += 1
+            logger.debug(f"Queued incoming frame #{self._incoming_count} ({len(audio_data)} bytes)")
         except asyncio.QueueFull:
             # Drop frame to prevent latency - recording is best-effort
             logger.debug(f"Incoming recording queue full, dropping frame")
@@ -128,6 +129,7 @@ class CallRecorder:
         try:
             self.outgoing_queue.put_nowait(audio_data)
             self._outgoing_count += 1
+            logger.debug(f"Queued outgoing frame #{self._outgoing_count} ({len(audio_data)} bytes)")
         except asyncio.QueueFull:
             # Drop frame to prevent latency - recording is best-effort
             logger.debug(f"Outgoing recording queue full, dropping frame")
@@ -135,6 +137,9 @@ class CallRecorder:
     async def _recording_loop(self):
         """Background task that writes audio to files."""
         try:
+            # Unique sentinel to distinguish timeout from stop signal
+            _TIMEOUT = object()
+            
             # Open WAV files
             incoming_wav = None
             outgoing_wav = None
@@ -160,9 +165,14 @@ class CallRecorder:
                 combined_wav.setframerate(8000)
                 combined_wav.setcomptype('ULAW', 'CCITT G.711 u-law')
                 
+            logger.info(f"Recording loop started for call {self.call_id}")
+            
             # Buffers for combining audio (in case streams are out of sync)
             incoming_buffer = b''
             outgoing_buffer = b''
+            
+            frames_written_incoming = 0
+            frames_written_outgoing = 0
             
             while self._is_recording:
                 # Get audio from both queues (with timeout)
@@ -171,25 +181,37 @@ class CallRecorder:
                         self.incoming_queue.get(), timeout=0.1
                     )
                 except asyncio.TimeoutError:
-                    incoming_data = None
+                    incoming_data = _TIMEOUT
                     
                 try:
                     outgoing_data = await asyncio.wait_for(
                         self.outgoing_queue.get(), timeout=0.1
                     )
                 except asyncio.TimeoutError:
-                    outgoing_data = None
+                    outgoing_data = _TIMEOUT
                     
                 # Check for end signals
                 if incoming_data is None and outgoing_data is None:
                     break
                     
+                # Convert timeout sentinel back to None for processing
+                if incoming_data is _TIMEOUT:
+                    incoming_data = None
+                if outgoing_data is _TIMEOUT:
+                    outgoing_data = None
+                    
                 # Write separate files
                 if self.record_separate:
                     if incoming_data and incoming_wav:
                         incoming_wav.writeframes(incoming_data)
+                        frames_written_incoming += 1
                     if outgoing_data and outgoing_wav:
                         outgoing_wav.writeframes(outgoing_data)
+                        frames_written_outgoing += 1
+                        
+                # Log progress every 50 frames (~1 second)
+                if (frames_written_incoming + frames_written_outgoing) % 50 == 0 and (frames_written_incoming + frames_written_outgoing) > 0:
+                    logger.debug(f"Written {frames_written_incoming} incoming, {frames_written_outgoing} outgoing frames to disk")
                         
                 # Write combined file (stereo interleaved)
                 if self.record_combined and combined_wav:
@@ -212,6 +234,10 @@ class CallRecorder:
                         # Remove processed data from buffers
                         incoming_buffer = incoming_buffer[min_len:]
                         outgoing_buffer = outgoing_buffer[min_len:]
+                        
+            logger.info(f"Recording loop exited normally for call {self.call_id}")
+            logger.info(f"Final frame counts - Incoming: {self._incoming_count}, Outgoing: {self._outgoing_count}")
+            logger.info(f"Frames written to disk - Incoming: {frames_written_incoming}, Outgoing: {frames_written_outgoing}")
                         
         except Exception as e:
             logger.error(f"Error in recording loop: {e}")
