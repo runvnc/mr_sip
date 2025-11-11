@@ -278,10 +278,9 @@ class MindRootSIPBotS2S:
     def clear_audio_queue(self):
         """Clear all queued audio frames (for interruption)."""
         if self.audio_stream:
-            # Drain the queue
-            cleared_count = 0
-            if self.recorder:
             try:
+                # Drain the queue
+                cleared_count = 0
                 while not self.audio_stream.input_q.empty():
                     try:
                         self.audio_stream.input_q.get_nowait()
