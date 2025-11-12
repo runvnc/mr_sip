@@ -44,9 +44,9 @@ class CallRecorder:
         self.record_separate = record_separate
         self.record_combined = record_combined
         
-        # Async queues for audio data (non-blocking) - 1000 frames = ~20 seconds buffer
-        self.incoming_queue = asyncio.Queue(maxsize=1000)  # ~20 seconds buffer at 50 fps
-        self.outgoing_queue = asyncio.Queue(maxsize=1000)
+        # Async queues for audio data (non-blocking) - 5000 frames = ~100 seconds buffer
+        self.incoming_queue = asyncio.Queue(maxsize=5000)  # ~100 seconds buffer at 50 fps
+        self.outgoing_queue = asyncio.Queue(maxsize=5000)
         
         # Background tasks
         self._recording_task: Optional[asyncio.Task] = None
@@ -94,7 +94,7 @@ class CallRecorder:
         logger.info(f"Stopped recording for call {self.call_id}")
         logger.info(f"  Incoming frames: {self._incoming_count}, Outgoing frames: {self._outgoing_count}")
         
-    async def record_incoming(self, audio_data: bytes):
+    def record_incoming(self, audio_data: bytes):
         """
         Record incoming audio (phone -> system).
         
@@ -114,7 +114,7 @@ class CallRecorder:
             # Drop frame to prevent latency - recording is best-effort
             logger.debug(f"Incoming recording queue full, dropping frame")
             
-    async def record_outgoing(self, audio_data: bytes):
+    def record_outgoing(self, audio_data: bytes):
         """
         Record outgoing audio (system -> phone).
         
@@ -169,9 +169,11 @@ class CallRecorder:
                 
             logger.info(f"Recording loop started for call {self.call_id}")
             
-            # Buffers for combining audio (in case streams are out of sync)
-            incoming_buffer = b''
-            outgoing_buffer = b''
+            # Frame counters for combined stereo writes
+            frames_written_combined = 0
+            
+            # Standard frame size for ulaw 8kHz audio (20ms)
+            FRAME_SIZE = 160
             
             frames_written_incoming = 0
             frames_written_outgoing = 0
@@ -221,33 +223,39 @@ class CallRecorder:
                         
                 # Write combined file (stereo interleaved)
                 if self.record_combined and combined_wav:
-                    # Add to buffers
-                    if incoming_data:
-                        incoming_buffer += incoming_data
-                    if outgoing_data:
-                        outgoing_buffer += outgoing_data
+                    # Write frames immediately, padding with silence if one channel is missing
+                    # This prevents queue backup and keeps audio in sync
                         
-                    # Interleave when we have matching amounts
-                    min_len = min(len(incoming_buffer), len(outgoing_buffer))
-                    if min_len > 0:
-                        # Convert both channels from ulaw to PCM
-                        incoming_pcm = audioop.ulaw2lin(incoming_buffer[:min_len], 2)
-                        outgoing_pcm = audioop.ulaw2lin(outgoing_buffer[:min_len], 2)
+                    # Ensure we have data for both channels (pad with silence if needed)
+                    if incoming_data or outgoing_data:
+                        # Pad missing channel with silence (ulaw silence = 0xFF)
+                        if not incoming_data:
+                            incoming_data = b'\xff' * FRAME_SIZE
+                        if not outgoing_data:
+                            outgoing_data = b'\xff' * FRAME_SIZE
                         
-                        # Interleave 16-bit samples: L L R R L L R R ...
-                        stereo_data = b''.join(
-                            incoming_pcm[i*2:i*2+2] + outgoing_pcm[i*2:i*2+2]
-                            for i in range(min_len)
-                        )
-                        combined_wav.writeframes(stereo_data)
+                        # Only write if both are the same size (standard frame)
+                        if len(incoming_data) == FRAME_SIZE and len(outgoing_data) == FRAME_SIZE:
+                            # Convert both channels from ulaw to PCM
+                            incoming_pcm = audioop.ulaw2lin(incoming_data, 2)
+                            outgoing_pcm = audioop.ulaw2lin(outgoing_data, 2)
+                            
+                            # Interleave 16-bit samples: L L R R L L R R ...
+                            stereo_data = b''.join(
+                                incoming_pcm[i*2:i*2+2] + outgoing_pcm[i*2:i*2+2]
+                                for i in range(FRAME_SIZE)
+                            )
+                            combined_wav.writeframes(stereo_data)
+                            frames_written_combined += 1
                         
-                        # Remove processed data from buffers
-                        incoming_buffer = incoming_buffer[min_len:]
-                        outgoing_buffer = outgoing_buffer[min_len:]
+                # Log progress every 50 frames (~1 second)
+                total_written = frames_written_incoming + frames_written_outgoing + frames_written_combined
+                if total_written > 0 and total_written % 50 == 0:
+                    logger.debug(f"Progress: separate={frames_written_incoming}/{frames_written_outgoing}, combined={frames_written_combined}")
                         
             logger.info(f"Recording loop exited normally for call {self.call_id}")
             logger.info(f"Final frame counts - Incoming: {self._incoming_count}, Outgoing: {self._outgoing_count}")
-            logger.info(f"Frames written to disk - Incoming: {frames_written_incoming}, Outgoing: {frames_written_outgoing}")
+            logger.info(f"Frames written to disk - Separate: {frames_written_incoming}/{frames_written_outgoing}, Combined: {frames_written_combined}")
                         
         except Exception as e:
             logger.error(f"Error in recording loop: {e}")

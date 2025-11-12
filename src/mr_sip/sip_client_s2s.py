@@ -173,7 +173,7 @@ class MindRootSIPBotS2S:
                     
                     # Record incoming audio
                     if self.recorder:
-                        await self.recorder.record_incoming(frame)
+                        self.recorder.record_incoming(frame)
                     
                     # Send directly to OpenAI S2S system
                     await service_manager.send_s2s_audio_chunk(
@@ -266,7 +266,7 @@ class MindRootSIPBotS2S:
                     try:
                         # Record outgoing audio
                         if self.recorder:
-                            await self.recorder.record_outgoing(frame)
+                            self.recorder.record_outgoing(frame)
                         
                         # Queue the frame
                         self.audio_stream.input_q.put_nowait(frame)
