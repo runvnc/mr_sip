@@ -20,7 +20,7 @@ from pathlib import Path
 
 # Initialize logger FIRST before any logging calls
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # Ensure debug logging is enabled for mr_sip
+logger.setLevel(logging.CRITICAL)  # Ensure debug logging is enabled for mr_sip
 
 # Import commands (provider-agnostic)
 from .commands import *
