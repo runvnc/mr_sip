@@ -18,6 +18,10 @@ import os
 import time
 from pathlib import Path
 
+# Initialize logger FIRST before any logging calls
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)  # Ensure debug logging is enabled for mr_sip
+
 # Import commands (provider-agnostic)
 from .commands import *
 
@@ -36,9 +40,6 @@ elif SIP_PROVIDER == 'deepgram_v2' or os.getenv('SIP_USE_V2', 'true').lower() in
 else:
     logger.info("Loading Deepgram V1 service implementation")
     from .services import *
-
-# Plugin initialization
-logger = logging.getLogger(__name__)
 
 def check_jack_running():
     """Check if JACK daemon is already running."""
