@@ -44,9 +44,9 @@ class CallRecorder:
         self.record_separate = record_separate
         self.record_combined = record_combined
         
-        # Async queues for audio data (non-blocking)
-        self.incoming_queue = asyncio.Queue(maxsize=100)  # ~2 seconds buffer
-        self.outgoing_queue = asyncio.Queue(maxsize=100)
+        # Async queues for audio data (non-blocking) - 1000 frames = ~20 seconds buffer
+        self.incoming_queue = asyncio.Queue(maxsize=1000)  # ~20 seconds buffer at 50 fps
+        self.outgoing_queue = asyncio.Queue(maxsize=1000)
         
         # Background tasks
         self._recording_task: Optional[asyncio.Task] = None
