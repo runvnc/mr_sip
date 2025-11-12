@@ -244,7 +244,11 @@ async def sip_clear_audio_queue(context=None) -> Dict[str, Any]:
         session = await session_manager.get_session(context.log_id)
         
         if session and session.is_active:
-            session.clear_audio_queue()
+            # Call clear_audio_queue on the bot, not the session
+            if session.baresip_bot:
+                session.baresip_bot.clear_audio_queue()
+            else:
+                logger.warning(f"No bot found for session {context.log_id}")
             logger.info(f"Cleared audio queue for session {context.log_id}")
             return {
                 "status": "cleared",
