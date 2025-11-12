@@ -278,15 +278,23 @@ class MindRootSIPBotS2S:
                         if self._interrupting:
                             return  # Abort immediately
                         
-                        # Queue the frame with blocking to provide backpressure
-                        # This paces OpenAI's output to match playback rate
-                        # Timeout prevents hanging if something goes wrong
-                        try:
-                            self.audio_stream.input_q.put(frame, block=True, timeout=1.0)
-                        except queue.Full:
-                            # Queue full for 1 second - something is wrong
-                            logger.error("Audio queue blocked for 1 second - possible playback issue")
-                            raise
+                        # Retry putting frame until success or interrupt
+                        # This ensures no frames are dropped while maintaining fast interrupt
+                        while not self._interrupting:
+                            try:
+                                self.audio_stream.input_q.put(frame, block=True, timeout=0.1)
+                                break  # Success - move to next frame
+                            except queue.Full:
+                                # Queue full - check interrupt flag before retrying
+                                if self._interrupting:
+                                    return  # Abort immediately
+                                # Queue still full, retry same frame
+                                # The 0.1s timeout allows checking interrupt flag frequently
+                                pass
+                        
+                        # Check interrupt flag immediately after successful put
+                        if self._interrupting:
+                            return  # Abort if interrupted while we were putting
                         
                         # Record AFTER queuing so timing matches actual playback
                         if self.recorder:
