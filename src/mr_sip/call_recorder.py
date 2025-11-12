@@ -178,31 +178,41 @@ class CallRecorder:
             frames_written_incoming = 0
             frames_written_outgoing = 0
             
+            # Track last frame from each channel for padding
+            last_incoming = None
+            last_outgoing = None
+            
             while self._is_recording:
-                # Get audio from both queues (with timeout)
+                # Try to get from both queues immediately (no blocking)
+                incoming_data = None
+                outgoing_data = None
+                
                 try:
-                    incoming_data = await asyncio.wait_for(
-                        self.incoming_queue.get(), timeout=0.1
-                    )
-                except asyncio.TimeoutError:
-                    incoming_data = _TIMEOUT
+                    incoming_data = self.incoming_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
                     
                 try:
-                    outgoing_data = await asyncio.wait_for(
-                        self.outgoing_queue.get(), timeout=0.1
-                    )
-                except asyncio.TimeoutError:
-                    outgoing_data = _TIMEOUT
+                    outgoing_data = self.outgoing_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
                     
                 # Check for end signals
                 if incoming_data is None and outgoing_data is None:
-                    break
-                    
-                # Convert timeout sentinel back to None for processing
-                if incoming_data is _TIMEOUT:
-                    incoming_data = None
-                if outgoing_data is _TIMEOUT:
-                    outgoing_data = None
+                    # Both queues empty, sleep briefly then continue
+                    await asyncio.sleep(0.01)  # 10ms sleep
+                    continue
+                
+                # Update last frame tracking
+                if incoming_data:
+                    last_incoming = incoming_data
+                if outgoing_data:
+                    last_outgoing = outgoing_data
+                
+                # Check for stop signals (explicit None from stop_recording)
+                if incoming_data is None and last_incoming is None:
+                    if outgoing_data is None and last_outgoing is None:
+                        break
                     
                 # Write separate files
                 if self.record_separate:
