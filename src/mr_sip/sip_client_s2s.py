@@ -103,6 +103,9 @@ class MindRootSIPBotS2S:
         self.record_separate = record_separate
         self.recorder: Optional[CallRecorder] = None
         
+        # Interrupt flag for fast audio clearing
+        self._interrupting = False
+        
         logger.info(f"PySIP S2S Bot initialized for user {user} on gateway {gateway}")
         
     async def make_call(self, destination: str):
@@ -261,12 +264,20 @@ class MindRootSIPBotS2S:
             # This allows interruption by clearing the queue
             FRAME_SIZE = 160
             
+            # Check interrupt flag before processing chunk
+            if self._interrupting:
+                return  # Abort immediately on interrupt
+            
             for i in range(0, len(audio_chunk), FRAME_SIZE):
                 frame = audio_chunk[i:i+FRAME_SIZE]
                 
                 # Only send complete frames
                 if len(frame) == FRAME_SIZE:
                     try:
+                        # Check interrupt flag on each frame
+                        if self._interrupting:
+                            return  # Abort immediately
+                        
                         # Queue the frame with blocking to provide backpressure
                         # This paces OpenAI's output to match playback rate
                         # Timeout prevents hanging if something goes wrong
@@ -289,19 +300,31 @@ class MindRootSIPBotS2S:
     
     def clear_audio_queue(self):
         """Clear all queued audio frames (for interruption)."""
-        if self.audio_stream:
-            try:
-                # Drain the queue
-                cleared_count = 0
-                while not self.audio_stream.input_q.empty():
-                    try:
-                        self.audio_stream.input_q.get_nowait()
-                        cleared_count += 1
-                    except:
-                        break
-                logger.info(f"Cleared {cleared_count} audio frames from queue")
-            except Exception as e:
-                logger.error(f"Error clearing audio queue: {e}")
+        try:
+            # Set interrupt flag to stop ongoing sends
+            self._interrupting = True
+            
+            if self.audio_stream:
+                try:
+                    # Drain the main queue
+                    cleared_count = 0
+                    while not self.audio_stream.input_q.empty():
+                        try:
+                            self.audio_stream.input_q.get_nowait()
+                            cleared_count += 1
+                        except:
+                            break
+                    logger.info(f"Cleared {cleared_count} audio frames from main queue")
+                except Exception as e:
+                    logger.error(f"Error clearing main audio queue: {e}")
+            
+            # Clear PySIP jitter buffer
+            if self.call and hasattr(self.call, '_rtp_session') and self.call._rtp_session:
+                self.call._rtp_session.__outgoing_buffer = []
+                logger.info("Cleared jitter buffer")
+        finally:
+            # Always reset interrupt flag, even on error
+            self._interrupting = False
     
     async def hangup_call(self):
         """Initiate call hangup and cleanup."""
