@@ -35,10 +35,10 @@ class AudioStreamAdapter:
     that it reads audio frames from.
     """
     def __init__(self):
-        # Limited queue for low latency - max 20 frames = 400ms buffering
+        # Limited queue for low latency - max 15 frames = 300ms buffering
         # This provides backpressure to pace OpenAI's output and reduces latency
-        # Combined with 3-frame jitter buffer = 460ms total
-        self.input_q = queue.Queue(maxsize=20)
+        # Combined with 3-frame jitter buffer for smooth output
+        self.input_q = queue.Queue(maxsize=15)
         self.stream_id = "tts_output"
         self._done = False
         self.pre_encoded = True  # Flag to indicate audio is already ulaw encoded
