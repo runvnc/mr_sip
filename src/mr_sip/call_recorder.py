@@ -70,8 +70,6 @@ class CallRecorder:
             
         self._is_recording = True
         self._recording_task = asyncio.create_task(self._recording_loop())
-        logger.info(f"Started recording for call {self.call_id}")
-        logger.info(f"  Separate: {self.record_separate}, Combined: {self.record_combined}")
         
     async def stop_recording(self):
         """Stop recording and finalize files."""
@@ -91,8 +89,6 @@ class CallRecorder:
             except Exception as e:
                 logger.error(f"Error stopping recording: {e}")
                 
-        logger.info(f"Stopped recording for call {self.call_id}")
-        logger.info(f"  Incoming frames: {self._incoming_count}, Outgoing frames: {self._outgoing_count}")
         
     def record_incoming(self, audio_data: bytes):
         """
@@ -109,10 +105,9 @@ class CallRecorder:
         try:
             self.incoming_queue.put_nowait(audio_data)
             self._incoming_count += 1
-            logger.debug(f"Queued incoming frame #{self._incoming_count} ({len(audio_data)} bytes)")
         except asyncio.QueueFull:
             # Drop frame to prevent latency - recording is best-effort
-            logger.debug(f"Incoming recording queue full, dropping frame")
+            pass  # Silently drop to avoid log spam
             
     def record_outgoing(self, audio_data: bytes):
         """
@@ -129,18 +124,15 @@ class CallRecorder:
         try:
             self.outgoing_queue.put_nowait(audio_data)
             self._outgoing_count += 1
-            logger.debug(f"Queued outgoing frame #{self._outgoing_count} ({len(audio_data)} bytes)")
         except asyncio.QueueFull:
             # Drop frame to prevent latency - recording is best-effort
-            logger.debug(f"Outgoing recording queue full, dropping frame")
+            pass  # Silently drop to avoid log spam
             
     async def _recording_loop(self):
         """Background task that writes audio to files."""
         try:
             # Unique sentinel to distinguish timeout from stop signal
             _TIMEOUT = object()
-            
-            logger.info(f"Opening WAV files for recording (combined={self.record_combined}, separate={self.record_separate})")
             
             # Open WAV files
             incoming_wav = None
@@ -167,8 +159,6 @@ class CallRecorder:
                 combined_wav.setframerate(8000)
                 # No compression - standard PCM
                 
-            logger.info(f"Recording loop started for call {self.call_id}")
-            
             # Frame counters for combined stereo writes
             frames_written_combined = 0
             
@@ -227,10 +217,6 @@ class CallRecorder:
                         outgoing_wav.writeframes(pcm_data)
                         frames_written_outgoing += 1
                         
-                # Log progress every 50 frames (~1 second)
-                if (frames_written_incoming + frames_written_outgoing) % 50 == 0 and (frames_written_incoming + frames_written_outgoing) > 0:
-                    logger.debug(f"Written {frames_written_incoming} incoming, {frames_written_outgoing} outgoing frames to disk")
-                        
                 # Write combined file (stereo interleaved)
                 if self.record_combined and combined_wav:
                     # Write frames immediately, padding with silence if one channel is missing
@@ -258,15 +244,6 @@ class CallRecorder:
                             combined_wav.writeframes(stereo_data)
                             frames_written_combined += 1
                         
-                # Log progress every 50 frames (~1 second)
-                total_written = frames_written_incoming + frames_written_outgoing + frames_written_combined
-                if total_written > 0 and total_written % 50 == 0:
-                    logger.debug(f"Progress: separate={frames_written_incoming}/{frames_written_outgoing}, combined={frames_written_combined}")
-                        
-            logger.info(f"Recording loop exited normally for call {self.call_id}")
-            logger.info(f"Final frame counts - Incoming: {self._incoming_count}, Outgoing: {self._outgoing_count}")
-            logger.info(f"Frames written to disk - Separate: {frames_written_incoming}/{frames_written_outgoing}, Combined: {frames_written_combined}")
-                        
         except Exception as e:
             logger.error(f"Error in recording loop: {e}")
             import traceback
@@ -275,10 +252,7 @@ class CallRecorder:
             # Close all files
             if incoming_wav:
                 incoming_wav.close()
-                logger.info(f"Saved incoming recording: {self.incoming_path}")
             if outgoing_wav:
                 outgoing_wav.close()
-                logger.info(f"Saved outgoing recording: {self.outgoing_path}")
             if combined_wav:
                 combined_wav.close()
-                logger.info(f"Saved combined recording: {self.combined_path}")

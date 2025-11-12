@@ -18,9 +18,13 @@ import os
 import time
 from pathlib import Path
 
-# Initialize logger FIRST before any logging calls
+# Configure logging for entire mr_sip module - CRITICAL only
+# This affects all loggers in the mr_sip.* namespace
+logging.getLogger('mr_sip').setLevel(logging.CRITICAL)
+
+# Initialize this module's logger
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.CRITICAL)  # Ensure debug logging is enabled for mr_sip
+# Level already set by parent logger above
 
 # Import commands (provider-agnostic)
 from .commands import *
@@ -28,17 +32,12 @@ from .commands import *
 # Determine which mode to use
 SIP_PROVIDER = os.getenv('SIP_PROVIDER', 'deepgram').lower()
 
-logger.info(f"SIP Plugin Configuration: PROVIDER={SIP_PROVIDER}")
-
 # Import the appropriate service implementation
 if SIP_PROVIDER == 's2s':
-    logger.info("Loading Speech-to-Speech service implementation")
     from .services_s2s import *
 elif SIP_PROVIDER == 'deepgram_v2' or os.getenv('SIP_USE_V2', 'true').lower() in ('true', '1', 'yes', 'on'):
-    logger.info("Loading Deepgram V2 service implementation")
     from .services_v2 import *
 else:
-    logger.info("Loading Deepgram V1 service implementation")
     from .services import *
 
 def check_jack_running():
@@ -61,13 +60,11 @@ def start_jack_daemon():
     log_file = log_dir / "jack_startup.log"
     
     if check_jack_running():
-        logger.info("JACK daemon is already running")
         with open(log_file, 'a') as f:
             f.write(f"\n{time.strftime('%Y-%m-%d %H:%M:%S')} - JACK already running, skipping startup\n")
         return True
     
     try:
-        logger.info(f"Starting JACK daemon using script: {script_path}")
         with open(log_file, 'a') as f:
             f.write(f"\n{time.strftime('%Y-%m-%d %H:%M:%S')} - Starting JACK daemon\n")
             f.write(f"Script path: {script_path}\n")
@@ -92,7 +89,6 @@ def start_jack_daemon():
         # Wait a moment and verify JACK started
         time.sleep(2)
         if check_jack_running():
-            logger.info("JACK daemon started successfully")
             with open(log_file, 'a') as f:
                 f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - JACK daemon started successfully\n")
             return True
@@ -114,15 +110,5 @@ def start_jack_daemon():
         return False
 
 # Start JACK daemon on plugin load
-logger.info("MindRoot SIP plugin initializing...")
 #jack_started = start_jack_daemon()
 jack_started=True
-#if jack_started:
-#    logger.info("MindRoot SIP plugin loaded with JACK audio support")
-#else:
-#    logger.warning("MindRoot SIP plugin loaded but JACK daemon may not be running")
-    
-logger.info("Available commands: call, hangup")
-logger.info(f"Available services: dial_service, sip_audio_out_chunk, end_call_service (mode: {SIP_PROVIDER})")
-logger.info("JACK logs available at: /tmp/mr_sip_logs/jack_startup.log")
-
