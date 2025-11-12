@@ -35,7 +35,10 @@ class AudioStreamAdapter:
     that it reads audio frames from.
     """
     def __init__(self):
-        self.input_q = queue.Queue(maxsize=0)  # Unlimited - OpenAI sends full speech
+        # Limited queue for low latency - max 15 frames = 300ms buffering
+        # This provides backpressure to pace OpenAI's output and reduces latency
+        # from ~1 second to ~300ms while preventing frame drops
+        self.input_q = queue.Queue(maxsize=15)
         self.stream_id = "tts_output"
         self._done = False
         self.pre_encoded = True  # Flag to indicate audio is already ulaw encoded
@@ -268,8 +271,15 @@ class MindRootSIPBotS2S:
                         if self.recorder:
                             self.recorder.record_outgoing(frame)
                         
-                        # Queue the frame
-                        self.audio_stream.input_q.put_nowait(frame)
+                        # Queue the frame with blocking to provide backpressure
+                        # This paces OpenAI's output to match playback rate
+                        # Timeout prevents hanging if something goes wrong
+                        try:
+                            self.audio_stream.input_q.put(frame, block=True, timeout=1.0)
+                        except queue.Full:
+                            # Queue full for 1 second - something is wrong
+                            logger.error("Audio queue blocked for 1 second - possible playback issue")
+                            raise
                         self._output_frame_count += 1
                     except Exception as e:
                         logger.error(f"Error queuing frame: {e}")
