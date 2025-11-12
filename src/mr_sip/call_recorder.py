@@ -173,12 +173,6 @@ class CallRecorder:
             last_incoming = None
             last_outgoing = None
             
-            # Timing control for smooth recording at 50 fps (20ms per frame)
-            FRAME_INTERVAL = 0.020  # 20ms = 50 fps
-            last_write_time = time.monotonic()
-            frames_since_start = 0
-            start_time = time.monotonic()
-            
             while self._is_recording:
                 # Try to get from both queues immediately (no blocking)
                 incoming_data = None
@@ -205,33 +199,11 @@ class CallRecorder:
                     if outgoing_data is None and last_outgoing is None:
                         break
                     
-                # Rate limiting: ensure we write at steady 50 fps (20ms intervals)
-                # This smooths out bursts from OpenAI and maintains sync
-                current_time = time.monotonic()
-                elapsed_since_last = current_time - last_write_time
-                
-                if elapsed_since_last < FRAME_INTERVAL:
-                    # Too soon, wait until next frame time
-                    sleep_time = FRAME_INTERVAL - elapsed_since_last
-                    await asyncio.sleep(sleep_time)
-                    current_time = time.monotonic()
-                
                 # Check if both queues are empty (no data to write)
                 if incoming_data is None and outgoing_data is None:
-                    # No data available, but maintain timing by writing silence
-                    # This keeps the recording synchronized
-                    pass  # Will pad with silence below
-                
-                last_write_time = current_time
-                frames_since_start += 1
-                
-                # Verify timing accuracy every 50 frames (~1 second)
-                if frames_since_start % 50 == 0:
-                    expected_time = start_time + (frames_since_start * FRAME_INTERVAL)
-                    actual_time = current_time
-                    drift = actual_time - expected_time
-                    if abs(drift) > 0.1:  # More than 100ms drift
-                        logger.warning(f"Recording timing drift: {drift*1000:.1f}ms after {frames_since_start} frames")
+                    # Both queues empty, sleep briefly then continue
+                    await asyncio.sleep(0.01)
+                    continue
                     
                 # Write separate files
                 if self.record_separate:

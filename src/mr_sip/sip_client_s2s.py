@@ -267,10 +267,6 @@ class MindRootSIPBotS2S:
                 # Only send complete frames
                 if len(frame) == FRAME_SIZE:
                     try:
-                        # Record outgoing audio
-                        if self.recorder:
-                            self.recorder.record_outgoing(frame)
-                        
                         # Queue the frame with blocking to provide backpressure
                         # This paces OpenAI's output to match playback rate
                         # Timeout prevents hanging if something goes wrong
@@ -280,6 +276,10 @@ class MindRootSIPBotS2S:
                             # Queue full for 1 second - something is wrong
                             logger.error("Audio queue blocked for 1 second - possible playback issue")
                             raise
+                        
+                        # Record AFTER queuing so timing matches actual playback
+                        if self.recorder:
+                            self.recorder.record_outgoing(frame)
                         self._output_frame_count += 1
                     except Exception as e:
                         logger.error(f"Error queuing frame: {e}")
