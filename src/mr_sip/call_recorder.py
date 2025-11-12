@@ -140,6 +140,8 @@ class CallRecorder:
             # Unique sentinel to distinguish timeout from stop signal
             _TIMEOUT = object()
             
+            logger.info(f"Opening WAV files for recording (combined={self.record_combined}, separate={self.record_separate})")
+            
             # Open WAV files
             incoming_wav = None
             outgoing_wav = None
@@ -148,9 +150,9 @@ class CallRecorder:
             if self.record_separate:
                 incoming_wav = wave.open(str(self.incoming_path), 'wb')
                 incoming_wav.setnchannels(1)  # Mono
-                incoming_wav.setsampwidth(1)  # 8-bit ulaw
+                incoming_wav.setsampwidth(2)  # 16-bit PCM (converted from ulaw)
                 incoming_wav.setframerate(8000)
-                incoming_wav.setcomptype('ULAW', 'CCITT G.711 u-law')
+                # No compression - standard PCM
                 
                 outgoing_wav = wave.open(str(self.outgoing_path), 'wb')
                 outgoing_wav.setnchannels(1)
@@ -161,9 +163,9 @@ class CallRecorder:
             if self.record_combined:
                 combined_wav = wave.open(str(self.combined_path), 'wb')
                 combined_wav.setnchannels(2)  # Stereo: left=incoming, right=outgoing
-                combined_wav.setsampwidth(1)  # 8-bit ulaw
+                combined_wav.setsampwidth(2)  # 16-bit PCM (converted from ulaw)
                 combined_wav.setframerate(8000)
-                combined_wav.setcomptype('ULAW', 'CCITT G.711 u-law')
+                # No compression - standard PCM
                 
             logger.info(f"Recording loop started for call {self.call_id}")
             
@@ -203,10 +205,14 @@ class CallRecorder:
                 # Write separate files
                 if self.record_separate:
                     if incoming_data and incoming_wav:
-                        incoming_wav.writeframes(incoming_data)
+                        # Convert ulaw to PCM before writing
+                        pcm_data = audioop.ulaw2lin(incoming_data, 2)  # 2 = 16-bit
+                        incoming_wav.writeframes(pcm_data)
                         frames_written_incoming += 1
                     if outgoing_data and outgoing_wav:
-                        outgoing_wav.writeframes(outgoing_data)
+                        # Convert ulaw to PCM before writing
+                        pcm_data = audioop.ulaw2lin(outgoing_data, 2)  # 2 = 16-bit
+                        outgoing_wav.writeframes(pcm_data)
                         frames_written_outgoing += 1
                         
                 # Log progress every 50 frames (~1 second)
@@ -224,9 +230,13 @@ class CallRecorder:
                     # Interleave when we have matching amounts
                     min_len = min(len(incoming_buffer), len(outgoing_buffer))
                     if min_len > 0:
-                        # Interleave bytes: L R L R L R ...
+                        # Convert both channels from ulaw to PCM
+                        incoming_pcm = audioop.ulaw2lin(incoming_buffer[:min_len], 2)
+                        outgoing_pcm = audioop.ulaw2lin(outgoing_buffer[:min_len], 2)
+                        
+                        # Interleave 16-bit samples: L L R R L L R R ...
                         stereo_data = b''.join(
-                            bytes([incoming_buffer[i], outgoing_buffer[i]])
+                            incoming_pcm[i*2:i*2+2] + outgoing_pcm[i*2:i*2+2]
                             for i in range(min_len)
                         )
                         combined_wav.writeframes(stereo_data)
