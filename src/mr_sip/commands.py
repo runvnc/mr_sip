@@ -425,15 +425,19 @@ async def delegate_call_task(agent:str, phone_number:str, instructions: str, idl
                               "instructions": "Call the customer and inform them about their order status." } }
 
     """
-    log_id = nanoid.generate()
-    instructions = instructions + f"\n\n Call the phone number {phone_number} to accomplish the task."
-    await command_manager.delegate_task(instructions, agent, log_id=log_id, context=context)
-    result = await await_call_result(log_id,agent=agent, idle_timeout_seconds=idle_timeout_seconds, 
-                                     finish_timeout_seconds=finish_timeout_seconds, context=context)
     try:
-        await context.close_s2s_session(context)
+        log_id = nanoid.generate()
+        instructions = instructions + f"\n\n Call the phone number {phone_number} to accomplish the task."
+        await command_manager.delegate_task(instructions, agent, log_id=log_id, context=context)
+        result = await await_call_result(log_id,agent=agent, idle_timeout_seconds=idle_timeout_seconds, 
+                                         finish_timeout_seconds=finish_timeout_seconds, context=context)
+        try:
+            await context.close_s2s_session(context)
+        except Exception as e:
+            logger.warning(f"Could not close s2s session (normal if not s2s): {e}")
+
+        return f"Log_id: {log_id}. Result: {result}"
     except Exception as e:
-        logger.warning(f"Could not close s2s session (normal if not s2s): {e}")
-
-    return f"Log_id: {log_id}. Result: {result}"
-
+        trace = traceback.format_exc()
+        logger.error(f"Error in delegate_call_task: {e}\n\n{trace}")
+        return f"Error delegating call task: {str(e)} \n\n{trace}"
