@@ -266,31 +266,24 @@ class CallRecorder:
                         # If we don't have data from either buffer, stop
                         if not buffered_incoming and not buffered_outgoing:
                             break
-                    
-                    # Write frames immediately, padding with silence if one channel is missing
-                    # This prevents queue backup and keeps audio in sync
                         
-                    # Use buffered data for writing (smoothed timing)
-                    if buffered_incoming or buffered_outgoing:
                         # Pad missing channel with silence (ulaw silence = 0xFF)
                         if not buffered_incoming:
                             buffered_incoming = b'\xff' * FRAME_SIZE
                         if not buffered_outgoing:
                             buffered_outgoing = b'\xff' * FRAME_SIZE
                         
-                        # Only write if both are the same size (standard frame)
-                        if len(buffered_incoming) == FRAME_SIZE and len(buffered_outgoing) == FRAME_SIZE:
-                            # Convert both channels from ulaw to PCM
-                            incoming_pcm = audioop.ulaw2lin(buffered_incoming, 2)
-                            outgoing_pcm = audioop.ulaw2lin(buffered_outgoing, 2)
-                            
-                            # Interleave 16-bit samples: L L R R L L R R ...
-                            stereo_data = b''.join(
-                                incoming_pcm[i*2:i*2+2] + outgoing_pcm[i*2:i*2+2]
-                                for i in range(FRAME_SIZE)
-                            )
-                            combined_wav.writeframes(stereo_data)
-                            frames_written_combined += 1
+                        # Convert both channels from ulaw to PCM
+                        incoming_pcm = audioop.ulaw2lin(buffered_incoming, 2)
+                        outgoing_pcm = audioop.ulaw2lin(buffered_outgoing, 2)
+                        
+                        # Interleave 16-bit samples: L L R R L L R R ...
+                        stereo_data = b''.join(
+                            incoming_pcm[i*2:i*2+2] + outgoing_pcm[i*2:i*2+2]
+                            for i in range(FRAME_SIZE)
+                        )
+                        combined_wav.writeframes(stereo_data)
+                        frames_written_combined += 1
                         
         except Exception as e:
             logger.error(f"Error in recording loop: {e}")
