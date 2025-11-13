@@ -115,6 +115,16 @@ class CallRecorder:
         except asyncio.QueueFull:
             # Drop frame to prevent latency - recording is best-effort
             pass  # Silently drop to avoid log spam
+    
+    def interrupt_outgoing(self):
+        """
+        Called when playback is interrupted; replaces the held outgoing frame with silence
+        to avoid sustaining the last sample during ticked writes.
+        """
+        try:
+            self._last_outgoing_frame = b'\xff' * 160  # ulaw silence (20ms)
+        except Exception:
+            pass
             
     def record_outgoing(self, audio_data: bytes):
         """
@@ -134,6 +144,16 @@ class CallRecorder:
         except asyncio.QueueFull:
             # Drop frame to prevent latency - recording is best-effort
             pass  # Silently drop to avoid log spam
+    
+    def interrupt_outgoing(self):
+        """
+        Called when playback is interrupted; replaces the held outgoing frame with silence
+        to avoid sustaining the last sample during ticked writes.
+        """
+        try:
+            self._last_outgoing_frame = b'\xff' * 160  # ulaw silence (20ms)
+        except Exception:
+            pass
             
     async def _recording_loop(self):
         """Background task that writes audio to files."""
@@ -245,7 +265,9 @@ class CallRecorder:
                     logger.debug(f"Tick write error ignored: {_e}")
                 await asyncio.sleep(TICK_SEC)
 
-            # Drain a few final ticks after stop to flush any queued frames
+            # Drain a few final ticks after stop to flush any queued frames,
+            # but ensure we don't sustain last outgoing tone after stop
+            self._last_outgoing_frame = b'\xff' * FRAME_SIZE
             for _ in range(10):
                 try:
                     ok = await write_one_tick()

@@ -311,6 +311,12 @@ class MindRootSIPBotS2S:
         try:
             # Set interrupt flag to stop ongoing sends
             self._interrupting = True
+            # Reset recorder's outgoing hold to silence to avoid buzz on combined file
+            try:
+                if self.recorder:
+                    self.recorder.interrupt_outgoing()
+            except Exception as _e:
+                logger.debug(f"interrupt_outgoing safe-ignored: {_e}")
             
             if self.audio_stream:
                 try:
