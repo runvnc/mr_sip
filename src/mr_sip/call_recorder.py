@@ -64,10 +64,10 @@ class CallRecorder:
         self._incoming_count = 0
         self._outgoing_count = 0
         
-        # Smoothing buffers (2-3 frames) to eliminate recording artifacts from timing jitter
-        # These buffers smooth out irregularities from queue backpressure
-        self._incoming_buffer = deque(maxlen=3)
-        self._outgoing_buffer = deque(maxlen=3)
+        # Smoothing buffers - no maxlen, let them grow as needed
+        # Outgoing chunks are now 250ms (2000 bytes), incoming are 160 bytes
+        self._incoming_buffer = deque()
+        self._outgoing_buffer = deque()
         self._buffer_primed = False  # Track if buffers have initial frames
         
     async def start_recording(self):
@@ -239,30 +239,33 @@ class CallRecorder:
                 if self.record_combined and combined_wav:
                     # Add frames to smoothing buffers
                     if incoming_data and incoming_data is not None:
-                        self._incoming_buffer.append(incoming_data)
+                        # Split incoming into 160-byte frames if needed
+                        for i in range(0, len(incoming_data), FRAME_SIZE):
+                            frame = incoming_data[i:i+FRAME_SIZE]
+                            if len(frame) == FRAME_SIZE:
+                                self._incoming_buffer.append(frame)
+                    
                     if outgoing_data and outgoing_data is not None:
-                        self._outgoing_buffer.append(outgoing_data)
+                        # Split outgoing into 160-byte frames if needed
+                        for i in range(0, len(outgoing_data), FRAME_SIZE):
+                            frame = outgoing_data[i:i+FRAME_SIZE]
+                            if len(frame) == FRAME_SIZE:
+                                self._outgoing_buffer.append(frame)
                     
-                    # Prime buffers with 2 frames before starting to write
-                    # This ensures smooth transitions from the start
-                    if not self._buffer_primed:
-                        if len(self._incoming_buffer) >= 2 or len(self._outgoing_buffer) >= 2:
-                            self._buffer_primed = True
-                        else:
-                            continue  # Keep buffering
-                    
-                    # Get frames from buffers (oldest first for FIFO)
-                    buffered_incoming = None
-                    buffered_outgoing = None
-                    
-                    if len(self._incoming_buffer) >= 2:
-                        buffered_incoming = self._incoming_buffer.popleft()
-                    if len(self._outgoing_buffer) >= 2:
-                        buffered_outgoing = self._outgoing_buffer.popleft()
-                    
-                    # If we don't have buffered data yet, skip this iteration
-                    if not buffered_incoming and not buffered_outgoing:
-                        continue
+                    # Write frames from buffers as they become available
+                    # Process all available frames to prevent buffer buildup
+                    while len(self._incoming_buffer) > 0 or len(self._outgoing_buffer) > 0:
+                        buffered_incoming = None
+                        buffered_outgoing = None
+                        
+                        if len(self._incoming_buffer) > 0:
+                            buffered_incoming = self._incoming_buffer.popleft()
+                        if len(self._outgoing_buffer) > 0:
+                            buffered_outgoing = self._outgoing_buffer.popleft()
+                        
+                        # If we don't have data from either buffer, stop
+                        if not buffered_incoming and not buffered_outgoing:
+                            break
                     
                     # Write frames immediately, padding with silence if one channel is missing
                     # This prevents queue backup and keeps audio in sync
