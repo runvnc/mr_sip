@@ -68,6 +68,8 @@ class CallRecorder:
         self._last_outgoing_frame = b'\xff' * 160  # ulaw silence 20ms
         self._ticked = True  # enable ticked stereo writer to smooth bursty producers
         self._tick_task: Optional[asyncio.Task] = None
+        # Mute window control for outgoing channel on interruption (seconds since monotonic)
+        self._mute_outgoing_until: float = 0.0
         
     async def start_recording(self):
         """Start recording in background task."""
@@ -122,7 +124,19 @@ class CallRecorder:
         to avoid sustaining the last sample during ticked writes.
         """
         try:
+            # Replace held frame with ulaw silence
             self._last_outgoing_frame = b'\xff' * 160  # ulaw silence (20ms)
+            # Engage hard mute window for 300ms to prevent residual buzz
+            self._mute_outgoing_until = time.monotonic() + 0.3
+            # Drain any queued outgoing frames to prevent voiced leftovers after interrupt
+            try:
+                while True:
+                    item = self.outgoing_queue.get_nowait()
+                    if item is None:
+                        # keep stop sentinel behavior if present
+                        break
+            except asyncio.QueueEmpty:
+                pass
         except Exception:
             pass
             
@@ -151,7 +165,19 @@ class CallRecorder:
         to avoid sustaining the last sample during ticked writes.
         """
         try:
+            # Replace held frame with ulaw silence
             self._last_outgoing_frame = b'\xff' * 160  # ulaw silence (20ms)
+            # Engage hard mute window for 300ms to prevent residual buzz
+            self._mute_outgoing_until = time.monotonic() + 0.3
+            # Drain any queued outgoing frames to prevent voiced leftovers after interrupt
+            try:
+                while True:
+                    item = self.outgoing_queue.get_nowait()
+                    if item is None:
+                        # keep stop sentinel behavior if present
+                        break
+            except asyncio.QueueEmpty:
+                pass
         except Exception:
             pass
             
@@ -246,7 +272,11 @@ class CallRecorder:
                 if self.record_combined and combined_wav:
                     # Convert both channels (ulaw->PCM16)
                     inc_pcm = audioop.ulaw2lin(self._last_incoming_frame, 2)
-                    out_pcm = audioop.ulaw2lin(self._last_outgoing_frame, 2)
+                    # During mute window, force PCM-zero silence on outgoing to avoid buzz/DC
+                    if time.monotonic() < self._mute_outgoing_until:
+                        out_pcm = b'\x00' * (FRAME * 2)
+                    else:
+                        out_pcm = audioop.ulaw2lin(self._last_outgoing_frame, 2)
                     # Interleave
                     stereo = b''.join(
                         inc_pcm[i*2:i*2+2] + out_pcm[i*2:i*2+2]
@@ -268,6 +298,7 @@ class CallRecorder:
             # Drain a few final ticks after stop to flush any queued frames,
             # but ensure we don't sustain last outgoing tone after stop
             self._last_outgoing_frame = b'\xff' * FRAME_SIZE
+            self._mute_outgoing_until = time.monotonic() + 0.3
             for _ in range(10):
                 try:
                     ok = await write_one_tick()
