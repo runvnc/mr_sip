@@ -63,12 +63,11 @@ class CallRecorder:
         # Frame counters for debugging
         self._incoming_count = 0
         self._outgoing_count = 0
-        
-        # Smoothing buffers - no maxlen, let them grow as needed
-        # Outgoing chunks are now 250ms (2000 bytes), incoming are 160 bytes
-        self._incoming_buffer = deque()
-        self._outgoing_buffer = deque()
-        self._buffer_primed = False  # Track if buffers have initial frames
+        # Last-frame holders for ticked writer
+        self._last_incoming_frame = b'\xff' * 160  # ulaw silence 20ms
+        self._last_outgoing_frame = b'\xff' * 160  # ulaw silence 20ms
+        self._ticked = True  # enable ticked stereo writer to smooth bursty producers
+        self._tick_task: Optional[asyncio.Task] = None
         
     async def start_recording(self):
         """Start recording in background task."""
@@ -149,16 +148,18 @@ class CallRecorder:
             
             if self.record_separate:
                 incoming_wav = wave.open(str(self.incoming_path), 'wb')
-                incoming_wav.setnchannels(1)  # Mono
-                incoming_wav.setsampwidth(2)  # 16-bit PCM (converted from ulaw)
+                incoming_wav.setnchannels(1)   # Mono
+                incoming_wav.setsampwidth(2)   # 16-bit PCM (converted from ulaw)
                 incoming_wav.setframerate(8000)
                 # No compression - standard PCM
                 
                 outgoing_wav = wave.open(str(self.outgoing_path), 'wb')
+                # Use PCM16 for consistency across tools
                 outgoing_wav.setnchannels(1)
-                outgoing_wav.setsampwidth(1)
+                outgoing_wav.setsampwidth(2)   # 16-bit PCM (converted from ulaw)
                 outgoing_wav.setframerate(8000)
-                outgoing_wav.setcomptype('ULAW', 'CCITT G.711 u-law')
+                # No compression - standard PCM
+            
                 
             if self.record_combined:
                 combined_wav = wave.open(str(self.combined_path), 'wb')
@@ -175,115 +176,84 @@ class CallRecorder:
             
             frames_written_incoming = 0
             frames_written_outgoing = 0
-            
-            # Track last frame from each channel for padding
-            last_incoming = None
-            last_outgoing = None
-            
-            while self._is_recording:
-                # Try to get from both queues immediately (no blocking)
-                incoming_data = None
-                outgoing_data = None
-                
+            # Helper: write one stereo frame (20ms) using last-known frames or fresh ones if available
+            async def write_one_tick():
+                nonlocal frames_written_combined, frames_written_incoming, frames_written_outgoing
+                FRAME = FRAME_SIZE
+                inc = None
+                out = None
+                # Pull at most one frame per channel per tick; else hold last
                 try:
-                    incoming_data = self.incoming_queue.get_nowait()
+                    inc = self.incoming_queue.get_nowait()
                 except asyncio.QueueEmpty:
-                    pass
-                    
+                    inc = None
                 try:
-                    outgoing_data = self.outgoing_queue.get_nowait()
+                    out = self.outgoing_queue.get_nowait()
                 except asyncio.QueueEmpty:
-                    pass
-                
-                # Update last frame tracking
-                if incoming_data:
-                    last_incoming = incoming_data
-                if outgoing_data:
-                    last_outgoing = outgoing_data
-                
-                # Check for stop signals (explicit None from stop_recording)
-                if incoming_data is None and last_incoming is None:
-                    if outgoing_data is None and last_outgoing is None:
-                        break
-                    
-                # Check if both queues are empty (no data to write)
-                if incoming_data is None and outgoing_data is None:
-                    # Both queues empty, sleep briefly then continue
-                    await asyncio.sleep(0.01)
-                    
-                    # If we're stopping and buffers have data, flush them
-                    if not self._is_recording:
-                        if self._incoming_buffer:
-                            incoming_data = self._incoming_buffer.popleft()
-                        if self._outgoing_buffer:
-                            outgoing_data = self._outgoing_buffer.popleft()
-                        if not incoming_data and not outgoing_data:
-                            break
-                    
-                    continue
-                    
-                # Write separate files
-                if self.record_separate:
-                    if incoming_data and incoming_wav:
-                        # Convert ulaw to PCM before writing
-                        pcm_data = audioop.ulaw2lin(incoming_data, 2)  # 2 = 16-bit
-                        incoming_wav.writeframes(pcm_data)
-                        frames_written_incoming += 1
-                    if outgoing_data and outgoing_wav:
-                        # Convert ulaw to PCM before writing
-                        pcm_data = audioop.ulaw2lin(outgoing_data, 2)  # 2 = 16-bit
-                        outgoing_wav.writeframes(pcm_data)
-                        frames_written_outgoing += 1
-                        
-                # Write combined file (stereo interleaved)
+                    out = None
+
+                # Stop signals: if both queues delivered None and no last frames recorded, end
+                if inc is None and out is None and not self._is_recording:
+                    return False
+
+                # Update last-frame holders if we got fresh full frames
+                if inc is not None:
+                    # handle sentinel
+                    if inc is None:
+                        pass
+                    elif len(inc) >= FRAME:
+                        # Use only first 160 bytes; if bursts are larger, we consume one frame per tick
+                        self._last_incoming_frame = inc[:FRAME]
+                        # For separate file, write full available chunk decoded
+                        if self.record_separate and incoming_wav:
+                            try:
+                                incoming_wav.writeframes(audioop.ulaw2lin(inc, 2))
+                                frames_written_incoming += 1
+                            except Exception:
+                                pass
+                if out is not None:
+                    if out is None:
+                        pass
+                    elif len(out) >= FRAME:
+                        self._last_outgoing_frame = out[:FRAME]
+                        if self.record_separate and outgoing_wav:
+                            try:
+                                outgoing_wav.writeframes(audioop.ulaw2lin(out, 2))
+                                frames_written_outgoing += 1
+                            except Exception:
+                                pass
+
                 if self.record_combined and combined_wav:
-                    # Add frames to smoothing buffers
-                    if incoming_data and incoming_data is not None:
-                        # Split incoming into 160-byte frames if needed
-                        for i in range(0, len(incoming_data), FRAME_SIZE):
-                            frame = incoming_data[i:i+FRAME_SIZE]
-                            if len(frame) == FRAME_SIZE:
-                                self._incoming_buffer.append(frame)
-                    
-                    if outgoing_data and outgoing_data is not None:
-                        # Split outgoing into 160-byte frames if needed
-                        for i in range(0, len(outgoing_data), FRAME_SIZE):
-                            frame = outgoing_data[i:i+FRAME_SIZE]
-                            if len(frame) == FRAME_SIZE:
-                                self._outgoing_buffer.append(frame)
-                    
-                    # Write frames from buffers as they become available
-                    # Process all available frames to prevent buffer buildup
-                    while len(self._incoming_buffer) > 0 or len(self._outgoing_buffer) > 0:
-                        buffered_incoming = None
-                        buffered_outgoing = None
-                        
-                        if len(self._incoming_buffer) > 0:
-                            buffered_incoming = self._incoming_buffer.popleft()
-                        if len(self._outgoing_buffer) > 0:
-                            buffered_outgoing = self._outgoing_buffer.popleft()
-                        
-                        # If we don't have data from either buffer, stop
-                        if not buffered_incoming and not buffered_outgoing:
-                            break
-                        
-                        # Pad missing channel with silence (ulaw silence = 0xFF)
-                        if not buffered_incoming:
-                            buffered_incoming = b'\xff' * FRAME_SIZE
-                        if not buffered_outgoing:
-                            buffered_outgoing = b'\xff' * FRAME_SIZE
-                        
-                        # Convert both channels from ulaw to PCM
-                        incoming_pcm = audioop.ulaw2lin(buffered_incoming, 2)
-                        outgoing_pcm = audioop.ulaw2lin(buffered_outgoing, 2)
-                        
-                        # Interleave 16-bit samples: L L R R L L R R ...
-                        stereo_data = b''.join(
-                            incoming_pcm[i*2:i*2+2] + outgoing_pcm[i*2:i*2+2]
-                            for i in range(FRAME_SIZE)
-                        )
-                        combined_wav.writeframes(stereo_data)
-                        frames_written_combined += 1
+                    # Convert both channels (ulaw->PCM16)
+                    inc_pcm = audioop.ulaw2lin(self._last_incoming_frame, 2)
+                    out_pcm = audioop.ulaw2lin(self._last_outgoing_frame, 2)
+                    # Interleave
+                    stereo = b''.join(
+                        inc_pcm[i*2:i*2+2] + out_pcm[i*2:i*2+2]
+                        for i in range(FRAME)
+                    )
+                    combined_wav.writeframes(stereo)
+                    frames_written_combined += 1
+                return True
+
+            # Main tick loop at 20ms cadence to smooth bursts from producers (e.g., 250ms OpenAI chunks)
+            TICK_SEC = 0.02
+            while self._is_recording:
+                try:
+                    await write_one_tick()
+                except Exception as _e:
+                    logger.debug(f"Tick write error ignored: {_e}")
+                await asyncio.sleep(TICK_SEC)
+
+            # Drain a few final ticks after stop to flush any queued frames
+            for _ in range(10):
+                try:
+                    ok = await write_one_tick()
+                    if not ok:
+                        break
+                except Exception:
+                    break
+            
                         
         except Exception as e:
             logger.error(f"Error in recording loop: {e}")
