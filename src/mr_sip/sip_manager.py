@@ -27,7 +27,7 @@ class SIPSession:
         self.created_at = datetime.now()
         self.is_active = False
         self.halt_audio_out = False
-        self.audio_queue = asyncio.Queue(maxsize=10)  # Phase 1 optimization: Limit to ~200ms of audio
+        self.audio_queue = asyncio.Queue(maxsize=35)  # Increased to ~700ms headroom for smoother pacing
         self._audio_sender_task = None
         self._audio_sent_count = 0
         self._audio_queued_count = 0
