@@ -18,6 +18,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 import audioop
+from collections import deque
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,12 @@ class CallRecorder:
         # Frame counters for debugging
         self._incoming_count = 0
         self._outgoing_count = 0
+        
+        # Smoothing buffers (2-3 frames) to eliminate recording artifacts from timing jitter
+        # These buffers smooth out irregularities from queue backpressure
+        self._incoming_buffer = deque(maxlen=3)
+        self._outgoing_buffer = deque(maxlen=3)
+        self._buffer_primed = False  # Track if buffers have initial frames
         
     async def start_recording(self):
         """Start recording in background task."""
@@ -203,6 +210,16 @@ class CallRecorder:
                 if incoming_data is None and outgoing_data is None:
                     # Both queues empty, sleep briefly then continue
                     await asyncio.sleep(0.01)
+                    
+                    # If we're stopping and buffers have data, flush them
+                    if not self._is_recording:
+                        if self._incoming_buffer:
+                            incoming_data = self._incoming_buffer.popleft()
+                        if self._outgoing_buffer:
+                            outgoing_data = self._outgoing_buffer.popleft()
+                        if not incoming_data and not outgoing_data:
+                            break
+                    
                     continue
                     
                 # Write separate files
@@ -220,22 +237,49 @@ class CallRecorder:
                         
                 # Write combined file (stereo interleaved)
                 if self.record_combined and combined_wav:
+                    # Add frames to smoothing buffers
+                    if incoming_data and incoming_data is not None:
+                        self._incoming_buffer.append(incoming_data)
+                    if outgoing_data and outgoing_data is not None:
+                        self._outgoing_buffer.append(outgoing_data)
+                    
+                    # Prime buffers with 2 frames before starting to write
+                    # This ensures smooth transitions from the start
+                    if not self._buffer_primed:
+                        if len(self._incoming_buffer) >= 2 or len(self._outgoing_buffer) >= 2:
+                            self._buffer_primed = True
+                        else:
+                            continue  # Keep buffering
+                    
+                    # Get frames from buffers (oldest first for FIFO)
+                    buffered_incoming = None
+                    buffered_outgoing = None
+                    
+                    if len(self._incoming_buffer) >= 2:
+                        buffered_incoming = self._incoming_buffer.popleft()
+                    if len(self._outgoing_buffer) >= 2:
+                        buffered_outgoing = self._outgoing_buffer.popleft()
+                    
+                    # If we don't have buffered data yet, skip this iteration
+                    if not buffered_incoming and not buffered_outgoing:
+                        continue
+                    
                     # Write frames immediately, padding with silence if one channel is missing
                     # This prevents queue backup and keeps audio in sync
                         
-                    # Ensure we have data for both channels (pad with silence if needed)
-                    if incoming_data or outgoing_data:
+                    # Use buffered data for writing (smoothed timing)
+                    if buffered_incoming or buffered_outgoing:
                         # Pad missing channel with silence (ulaw silence = 0xFF)
-                        if not incoming_data:
-                            incoming_data = b'\xff' * FRAME_SIZE
-                        if not outgoing_data:
-                            outgoing_data = b'\xff' * FRAME_SIZE
+                        if not buffered_incoming:
+                            buffered_incoming = b'\xff' * FRAME_SIZE
+                        if not buffered_outgoing:
+                            buffered_outgoing = b'\xff' * FRAME_SIZE
                         
                         # Only write if both are the same size (standard frame)
-                        if len(incoming_data) == FRAME_SIZE and len(outgoing_data) == FRAME_SIZE:
+                        if len(buffered_incoming) == FRAME_SIZE and len(buffered_outgoing) == FRAME_SIZE:
                             # Convert both channels from ulaw to PCM
-                            incoming_pcm = audioop.ulaw2lin(incoming_data, 2)
-                            outgoing_pcm = audioop.ulaw2lin(outgoing_data, 2)
+                            incoming_pcm = audioop.ulaw2lin(buffered_incoming, 2)
+                            outgoing_pcm = audioop.ulaw2lin(buffered_outgoing, 2)
                             
                             # Interleave 16-bit samples: L L R R L L R R ...
                             stereo_data = b''.join(

@@ -35,10 +35,10 @@ class AudioStreamAdapter:
     that it reads audio frames from.
     """
     def __init__(self):
-        # Limited queue for low latency - max 25 frames = 500ms buffering
+        # Limited queue for low latency - max 34 frames = 680ms buffering
         # This provides backpressure to pace OpenAI's output and reduces latency
         # Combined with 3-frame jitter buffer for smooth output
-        self.input_q = queue.Queue(maxsize=25)
+        self.input_q = queue.Queue(maxsize=34)
         self.stream_id = "tts_output"
         self._done = False
         self.pre_encoded = True  # Flag to indicate audio is already ulaw encoded
@@ -268,11 +268,18 @@ class MindRootSIPBotS2S:
             if self._interrupting:
                 return  # Abort immediately on interrupt
             
+            frame_count = 0  # Track frames for async yields
+            
             for i in range(0, len(audio_chunk), FRAME_SIZE):
                 frame = audio_chunk[i:i+FRAME_SIZE]
                 
                 # Only send complete frames
                 if len(frame) == FRAME_SIZE:
+                    # Yield to event loop every 15 frames (300ms) to allow interrupts
+                    if frame_count % 15 == 0:
+                        await asyncio.sleep(0)
+                    frame_count += 1
+                    
                     try:
                         # Check interrupt flag on each frame
                         if self._interrupting:
