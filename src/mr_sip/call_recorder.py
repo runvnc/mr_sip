@@ -58,7 +58,7 @@ class CallRecorder:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.incoming_path = self.output_dir / f"{call_id}_{timestamp}_incoming.wav"
         self.outgoing_path = self.output_dir / f"{call_id}_{timestamp}_outgoing.wav"
-        self.combined_path = self.output_dir / f"{call_id}_{timestamp}_combined.wav"
+        self.combined_path = self.output_dir / f"{call_id}.wav"
         
         # Frame counters for debugging
         self._incoming_count = 0
