@@ -277,7 +277,7 @@ class MindRootSIPBotS2S:
                 if len(frame) == FRAME_SIZE:
                     # Yield to event loop every 15 frames (300ms) to allow interrupts
                     if frame_count % 15 == 0:
-                        await asyncio.sleep(0.001)
+                        await asyncio.sleep(0)
                     frame_count += 1
                     
                     try:
