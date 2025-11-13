@@ -268,20 +268,13 @@ class MindRootSIPBotS2S:
             if self._interrupting:
                 return  # Abort immediately on interrupt
             
-            frame_count = 0  # Track frames for async yields
-            
             for i in range(0, len(audio_chunk), FRAME_SIZE):
                 frame = audio_chunk[i:i+FRAME_SIZE]
                 
                 # Only send complete frames
                 if len(frame) == FRAME_SIZE:
-                    # Yield to event loop every 15 frames (300ms) to allow interrupts
-                    if frame_count % 15 == 0:
-                        await asyncio.sleep(0)
-                    frame_count += 1
-                    
                     try:
-                        # Check interrupt flag on each frame
+                        # Check interrupt flag BEFORE attempting to queue
                         if self._interrupting:
                             return  # Abort immediately
                         
