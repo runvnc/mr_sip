@@ -225,14 +225,31 @@ class MindRootSIPBotS2S:
                 except Exception as e:
                     logger.warning(f"Error stopping audio stream: {e}")
             
-            # Stop recording
+
+            # Pre-mute recorder channels to avoid tail noise, then stop recording
             if self.recorder:
+                try:
+                    self.recorder.interrupt_outgoing()
+                except Exception:
+                    pass
+                try:
+                    self.recorder.interrupt_incoming()
+                except Exception:
+                    pass
                 await self.recorder.stop_recording()
                 self.recorder = None
             
             # Send disconnect message to agent
             await self._show_disconnected()
             
+            # Clear PySIP outgoing smoothing buffer to avoid end-of-call residuals
+            try:
+                if self.call and hasattr(self.call, '_rtp_session') and self.call._rtp_session:
+                    self.call._rtp_session.__outgoing_buffer = []
+                    logger.info("Cleared PySIP outgoing buffer at call end")
+            except Exception:
+                pass
+
             # Log statistics
             logger.info(f"Call statistics - Input frames: {self._input_frame_count}, Output frames: {self._output_frame_count}")
             
