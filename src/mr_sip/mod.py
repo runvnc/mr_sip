@@ -20,7 +20,9 @@ from pathlib import Path
 
 # Configure logging for entire mr_sip module - CRITICAL only
 # This affects all loggers in the mr_sip.* namespace
-logging.getLogger('mr_sip').setLevel(logging.CRITICAL)
+#logging.getLogger('mr_sip').setLevel(logging.CRITICAL)
+logging.getLogger('mr_sip').setLevel(logging.DEBUG)
+
 
 # Initialize this module's logger
 logger = logging.getLogger(__name__)
