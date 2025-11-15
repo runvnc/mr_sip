@@ -291,7 +291,7 @@ class MindRootSIPBotS2S:
                 frame = audio_chunk[i:i+FRAME_SIZE]
                 
                 # Only send complete frames
-                if True or len(frame) == FRAME_SIZE:
+                if len(frame) == FRAME_SIZE:
                     try:
                         # Check interrupt flag BEFORE attempting to queue
                         if self._interrupting:
