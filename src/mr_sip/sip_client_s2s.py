@@ -119,10 +119,10 @@ class MindRootSIPBotS2S:
         logger.info(f"=== INITIATING CALL TO {destination} (PySIP S2S Mode) ===")
         
         # Completely disable PySIP logging
-        import logging as pysip_logging
-        pysip_logger = pysip_logging.getLogger('PySIP')
-        pysip_logger.setLevel(pysip_logging.CRITICAL + 1)  # Higher than CRITICAL
-        pysip_logger.propagate = False  # Don't propagate to parent loggers
+        #import logging as pysip_logging
+        #pysip_logger = pysip_logging.getLogger('PySIP')
+        #pysip_logger.setLevel(pysip_logging.CRITICAL + 1)  # Higher than CRITICAL
+        #pysip_logger.propagate = False  # Don't propagate to parent loggers
         
         logger.info("About to create SipCall instance...")
         
