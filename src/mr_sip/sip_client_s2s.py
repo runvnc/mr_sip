@@ -38,7 +38,9 @@ class AudioStreamAdapter:
         # Limited queue for low latency - max 34 frames = 680ms buffering
         # This provides backpressure to pace OpenAI's output and reduces latency
         # Combined with 3-frame jitter buffer for smooth output
-        self.input_q = queue.Queue(maxsize=34)
+        # Actually OpenAI s2s module does pacing to normal time so
+        # this should be unnecessary and we don't need to limit it regardless.
+        self.input_q = queue.Queue(maxsize=134)
         self.stream_id = "tts_output"
         self._done = False
         self.pre_encoded = True  # Flag to indicate audio is already ulaw encoded
@@ -289,7 +291,7 @@ class MindRootSIPBotS2S:
                 frame = audio_chunk[i:i+FRAME_SIZE]
                 
                 # Only send complete frames
-                if len(frame) == FRAME_SIZE:
+                if True or len(frame) == FRAME_SIZE:
                     try:
                         # Check interrupt flag BEFORE attempting to queue
                         if self._interrupting:
