@@ -106,7 +106,7 @@ async def dial_service(destination: str, context=None) -> Dict[str, Any]:
         max_wait = 30  # 30 seconds timeout
         wait_count = 0
         while not bot.call_established and wait_count < max_wait:
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.1)
             wait_count += 1
             
         if bot.call_established:

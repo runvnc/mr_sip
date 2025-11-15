@@ -40,7 +40,7 @@ class AudioStreamAdapter:
         # Combined with 3-frame jitter buffer for smooth output
         # Actually OpenAI s2s module does pacing to normal time so
         # this should be unnecessary and we don't need to limit it regardless.
-        self.input_q = queue.Queue(maxsize=134)
+        self.input_q = queue.Queue(maxsize=10) #134)
         self.stream_id = "tts_output"
         self._done = False
         self.pre_encoded = True  # Flag to indicate audio is already ulaw encoded
