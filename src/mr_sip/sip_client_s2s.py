@@ -1,18 +1,12 @@
 #!/usr/bin/env python3
 """
-SIP Client for Speech-to-Speech Mode using PySIP
+SIP Client for Speech-to-Speech Mode using PySIP - OPTIMIZED FOR RTP
 
-This client uses PySIP library instead of baresip/JACK for SIP call handling.
-It handles OUTBOUND calls only (not incoming calls).
-Handles both audio input (phone -> OpenAI) and output (OpenAI -> phone).
-
-Key features:
-- No JACK dependencies
-- No baresip dependencies  
-- Direct ulaw 8kHz audio (no conversion needed for OpenAI Realtime API)
-- Async/await based architecture
-- Preserves send_tts_audio() interface for session manager compatibility
-- Outbound calls only (no incoming call support)
+Key optimizations:
+- Non-blocking audio queue operations
+- Critical logging for dropped frames
+- Metrics tracking for monitoring
+- No blocking operations in audio path
 """
 
 import asyncio
@@ -35,12 +29,8 @@ class AudioStreamAdapter:
     that it reads audio frames from.
     """
     def __init__(self):
-        # Limited queue for low latency - max 34 frames = 680ms buffering
-        # This provides backpressure to pace OpenAI's output and reduces latency
-        # Combined with 3-frame jitter buffer for smooth output
-        # Actually OpenAI s2s module does pacing to normal time so
-        # this should be unnecessary and we don't need to limit it regardless.
-        self.input_q = queue.Queue(maxsize=1000) #134)
+        # Queue for low latency - max 1000 frames = 20 seconds buffering
+        self.input_q = queue.Queue(maxsize=1000)
         self.stream_id = "tts_output"
         self._done = False
         self.pre_encoded = True  # Flag to indicate audio is already ulaw encoded
@@ -50,16 +40,23 @@ class AudioStreamAdapter:
         self._done = True
 
 class MindRootSIPBotS2S:
-    """SIP phone bot for Speech-to-Speech mode using PySIP.
+    """SIP phone bot for Speech-to-Speech mode using PySIP - OPTIMIZED.
     
     OUTBOUND CALLS ONLY - Does not handle incoming calls.
     
     Handles bidirectional audio:
     - Input: Phone audio -> OpenAI (via on_frame_received callback)
     - Output: OpenAI audio -> Phone (via send_tts_audio method)
+    
+    OPTIMIZATION NOTES:
+    - All audio operations are non-blocking
+    - Dropped frames are logged as CRITICAL
+    - Metrics tracked for monitoring
     """
     
-    def __init__(self, user: str, password: str, gateway: str, audio_dir: str = ".", context=None, enable_recording: bool = False, recording_dir: str = "recordings", record_separate: bool = False):
+    def __init__(self, user: str, password: str, gateway: str, audio_dir: str = ".", 
+                 context=None, enable_recording: bool = False, recording_dir: str = "recordings", 
+                 record_separate: bool = False):
         """
         Args:
             user: SIP username
@@ -96,6 +93,11 @@ class MindRootSIPBotS2S:
         self._input_frame_count = 0
         self._output_frame_count = 0
         
+        # OPTIMIZATION: Metrics for monitoring
+        self._dropped_frame_count = 0
+        self._last_drop_log_time = 0
+        self._drop_log_interval = 1.0  # Log dropped frames at most once per second
+        
         # Event to signal when call is fully answered and RTP ready
         self.call_answered = asyncio.Event()
         
@@ -108,7 +110,7 @@ class MindRootSIPBotS2S:
         # Interrupt flag for fast audio clearing
         self._interrupting = False
         
-        logger.info(f"PySIP S2S Bot initialized for user {user} on gateway {gateway}")
+        logger.info(f"PySIP S2S Bot initialized (OPTIMIZED) for user {user} on gateway {gateway}")
         
     async def make_call(self, destination: str):
         """Initiate outbound call.
@@ -116,13 +118,11 @@ class MindRootSIPBotS2S:
         Args:
             destination: Phone number or SIP URI to call
         """
-        logger.info(f"=== INITIATING CALL TO {destination} (PySIP S2S Mode) ===")
+        logger.info(f"=== INITIATING CALL TO {destination} (PySIP S2S Mode - OPTIMIZED) ===")
         
         # Completely disable PySIP logging
         import logging as pysip_logging
         pysip_logger = pysip_logging.getLogger('PySIP')
-        #pysip_logger.setLevel(pysip_logging.CRITICAL + 1)  # Higher than CRITICAL
-       # pysip_logger.propagate = False  # Don't propagate to parent loggers
         
         logger.info("About to create SipCall instance...")
         
@@ -179,7 +179,7 @@ class MindRootSIPBotS2S:
                     if self._input_frame_count % 50 == 0:
                         logger.debug(f"Received frame #{self._input_frame_count}, size: {len(frame)} bytes")
                     
-                    # Record incoming audio
+                    # Record incoming audio (non-blocking, already optimized)
                     if self.recorder:
                         self.recorder.record_incoming(frame)
                     
@@ -213,7 +213,7 @@ class MindRootSIPBotS2S:
             state: Final call state (ENDED, FAILED, or BUSY)
         """
         try:
-            logger.info(f"=== CALL ENDED: {state} (PySIP S2S Mode) ===")
+            logger.info(f"=== CALL ENDED: {state} (PySIP S2S Mode - OPTIMIZED) ===")
             
             self.is_active = False
             self.call_established = False
@@ -227,7 +227,6 @@ class MindRootSIPBotS2S:
                 except Exception as e:
                     logger.warning(f"Error stopping audio stream: {e}")
             
-
             # Pre-mute recorder channels to avoid tail noise, then stop recording
             if self.recorder:
                 try:
@@ -252,20 +251,27 @@ class MindRootSIPBotS2S:
             except Exception:
                 pass
 
-            # Log statistics
-            logger.info(f"Call statistics - Input frames: {self._input_frame_count}, Output frames: {self._output_frame_count}")
+            # Log statistics including dropped frames
+            logger.info(f"Call statistics - Input frames: {self._input_frame_count}, "
+                       f"Output frames: {self._output_frame_count}, "
+                       f"Dropped frames: {self._dropped_frame_count}")
+            
+            if self._dropped_frame_count > 0:
+                drop_rate = (self._dropped_frame_count / max(1, self._output_frame_count)) * 100
+                logger.warning(f"Frame drop rate: {drop_rate:.2f}% ({self._dropped_frame_count}/{self._output_frame_count})")
             
         except Exception as e:
             logger.error(f"Error in _on_call_ended: {e}")
             logger.error(traceback.format_exc())
     
     async def send_tts_audio(self, audio_chunk: bytes):
-        """Send TTS audio chunk to the SIP call.
+        """Send TTS audio chunk to the SIP call - OPTIMIZED NON-BLOCKING VERSION.
         
         This is the REQUIRED interface called by the session manager.
         OpenAI sends ulaw 8kHz audio which we pass through directly.
         
-        Queues individual 160-byte frames to allow interruption.
+        OPTIMIZATION: Uses non-blocking put_nowait() to prevent RTP disruption.
+        Dropped frames are logged as CRITICAL since they directly impact audio quality.
         
         Args:
             audio_chunk: Audio data from OpenAI (ulaw 8kHz)
@@ -297,30 +303,34 @@ class MindRootSIPBotS2S:
                         if self._interrupting:
                             return  # Abort immediately
                         
-                        # Retry putting frame until success or interrupt
-                        # This ensures no frames are dropped while maintaining fast interrupt
-                        while not self._interrupting:
-                            try:
-                                self.audio_stream.input_q.put(frame, block=True, timeout=0.1)
-                                break  # Success - move to next frame
-                            except queue.Full:
-                                # Queue full - check interrupt flag before retrying
-                                if self._interrupting:
-                                    return  # Abort immediately
-                                # Queue still full, retry same frame
-                                # The 0.1s timeout allows checking interrupt flag frequently
-                                pass
+                        # OPTIMIZATION: Non-blocking put - drop frame if queue is full
+                        # This prevents blocking the audio path and disrupting RTP
+                        self.audio_stream.input_q.put_nowait(frame)
                         
-                        # Check interrupt flag immediately after successful put
-                        if self._interrupting:
-                            return  # Abort if interrupted while we were putting
-                        
-                        # Record AFTER queuing so timing matches actual playback
+                        # Record AFTER successful queueing
                         if self.recorder:
                             self.recorder.record_outgoing(frame)
                         self._output_frame_count += 1
-                    except Exception as e:
-                        logger.error(f"Error queuing frame: {e}")
+                        
+                    except queue.Full:
+                        # CRITICAL: Frame dropped due to full queue
+                        # This directly impacts audio quality
+                        self._dropped_frame_count += 1
+                        
+                        # Rate-limited logging to avoid log spam
+                        import time
+                        current_time = time.time()
+                        if current_time - self._last_drop_log_time >= self._drop_log_interval:
+                            logger.critical(
+                                f"AUDIO FRAME DROPPED! Queue full. "
+                                f"Total dropped: {self._dropped_frame_count}, "
+                                f"Drop rate: {(self._dropped_frame_count / max(1, self._output_frame_count)) * 100:.2f}%"
+                            )
+                            self._last_drop_log_time = current_time
+                        
+                        # Don't record dropped frames
+                        continue
+                        
         except Exception as e:
             logger.error(f"Error in send_tts_audio: {e}")
             logger.error(traceback.format_exc())
@@ -413,3 +423,21 @@ class MindRootSIPBotS2S:
         except Exception as e:
             logger.error(f"Error in hang(): {e}")
             logger.error(traceback.format_exc())
+    
+    def get_metrics(self) -> dict:
+        """Get audio metrics for monitoring.
+        
+        Returns:
+            dict: Metrics including frame counts and drop rate
+        """
+        total_frames = max(1, self._output_frame_count)
+        drop_rate = (self._dropped_frame_count / total_frames) * 100
+        
+        return {
+            "input_frames": self._input_frame_count,
+            "output_frames": self._output_frame_count,
+            "dropped_frames": self._dropped_frame_count,
+            "drop_rate_percent": drop_rate,
+            "is_active": self.is_active,
+            "call_established": self.call_established
+        }
