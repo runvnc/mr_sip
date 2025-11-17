@@ -9,197 +9,97 @@ from pathlib import Path
 from datetime import datetime
 import pytz
 import whisper
-
 router = APIRouter()
 
-@router.get("/calls")
+@router.get('/calls')
 async def list_calls(request: Request):
     """List all call recordings with metadata"""
-    calls_dir = Path("data/calls")
-    
-    # Set timezone to Chicago
+    calls_dir = Path('data/calls')
     chicago_tz = pytz.timezone('America/Chicago')
-    calls_dict = {}  # Use dict to deduplicate by log_id + phone_number
-    
+    calls_dict = {}
     if calls_dir.exists():
-        for wav_file in sorted(calls_dir.glob("*.wav"), key=os.path.getmtime, reverse=True):
+        for wav_file in sorted(calls_dir.glob('*.wav'), key=os.path.getmtime, reverse=True):
             log_id = wav_file.stem
-            
-            # Find the chatlog file
             chatlog_path = find_chatlog(log_id)
             phone_number = None
             agent_name = None
-            
             if chatlog_path:
-                # Extract phone number and agent name
                 phone_number = extract_phone_number(chatlog_path)
                 agent_name = extract_agent_name(chatlog_path)
-            
-            # Create unique key from log_id and phone_number
-            unique_key = f"{log_id}_{phone_number}"
-            
-            # Skip if we've already processed this combination
+            unique_key = f'{log_id}_{phone_number}'
             if unique_key in calls_dict:
                 continue
-            
-            # Get file modification time
             mtime_utc = datetime.fromtimestamp(wav_file.stat().st_mtime, tz=pytz.UTC)
             mtime_chicago = mtime_utc.astimezone(chicago_tz)
             mtime = mtime_chicago
-            
-            calls_dict[unique_key] = {
-                "log_id": log_id,
-                "filename": wav_file.name,
-                "date": mtime.strftime("%m/%d"),
-                "time": mtime.strftime("%I:%M %p").lstrip('0'),
-                "agent_name": agent_name or "Unknown",
-                "phone_number": phone_number or "Unknown",
-                "session_path": f"/session/{agent_name}/{log_id}" if agent_name else None
-            }
-    
-    # Convert dict to list for template
+            calls_dict[unique_key] = {'log_id': log_id, 'filename': wav_file.name, 'date': mtime.strftime('%m/%d'), 'time': mtime.strftime('%I:%M %p').lstrip('0'), 'agent_name': agent_name or 'Unknown', 'phone_number': phone_number or 'Unknown', 'session_path': f'/session/{agent_name}/{log_id}' if agent_name else None}
     calls = list(calls_dict.values())
-    
-    html = await render('calls', {"calls": calls})
+    html = await render('calls', {'calls': calls})
     return HTMLResponse(html)
 
-@router.get("/calls/audio/{log_id}")
+@router.get('/calls/audio/{log_id}')
 async def get_audio(log_id: str):
     """Serve audio file for a call"""
-    audio_path = Path(f"data/calls/{log_id}.wav")
-    
+    audio_path = Path(f'data/calls/{log_id}.wav')
     if not audio_path.exists():
-        return JSONResponse({"error": "Audio file not found"}, status_code=404)
-    
-    return FileResponse(audio_path, media_type="audio/wav")
+        return JSONResponse({'error': 'Audio file not found'}, status_code=404)
+    return FileResponse(audio_path, media_type='audio/wav')
 
-@router.get("/calls/transcript/{log_id}")
+@router.get('/calls/transcript/{log_id}')
 async def get_transcript(log_id: str):
     """Generate and return transcript for a call"""
     try:
-        # Debug: log the request
-        print(f"Transcript requested for log_id: {log_id}")
-        print(f"Current working directory: {os.getcwd()}")
-        
         chatlog_path = find_chatlog(log_id)
-        print(f"Found chatlog path: {chatlog_path}")
-        
         if not chatlog_path:
-            return JSONResponse({
-                "error": "Chatlog not found",
-                "log_id": log_id,
-                "cwd": os.getcwd(),
-                "searched_in": "data/chat"
-            }, status_code=404)
-        
+            return JSONResponse({'error': 'Chatlog not found', 'log_id': log_id, 'cwd': os.getcwd(), 'searched_in': 'data/chat'}, status_code=404)
         with open(chatlog_path, 'r') as f:
             chatlog = json.load(f)
-        
         transcript = generate_transcript(chatlog)
         agent_name = extract_agent_name(chatlog_path)
         phone_number = extract_phone_number(chatlog_path)
-        
-        print(f"Generated transcript for {agent_name} - {phone_number}")
-        
-        return JSONResponse({
-            "success": True,
-            "transcript": transcript,
-            "agent_name": agent_name,
-            "phone_number": phone_number
-        })
+        return JSONResponse({'success': True, 'transcript': transcript, 'agent_name': agent_name, 'phone_number': phone_number})
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()
-        print(f"Error in get_transcript: {str(e)}")
-        print(error_trace)
-        return JSONResponse({
-            "error": str(e),
-            "trace": error_trace
-        }, status_code=500)
+        return JSONResponse({'error': str(e), 'trace': error_trace}, status_code=500)
 
-@router.get("/calls/audio_transcript/{log_id}")
+@router.get('/calls/audio_transcript/{log_id}')
 async def get_audio_transcript(log_id: str):
     """Generate transcript from audio file using Whisper"""
     try:
-        print(f"Audio transcript requested for log_id: {log_id}")
-        
-        # Check if cached transcript exists
-        cache_dir = Path("data/calls/transcripts")
+        cache_dir = Path('data/calls/transcripts')
         cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_file = cache_dir / f"{log_id}.json"
-        
+        cache_file = cache_dir / f'{log_id}.json'
         if cache_file.exists():
-            print(f"Loading cached transcript from {cache_file}")
             with open(cache_file, 'r') as f:
                 cached_data = json.load(f)
                 return JSONResponse(cached_data)
-        
-        audio_path = Path(f"data/calls/{log_id}.wav")
-        
+        audio_path = Path(f'data/calls/{log_id}.wav')
         if not audio_path.exists():
-            return JSONResponse({
-                "error": "Audio file not found",
-                "log_id": log_id
-            }, status_code=404)
-        
-        # Get metadata from chatlog if available
+            return JSONResponse({'error': 'Audio file not found', 'log_id': log_id}, status_code=404)
         chatlog_path = find_chatlog(log_id)
-        agent_name = "Unknown"
-        phone_number = "Unknown"
-        
+        agent_name = 'Unknown'
+        phone_number = 'Unknown'
         if chatlog_path:
-            agent_name = extract_agent_name(chatlog_path) or "Unknown"
-            phone_number = extract_phone_number(chatlog_path) or "Unknown"
-        
-        # Load Whisper model and transcribe
-        print(f"Loading Whisper model...")
-        model = whisper.load_model("base")
-        print(f"Transcribing audio file: {audio_path}")
+            agent_name = extract_agent_name(chatlog_path) or 'Unknown'
+            phone_number = extract_phone_number(chatlog_path) or 'Unknown'
+        model = whisper.load_model('base')
         result = model.transcribe(str(audio_path))
-        
-        transcript_text = result["text"]
-        
-        response_data = {
-            "success": True,
-            "transcript": transcript_text,
-            "agent_name": agent_name,
-            "phone_number": phone_number
-        }
-        
-        # Cache the transcript
-        print(f"Caching transcript to {cache_file}")
+        transcript_text = result['text']
+        response_data = {'success': True, 'transcript': transcript_text, 'agent_name': agent_name, 'phone_number': phone_number}
         with open(cache_file, 'w') as f:
             json.dump(response_data, f, indent=2)
-        
         return JSONResponse(response_data)
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()
-        print(f"Error in get_audio_transcript: {str(e)}")
-        print(error_trace)
-        return JSONResponse({
-            "error": str(e),
-            "trace": error_trace
-        }, status_code=500)
+        return JSONResponse({'error': str(e), 'trace': error_trace}, status_code=500)
 
 def find_chatlog(log_id: str):
     """Find chatlog file by log_id"""
-    # Search in data/chat directory
-    result = subprocess.run(
-        ["find", "data/chat", "-name", f"*{log_id}*.json"],
-        capture_output=True,
-        text=True
-    )
-    
-    print(f"Find command output: {result.stdout}")
-    print(f"Find command stderr: {result.stderr}")
-    
+    result = subprocess.run(['find', 'data/chat', '-name', f'*{log_id}*.json'], capture_output=True, text=True)
     files = result.stdout.strip().split('\n')
-    # Filter for chatlog files (not context files)
     chatlog_files = [f for f in files if f and 'chatlog_' in f]
-    
-    print(f"Filtered chatlog files: {chatlog_files}")
-    
     return chatlog_files[0] if chatlog_files else None
 
 def extract_phone_number(chatlog_path: str):
@@ -207,7 +107,6 @@ def extract_phone_number(chatlog_path: str):
     try:
         with open(chatlog_path, 'r') as f:
             chatlog = json.load(f)
-        
         for message in chatlog.get('messages', []):
             if message.get('role') == 'assistant':
                 content = message.get('content', [])
@@ -215,11 +114,9 @@ def extract_phone_number(chatlog_path: str):
                     for item in content:
                         if item.get('type') == 'text':
                             text = item.get('text', '')
-                            # Look for call command
                             if '"call"' in text:
                                 try:
-                                    # Parse the JSON command
-                                    match = re.search(r'\[.*?\]', text, re.DOTALL)
+                                    match = re.search('\\[.*?\\]', text, re.DOTALL)
                                     if match:
                                         commands = json.loads(match.group())
                                         for cmd in commands:
@@ -229,81 +126,65 @@ def extract_phone_number(chatlog_path: str):
                                     pass
     except:
         pass
-    
     return None
 
 def extract_agent_name(chatlog_path: str):
     """Extract agent name from file path"""
-    # Path format: data/chat/admin/AgentName/chatlog_xxx.json
     parts = Path(chatlog_path).parts
     if len(parts) >= 4:
-        return parts[-2]  # Agent name is second to last
+        return parts[-2]
     return None
 
 def generate_transcript(chatlog: dict):
     """Generate clean transcript from chatlog"""
     transcript_lines = []
     in_call = False
-    
     for message in chatlog.get('messages', []):
         role = message.get('role')
-        
         if role == 'assistant':
             content = message.get('content', [])
             if isinstance(content, list):
                 for item in content:
                     if item.get('type') == 'text':
                         text = item.get('text', '')
-                        
-                        # Check if call started
                         if '"call"' in text:
                             in_call = True
                             continue
-                        
-                        # Check if call ended
                         if '"hangup"' in text or '"end_call"' in text:
                             break
-                        
-                        # Extract speak commands
                         if in_call and '"speak"' in text:
                             try:
-                                match = re.search(r'\[.*?\]', text, re.DOTALL)
+                                match = re.search('\\[.*?\\]', text, re.DOTALL)
                                 if match:
                                     commands = json.loads(match.group())
                                     for cmd in commands:
                                         if 'speak' in cmd:
                                             speak_text = cmd['speak'].get('text', '')
                                             if speak_text:
-                                                transcript_lines.append(f"AI: {speak_text}")
+                                                transcript_lines.append(f'AI: {speak_text}')
                             except:
                                 pass
-                        
-                        # Extract DTMF commands
                         if in_call and '"send_dtmf"' in text:
                             try:
-                                match = re.search(r'\[.*?\]', text, re.DOTALL)
+                                match = re.search('\\[.*?\\]', text, re.DOTALL)
                                 if match:
                                     commands = json.loads(match.group())
                                     for cmd in commands:
                                         if 'send_dtmf' in cmd:
                                             digits = cmd['send_dtmf'].get('digits', '')
                                             if digits:
-                                                transcript_lines.append(f"DTMF: {digits}")
+                                                transcript_lines.append(f'DTMF: {digits}')
                             except:
                                 pass
-        
         elif role == 'user' and in_call:
-            # Extract user speech
             content = message.get('content', '')
             if isinstance(content, str) and content.strip():
-                # Skip system messages and commands
-                if not content.startswith('[') and not content.startswith('{'):
-                    transcript_lines.append(f"Human: {content.strip()}")
+                if not content.startswith('[') and (not content.startswith('{')):
+                    transcript_lines.append(f'Human: {content.strip()}')
             elif isinstance(content, list):
                 for item in content:
                     if item.get('type') == 'text':
                         text = item.get('text', '').strip()
-                        if text and not text.startswith('[') and not text.startswith('{'):
-                            transcript_lines.append(f"Human: {text}")
-    
+                        if text and (not text.startswith('[')) and (not text.startswith('{')):
+                            transcript_lines.append(f'Human: {text}')
     return '\n\n'.join(transcript_lines)
