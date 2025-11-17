@@ -302,9 +302,26 @@ class MindRootSIPBotS2S:
                         # Check interrupt flag BEFORE attempting to queue
                         if self._interrupting:
                             return  # Abort immediately
+
+                        # Retry putting frame until success or interrupt
+                        # This ensures no frames are dropped while maintaining fast interrupt
+                        while not self._interrupting:
+                            try:
+                                self.audio_stream.input_q.put(frame, block=True, timeout=0.1)
+                                break  # Success - move to next frame
+                            except queue.Full:
+                                # Queue full - check interrupt flag before retrying
+                                if self._interrupting:
+                                    return  # Abort immediately
+                                # Queue still full, retry same frame
+                                # The 0.1s timeout allows checking interrupt flag frequently
+                                pass
                         
+                        # Check interrupt flag immediately after successful put
+                        if self._interrupting:
+                            return  # Abort if interrupted while we were putting                        
+
                         #self.audio_stream.input_q.put_nowait(frame)
-                        self.audio_stream.input_q.put(frame, block=True, timeout=1.0)
 
                         # Record AFTER successful queueing
                         if self.recorder:
