@@ -303,10 +303,9 @@ class MindRootSIPBotS2S:
                         if self._interrupting:
                             return  # Abort immediately
                         
-                        # OPTIMIZATION: Non-blocking put - drop frame if queue is full
-                        # This prevents blocking the audio path and disrupting RTP
-                        self.audio_stream.input_q.put_nowait(frame)
-                        
+                        #self.audio_stream.input_q.put_nowait(frame)
+                        self.audio_stream.input_q.put(frame, block=True, timeout=1.0)
+
                         # Record AFTER successful queueing
                         if self.recorder:
                             self.recorder.record_outgoing(frame)
