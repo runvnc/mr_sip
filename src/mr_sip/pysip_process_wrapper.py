@@ -356,18 +356,23 @@ async def _pysip_main(config: Dict[str, Any], audio_in_q: mp.Queue,
     )
     
     try:
-        # Make the call (this will block until call ends)
-        await bot.make_call(config['destination'])
+        # Start the call as a task (don't block)
+        call_task = asyncio.create_task(bot.make_call(config['destination']))
         
-        # If we get here, call was established
-        logger.info("Call established, sending status")
+        # Wait for call to be answered (not ended!)
+        logger.info("Waiting for call to be answered...")
+        await bot.call_answered.wait()
+        
+        # Now send status - call is ready for audio
+        logger.info("Call answered, sending status")
         status_q.put({
             'type': 'call_established',
             'timestamp': datetime.now().isoformat()
         })
         
-        # Wait for call to end
-        await bot._wait_for_call_end()
+        # Wait for call task to complete (call ends)
+        logger.info("Waiting for call to end...")
+        await call_task
         
     except Exception as e:
         logger.error(f"Error in PySIP main: {e}")
