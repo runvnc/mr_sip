@@ -174,6 +174,11 @@ class MindRootSIPBotS2S:
                         self.call._rtp_session.set_audio_stream(self.audio_stream)
                         logger.info("Audio stream set on RTP session (triggered by first frame)")
                         
+                        # Set call state flags
+                        self.is_active = True
+                        self.call_established = True
+                        self.call_start_time = datetime.now()
+                        
                         # Signal that call is fully ready
                         self.call_answered.set()
                         logger.info("Call fully answered and ready for audio")
