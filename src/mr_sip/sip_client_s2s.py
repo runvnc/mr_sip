@@ -352,7 +352,18 @@ class MindRootSIPBotS2S:
                         if self._interrupting:
                             return  # Abort if interrupted while we were putting
 
-                        self.audio_stream.input_q.put_nowait(frame)
+                        # BLOCKING PUT: Ensures frames are never dropped
+                        # This prevents queue from emptying which causes clicks/pops
+                        # Timeout of 0.5s is generous - should never be reached in normal operation
+                        try:
+                            self.audio_stream.input_q.put(frame, block=True, timeout=0.5)
+                        except queue.Full:
+                            # This should never happen with blocking put and reasonable timeout
+                            # But if it does, log it as critical
+                            logger.critical(f"Audio queue full even with blocking put! Queue size: {self.audio_stream.input_q.qsize()}")
+                            self._dropped_frame_count += 1
+                            continue
+                        
 
                         # Record AFTER successful queueing
                         if self.recorder:
@@ -362,24 +373,9 @@ class MindRootSIPBotS2S:
                         if i % (FRAME_SIZE * 4) == 0:
                             await asyncio.sleep(0)
 
-                    except queue.Full:
-                        # CRITICAL: Frame dropped due to full queue
-                        # This directly impacts audio quality
-                        self._dropped_frame_count += 1
-                        
-                        # Rate-limited logging to avoid log spam
-                        import time
-                        current_time = time.time()
-                        if current_time - self._last_drop_log_time >= self._drop_log_interval:
-                            logger.critical(
-                                f"AUDIO FRAME DROPPED! Queue full. "
-                                f"Total dropped: {self._dropped_frame_count}, "
-                                f"Drop rate: {(self._dropped_frame_count / max(1, self._output_frame_count)) * 100:.2f}%"
-                            )
-                            self._last_drop_log_time = current_time
-                        
-                        # Don't record dropped frames
-                        continue
+                    except Exception as e:
+                        logger.error(f"Unexpected error queueing frame: {e}")
+                        break
                         
         except Exception as e:
             logger.error(f"Error in send_tts_audio: {e}")
