@@ -83,6 +83,7 @@ class PySIPProcessWrapper:
             Exception if call fails to establish
         """
         logger.info(f"Starting PySIP process for call to {destination}")
+        print(f"[WRAPPER] Starting PySIP process for call to {destination}")
         
         config = {
             'user': user,
@@ -95,6 +96,7 @@ class PySIPProcessWrapper:
             'record_separate': record_separate
         }
         
+        print(f"[WRAPPER] Creating subprocess...")
         # Start the PySIP process
         self.process = mp.Process(
             target=_run_pysip_process,
@@ -106,6 +108,7 @@ class PySIPProcessWrapper:
         self._running = True
         self._start_time = time.time()
         
+        print(f"[WRAPPER] PySIP process started (PID: {self.process.pid}), waiting for status...")
         logger.info(f"PySIP process started (PID: {self.process.pid})")
         
         # Wait for call to be established (with timeout)
@@ -116,6 +119,7 @@ class PySIPProcessWrapper:
                 ),
                 timeout=120.0  # 2 minute timeout
             )
+            print(f"[WRAPPER] Received status: {status}")
             
             if status['type'] == 'call_established':
                 self._call_established = True
@@ -277,6 +281,7 @@ def _run_pysip_process(config: Dict[str, Any], audio_in_q: mp.Queue,
         format=f'[PySIP-{config["log_id"]}] %(levelname)s: %(message)s'
     )
     logger = logging.getLogger(__name__)
+    print(f"[SUBPROCESS] PySIP subprocess started for {config['destination']}")
     
     logger.info(f"PySIP subprocess started for {config['destination']}")
     
@@ -285,6 +290,7 @@ def _run_pysip_process(config: Dict[str, Any], audio_in_q: mp.Queue,
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
+        print(f"[SUBPROCESS] Running _pysip_main...")
         # Run the main PySIP logic
         loop.run_until_complete(
             _pysip_main(config, audio_in_q, audio_out_q, control_q, status_q)
@@ -324,6 +330,7 @@ async def _pysip_main(config: Dict[str, Any], audio_in_q: mp.Queue,
     
     logger = logging.getLogger(__name__)
     
+    print(f"[PYSIP_MAIN] Creating bot...")
     # Create a minimal context object for the bot
     class MinimalContext:
         def __init__(self, log_id):
@@ -331,6 +338,7 @@ async def _pysip_main(config: Dict[str, Any], audio_in_q: mp.Queue,
             
     context = MinimalContext(config['log_id'])
     
+    print(f"[PYSIP_MAIN] Creating MindRootSIPBotS2S...")
     # Create bot with queue mode enabled
     bot = MindRootSIPBotS2S(
         user=config['user'],
@@ -345,6 +353,7 @@ async def _pysip_main(config: Dict[str, Any], audio_in_q: mp.Queue,
         audio_out_queue=audio_out_q
     )
     
+    print(f"[PYSIP_MAIN] Starting audio queue reader task...")
     # Start audio queue reader task
     audio_task = asyncio.create_task(
         _audio_queue_reader(bot, audio_out_q)
@@ -356,9 +365,11 @@ async def _pysip_main(config: Dict[str, Any], audio_in_q: mp.Queue,
     )
     
     try:
+        print(f"[PYSIP_MAIN] Calling bot.make_call({config['destination']})...")
         # Start the call as a task (don't block)
         call_task = asyncio.create_task(bot.make_call(config['destination']))
         
+        print(f"[PYSIP_MAIN] Waiting for call_answered event...")
         # Wait for call to be answered (not ended!)
         logger.info("Waiting for call to be answered...")
         await bot.call_answered.wait()

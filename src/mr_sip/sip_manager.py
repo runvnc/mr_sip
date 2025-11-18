@@ -86,7 +86,7 @@ class SIPSession:
         finally:
             logger.info(f"S2S_DEBUG: Audio sender loop exiting for session {self.log_id}")
             
-    async def _send_audio_to_sip(self, audio_chunk: bytes):
+    async def _send_audio_to_sip(self, audio_chunk: bytes, timestamp=None):
         """Send audio chunk to the SIP call via JACK."""
         logger.debug(f"S2S_DEBUG: _send_audio_to_sip called with {len(audio_chunk)} bytes")
         if self.baresip_bot and hasattr(self.baresip_bot, 'send_tts_audio'):
