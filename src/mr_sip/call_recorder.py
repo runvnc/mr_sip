@@ -128,7 +128,7 @@ class CallRecorder:
             # Replace held frame with ulaw silence
             self._last_outgoing_frame = b'\xff' * 160  # ulaw silence (20ms)
             # Engage hard mute window for 300ms to prevent residual buzz
-            self._mute_outgoing_until = time.monotonic() + 0.3
+            self._mute_outgoing_until = time.monotonic() + 0.1
             # Drain any queued outgoing frames to prevent voiced leftovers after interrupt
             try:
                 while True:
@@ -148,7 +148,7 @@ class CallRecorder:
         """
         try:
             self._last_incoming_frame = b'\xff' * 160  # ulaw silence (20ms)
-            self._mute_incoming_until = time.monotonic() + 0.3
+            self._mute_incoming_until = time.monotonic() + 0.1
             # Drain any queued incoming frames
             try:
                 while True:
@@ -188,7 +188,7 @@ class CallRecorder:
             # Replace held frame with ulaw silence
             self._last_outgoing_frame = b'\xff' * 160  # ulaw silence (20ms)
             # Engage hard mute window for 300ms to prevent residual buzz
-            self._mute_outgoing_until = time.monotonic() + 0.3
+            self._mute_outgoing_until = time.monotonic() + 0.1
             # Drain any queued outgoing frames to prevent voiced leftovers after interrupt
             try:
                 while True:
@@ -208,7 +208,7 @@ class CallRecorder:
         """
         try:
             self._last_incoming_frame = b'\xff' * 160  # ulaw silence (20ms)
-            self._mute_incoming_until = time.monotonic() + 0.3
+            self._mute_incoming_until = time.monotonic() + 0.1
             # Drain any queued incoming frames
             try:
                 while True:
