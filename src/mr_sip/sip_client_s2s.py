@@ -290,7 +290,7 @@ class MindRootSIPBotS2S:
             logger.error(f"Error in _on_call_ended: {e}")
             logger.error(traceback.format_exc())
     
-    async def send_tts_audio(self, audio_chunk: bytes):
+    async def send_tts_audio(self, audio_chunk: bytes, timestamp=None):
         """Send TTS audio chunk to the SIP call - OPTIMIZED NON-BLOCKING VERSION.
         
         This is the REQUIRED interface called by the session manager.
@@ -306,6 +306,7 @@ class MindRootSIPBotS2S:
         
         Args:
             audio_chunk: Audio data from OpenAI (ulaw 8kHz)
+            timestamp: Optional timestamp when this audio should start playing
         """
         try:
             if not self.is_active:
@@ -316,66 +317,54 @@ class MindRootSIPBotS2S:
                 logger.warning("Cannot send audio - audio stream not initialized")
                 return
             
-            # Split into 160-byte frames for frame-by-frame queueing
-            # This allows interruption by clearing the queue
+            # Split into 160-byte frames
             FRAME_SIZE = 160
             
             # Check interrupt flag before processing chunk
             if self._interrupting:
                 return  # Abort immediately on interrupt
             
+            # Prepare all frames with timestamps first (batching)
+            frames_to_send = []
             for i in range(0, len(audio_chunk), FRAME_SIZE):
                 frame = audio_chunk[i:i+FRAME_SIZE]
+                frame_timestamp = timestamp + (i / 8000.0) if timestamp else None
                 
-                # Only send complete frames
-                if True or len(frame) == FRAME_SIZE:
-                    try:
-                        # Check interrupt flag BEFORE attempting to queue
-                        #if self._interrupting:
-                        #    return  # Abort immediately
-
-                        # Retry putting frame until success or interrupt
-                        # This ensures no frames are dropped while maintaining fast interrupt
-                        #while not self._interrupting:
-                        #    try:
-                        #        self.audio_stream.input_q.put(frame, block=True, timeout=0.1)
-                        #        break  # Success - move to next frame
-                        #    except queue.Full:
-                        #        # Queue full - check interrupt flag before retrying
-                        #        if self._interrupting:
-                        #            return  # Abort immediately
-                                # Queue still full, retry same frame
-                                # The 0.1s timeout allows checking interrupt flag frequently
-                        #        pass
-                        
-                        # Check interrupt flag immediately after successful put
-                        if self._interrupting:
-                            return  # Abort if interrupted while we were putting
-
-                        # BLOCKING PUT: Ensures frames are never dropped
-                        # This prevents queue from emptying which causes clicks/pops
-                        # Timeout of 0.5s is generous - should never be reached in normal operation
+                # Add to batch (send all frames, even partial ones at end)
+                frames_to_send.append((frame, frame_timestamp))
+            
+            # Now send all frames in batch without yielding
+            # This is more efficient and keeps queue fuller
+            for frame, frame_timestamp in frames_to_send:
+                # Check interrupt flag before each put
+                if self._interrupting:
+                    return  # Abort immediately on interrupt
+                
+                try:
+                    # BLOCKING PUT: Ensures frames are never dropped
+                    # This prevents queue from emptying which causes clicks/pops
+                    # Timeout of 0.5s is generous - should never be reached in normal operation
+                    if frame_timestamp:
+                        self.audio_stream.input_q.put((frame, frame_timestamp), block=True, timeout=0.5)
+                    else:
+                        self.audio_stream.input_q.put(frame, block=True, timeout=0.5)
+                    
+                    # Record AFTER successful queueing
+                    if self.recorder:
+                        self.recorder.record_outgoing(frame)
+                    self._output_frame_count += 1
+                    
+                except queue.Full:
                         try:
-                            self.audio_stream.input_q.put(frame, block=True, timeout=0.5)
-                        except queue.Full:
                             # This should never happen with blocking put and reasonable timeout
                             # But if it does, log it as critical
                             logger.critical(f"Audio queue full even with blocking put! Queue size: {self.audio_stream.input_q.qsize()}")
                             self._dropped_frame_count += 1
                             continue
                         
-
-                        # Record AFTER successful queueing
-                        if self.recorder:
-                            self.recorder.record_outgoing(frame)
-                        self._output_frame_count += 1
-               
-                        if i % (FRAME_SIZE * 4) == 0:
-                            await asyncio.sleep(0)
-
-                    except Exception as e:
-                        logger.error(f"Unexpected error queueing frame: {e}")
-                        break
+                except Exception as e:
+                    logger.error(f"Unexpected error queueing frame: {e}")
+                    break
                         
         except Exception as e:
             logger.error(f"Error in send_tts_audio: {e}")

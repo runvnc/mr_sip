@@ -62,10 +62,14 @@ class SIPSession:
             while self.is_active:
                 logger.debug(f"S2S_DEBUG: In while loop, waiting for audio...")
                 try:
-                    audio_chunk = await asyncio.wait_for(self.audio_queue.get(), timeout=30.0)
-                    if audio_chunk is None:  # Sentinel to stop
+                    item = await asyncio.wait_for(self.audio_queue.get(), timeout=30.0)
+                    if item is None:  # Sentinel to stop
                         break
-                    await self._send_audio_to_sip(audio_chunk)
+                    
+                    # Unpack audio chunk and timestamp
+                    audio_chunk, timestamp = item if isinstance(item, tuple) else (item, None)
+                    
+                    await self._send_audio_to_sip(audio_chunk, timestamp)
                     self._audio_sent_count += 1
                     if self._audio_sent_count % 10 == 0:
                         logger.info(f"S2S_DEBUG: Sent {self._audio_sent_count} audio chunks to SIP for session {self.log_id}")
@@ -93,14 +97,14 @@ class SIPSession:
         else:
             logger.warning(f"No audio output method available for session {self.log_id}")
             
-    async def send_audio(self, audio_chunk: bytes):
+    async def send_audio(self, audio_chunk: bytes, timestamp=None):
         """Queue audio chunk for sending to SIP call"""
         if self.is_active:
             self._audio_queued_count += 1
             try:
                 # Phase 1 optimization: Non-blocking put with timeout to prevent queue buildup
                 await asyncio.wait_for(
-                    self.audio_queue.put(audio_chunk),
+                    self.audio_queue.put((audio_chunk, timestamp)),
                     timeout=0.1
                 )
                 #logger.debug(f"S2S_DEBUG: Queued audio chunk #{self._audio_queued_count}, queue size: {self.audio_queue.qsize()}")

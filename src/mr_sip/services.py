@@ -142,7 +142,7 @@ async def dial_service(destination: str, context=None) -> Dict[str, Any]:
         }
 
 @service()
-async def sip_audio_out_chunk(audio_chunk: bytes, context=None) -> bool:
+async def sip_audio_out_chunk(audio_chunk: bytes, timestamp=None, context=None) -> bool:
     """
     Service to route TTS audio chunks to active SIP call.
     
@@ -152,6 +152,7 @@ async def sip_audio_out_chunk(audio_chunk: bytes, context=None) -> bool:
     
     Args:
         audio_chunk: Raw audio data bytes (typically ulaw_8000 format)
+        timestamp: Optional timestamp when this audio should play (from AudioPacer)
         context: MindRoot context (required for session identification)
     
     Returns:
@@ -185,7 +186,7 @@ async def sip_audio_out_chunk(audio_chunk: bytes, context=None) -> bool:
                 # REMOVED FOR BARGE-IN FIX:                 session.halt_audio_out = False
                 return False
             else:
-                await session.send_audio(audio_chunk)
+                await session.send_audio(audio_chunk, timestamp=timestamp)
                 logger.debug(f"SIP DEBUG sip_audio_out_chunk active. Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
  
                 logger.debug(f"NOT HALTED. Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
