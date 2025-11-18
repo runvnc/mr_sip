@@ -56,7 +56,10 @@ class MindRootSIPBotS2S:
     
     def __init__(self, user: str, password: str, gateway: str, audio_dir: str = ".", 
                  context=None, enable_recording: bool = False, recording_dir: str = "recordings", 
-                 record_separate: bool = False):
+                 record_separate: bool = False,
+                 # NEW: Optional queues for process isolation
+                 audio_in_queue=None,
+                 audio_out_queue=None):
         """
         Args:
             user: SIP username
@@ -67,6 +70,8 @@ class MindRootSIPBotS2S:
             enable_recording: Enable call recording
             recording_dir: Directory to save recordings
             record_separate: If True, save separate incoming/outgoing files in addition to combined
+            audio_in_queue: Optional multiprocessing.Queue for sending audio to main process
+            audio_out_queue: Optional multiprocessing.Queue for receiving audio from main process
         """
         self.sip_username = user
         self.sip_password = password
@@ -110,8 +115,14 @@ class MindRootSIPBotS2S:
         # Interrupt flag for fast audio clearing
         self._interrupting = False
         
-        logger.info(f"PySIP S2S Bot initialized (OPTIMIZED) for user {user} on gateway {gateway}")
+        # NEW: Queue mode for process isolation
+        self._audio_in_queue = audio_in_queue
+        self._audio_out_queue = audio_out_queue
+        self._queue_mode = audio_in_queue is not None and audio_out_queue is not None
         
+        mode_str = "QUEUE MODE" if self._queue_mode else "DIRECT MODE"
+        logger.info(f"PySIP S2S Bot initialized ({mode_str}) for user {user} on gateway {gateway}")
+
     async def make_call(self, destination: str):
         """Initiate outbound call.
         
@@ -183,11 +194,21 @@ class MindRootSIPBotS2S:
                     if self.recorder:
                         self.recorder.record_incoming(frame)
                     
-                    # Send directly to OpenAI S2S system
-                    await service_manager.send_s2s_audio_chunk(
-                        audio_bytes=frame,
-                        context=self.context
-                    )
+                    # NEW: Queue mode - put to queue instead of service call
+                    if self._queue_mode:
+                        try:
+                            # Non-blocking put - drop frame if queue full
+                            self._audio_in_queue.put_nowait(frame)
+                        except:
+                            # Queue full - drop frame (logged elsewhere)
+                            pass
+                    else:
+                        # Original code path - send directly to OpenAI
+                        await service_manager.send_s2s_audio_chunk(
+                            audio_bytes=frame,
+                            context=self.context
+                        )
+
                 except Exception as e:
                     logger.error(f"Error in on_frame_received callback: {e}")
                     logger.error(traceback.format_exc())
@@ -271,6 +292,11 @@ class MindRootSIPBotS2S:
         OpenAI sends ulaw 8kHz audio which we pass through directly.
         
         OPTIMIZATION: Uses non-blocking put_nowait() to prevent RTP disruption.
+        
+        NOTE: In queue mode, this method is called by the audio queue reader task
+        in the subprocess. The audio comes from the audio_out_queue which is fed
+        by the main process. In direct mode, this is called directly by the
+        session manager.
         Dropped frames are logged as CRITICAL since they directly impact audio quality.
         
         Args:
@@ -460,3 +486,13 @@ class MindRootSIPBotS2S:
             "is_active": self.is_active,
             "call_established": self.call_established
         }
+
+    async def _wait_for_call_end(self):
+        """Wait for call to end (used by subprocess).
+        
+        This is called by the subprocess wrapper to keep the call alive
+        until it ends naturally or is hung up.
+        """
+        while self.is_active or self.call_established:
+            await asyncio.sleep(0.5)
+        logger.info("Call ended, exiting wait loop")

@@ -15,6 +15,8 @@ from typing import Dict, Any
 from lib.providers.services import service
 from .sip_manager import get_session_manager
 from .sip_client_s2s import MindRootSIPBotS2S
+from .pysip_process_wrapper import PySIPProcessWrapper
+from .pysip_process_proxy import PySIPProcessProxy
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -33,7 +35,8 @@ RECORDING_DIR = os.getenv('SIP_RECORDING_DIR', 'data/calls')
 RECORD_SEPARATE = os.getenv('SIP_RECORD_SEPARATE', 'false').lower() == 'true'
 
 @service()
-async def dial_service(destination: str, context=None, enable_recording: bool = None) -> Dict[str, Any]:
+async def dial_service(destination: str, context=None, enable_recording: bool = None,
+                      use_process_isolation: bool = True) -> Dict[str, Any]:
     """
     Service to initiate SIP calls in Speech-to-Speech mode using PySIP.
     
@@ -44,6 +47,7 @@ async def dial_service(destination: str, context=None, enable_recording: bool = 
         destination: Phone number or SIP URI to call
         context: MindRoot context (required for session linking)
         enable_recording: Override default recording setting (optional)
+        use_process_isolation: Run PySIP in separate process (default: True)
 
     Returns:
         dict: Session information including log_id, destination, and status
@@ -56,6 +60,7 @@ async def dial_service(destination: str, context=None, enable_recording: bool = 
         SIP_ENABLE_RECORDING: Enable call recording (default: false)
         SIP_RECORDING_DIR: Directory for recordings (default: recordings)
         SIP_RECORD_SEPARATE: Save separate incoming/outgoing files (default: false)
+        SIP_USE_PROCESS_ISOLATION: Override process isolation setting
     """
     if not context or not context.log_id:
         raise ValueError("Context with log_id is required for SIP calls")
@@ -69,22 +74,50 @@ async def dial_service(destination: str, context=None, enable_recording: bool = 
         if destination.isdigit() and len(destination) == 10:
             destination = '1' + destination
         
-        # Determine recording setting
-        record_call = enable_recording if enable_recording is not None else ENABLE_RECORDING
-            
-        # Create PySIP bot for S2S mode
-        bot = MindRootSIPBotS2S(
-            user=SIP_USER,
-            password=SIP_PASSWORD,
-            gateway=SIP_GATEWAY,
-            audio_dir=AUDIO_DIR,  # Unused but kept for compatibility
-            context=context,
-            enable_recording=record_call,
-            recording_dir=RECORDING_DIR,
-            record_separate=RECORD_SEPARATE
-        )
+        # Check environment variable override for process isolation
+        env_isolation = os.getenv('SIP_USE_PROCESS_ISOLATION', '').lower()
+        if env_isolation in ['true', 'false']:
+            use_process_isolation = env_isolation == 'true'
+            logger.info(f"Process isolation overridden by environment: {use_process_isolation}")
         
-        # Create SIP session
+        # Determine recording setting  
+        record_call = enable_recording if enable_recording is not None else ENABLE_RECORDING
+        
+        if use_process_isolation:
+            logger.info(f"Using PROCESS ISOLATION mode for call to {destination}")
+            
+            # Create process wrapper
+            wrapper = PySIPProcessWrapper(context=context)
+            
+            # Create proxy that will manage the subprocess
+            bot = PySIPProcessProxy(wrapper=wrapper, context=context)
+            
+            # Start the call via proxy (this spawns subprocess)
+            await bot.make_call(
+                destination=destination,
+                user=SIP_USER,
+                password=SIP_PASSWORD,
+                gateway=SIP_GATEWAY,
+                enable_recording=record_call,
+                recording_dir=RECORDING_DIR,
+                record_separate=RECORD_SEPARATE
+            )
+            
+        else:
+            logger.info(f"Using DIRECT mode for call to {destination}")
+            
+            # Create bot directly (original behavior)
+            bot = MindRootSIPBotS2S(
+                user=SIP_USER,
+                password=SIP_PASSWORD,
+                gateway=SIP_GATEWAY,
+                audio_dir=AUDIO_DIR,
+                context=context,
+                enable_recording=record_call,
+                recording_dir=RECORDING_DIR,
+                record_separate=RECORD_SEPARATE
+            )
+        
         session_manager = get_session_manager()
         session = await session_manager.create_session(
             log_id=context.log_id,
@@ -92,63 +125,63 @@ async def dial_service(destination: str, context=None, enable_recording: bool = 
             baresip_bot=bot  # Keep parameter name for compatibility
         )
         
-        # Initiate the call (async - waits for answer)
-        logger.info(f"Making call to {destination}...")
+        if not use_process_isolation:
+            # Only need to do this for direct mode
+            # In process isolation mode, the proxy already started the call
+            
+            # Start the call in a task so we can monitor it
+            call_task = asyncio.create_task(bot.make_call(destination))
+            
+            # Wait for call to be answered and RTP ready (with timeout)
+            max_wait = CALL_ESTABLISH_TIMEOUT
+            
+            logger.info(f"Waiting for call to be answered (timeout: {max_wait}s)...")
+            
+            try:
+                # Wait for the call_answered event (set when first RTP frame received)
+                await asyncio.wait_for(bot.call_answered.wait(), timeout=max_wait)
+                
+                # Call is answered and RTP is ready!
+                bot.is_active = True
+                bot.call_established = True
+                bot.call_start_time = datetime.now()
+                
+            except asyncio.TimeoutError:
+                # Call not answered in time
+                await session_manager.end_session(context.log_id)
+                logger.error(f"Call to {destination} not answered within {max_wait}s")
+                
+                # Cancel the call task if still running
+                if not call_task.done():
+                    call_task.cancel()
+                    try:
+                        await call_task
+                    except asyncio.CancelledError:
+                        pass
+                
+                return {
+                    "status": "call_failed",
+                    "log_id": context.log_id,
+                    "destination": destination,
+                    "error": "Call not answered within timeout"
+                }
         
-        # Start the call in a task so we can monitor it
-        call_task = asyncio.create_task(bot.make_call(destination))
+        # Mark session as active and start audio sender
+        session.is_active = True
+        logger.info(f"S2S_DEBUG: Marking session {context.log_id} as active")
         
-        # Wait for call to be answered and RTP ready (with timeout)
-        max_wait = CALL_ESTABLISH_TIMEOUT
+        await session.start_audio_sender()
+        logger.info(f"S2S_DEBUG: Audio sender started for session {context.log_id}")
+        logger.info(f"Call answered and ready to {destination} (mode: {'process_isolation' if use_process_isolation else 'direct'})")
         
-        logger.info(f"Waiting for call to be answered (timeout: {max_wait}s)...")
-        
-        try:
-            # Wait for the call_answered event (set when first RTP frame received)
-            await asyncio.wait_for(bot.call_answered.wait(), timeout=max_wait)
-            
-            # Call is answered and RTP is ready!
-            bot.is_active = True
-            bot.call_established = True
-            bot.call_start_time = datetime.now()
-            
-            # Mark session as active and start audio sender
-            session.is_active = True
-            logger.info(f"S2S_DEBUG: Marking session {context.log_id} as active")
-            
-            await session.start_audio_sender()
-            logger.info(f"S2S_DEBUG: Audio sender started for session {context.log_id}")
-            logger.info(f"S2S_DEBUG: Session active={session.is_active}, sender_task={session._audio_sender_task}")
-            logger.info(f"Call answered and ready to {destination} (PySIP S2S mode)")
-            
-            return {
-                "status": "call_established",
-                "log_id": context.log_id,
-                "destination": destination,
-                "mode": "s2s_pysip",
-                "session_created_at": session.created_at.isoformat(),
-                "recording_enabled": record_call
-            }
-            
-        except asyncio.TimeoutError:
-            # Call not answered in time
-            await session_manager.end_session(context.log_id)
-            logger.error(f"Call to {destination} not answered within {max_wait}s")
-            
-            # Cancel the call task if still running
-            if not call_task.done():
-                call_task.cancel()
-                try:
-                    await call_task
-                except asyncio.CancelledError:
-                    pass
-            
-            return {
-                "status": "call_failed",
-                "log_id": context.log_id,
-                "destination": destination,
-                "error": "Call not answered within timeout"
-            }
+        return {
+            "status": "call_established",
+            "log_id": context.log_id,
+            "destination": destination,
+            "mode": "s2s_pysip_isolated" if use_process_isolation else "s2s_pysip_direct",
+            "session_created_at": session.created_at.isoformat(),
+            "recording_enabled": record_call
+        }
             
     except Exception as e:
         logger.error(f"Error in dial_service (PySIP S2S mode): {e}")
