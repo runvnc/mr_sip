@@ -273,7 +273,7 @@ def _run_pysip_process(config: Dict[str, Any], audio_in_q: mp.Queue,
     """
     # Set up logging for subprocess
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.WARNING,
         format=f'[PySIP-{config["log_id"]}] %(levelname)s: %(message)s'
     )
     logger = logging.getLogger(__name__)
