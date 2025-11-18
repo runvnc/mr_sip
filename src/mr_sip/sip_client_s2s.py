@@ -300,34 +300,37 @@ class MindRootSIPBotS2S:
                 if len(frame) == FRAME_SIZE:
                     try:
                         # Check interrupt flag BEFORE attempting to queue
-                        if self._interrupting:
-                            return  # Abort immediately
+                        #if self._interrupting:
+                        #    return  # Abort immediately
 
                         # Retry putting frame until success or interrupt
                         # This ensures no frames are dropped while maintaining fast interrupt
-                        while not self._interrupting:
-                            try:
-                                self.audio_stream.input_q.put(frame, block=True, timeout=0.1)
-                                break  # Success - move to next frame
-                            except queue.Full:
-                                # Queue full - check interrupt flag before retrying
-                                if self._interrupting:
-                                    return  # Abort immediately
+                        #while not self._interrupting:
+                        #    try:
+                        #        self.audio_stream.input_q.put(frame, block=True, timeout=0.1)
+                        #        break  # Success - move to next frame
+                        #    except queue.Full:
+                        #        # Queue full - check interrupt flag before retrying
+                        #        if self._interrupting:
+                        #            return  # Abort immediately
                                 # Queue still full, retry same frame
                                 # The 0.1s timeout allows checking interrupt flag frequently
-                                pass
+                        #        pass
                         
                         # Check interrupt flag immediately after successful put
                         if self._interrupting:
-                            return  # Abort if interrupted while we were putting                        
+                            return  # Abort if interrupted while we were putting
 
-                        #self.audio_stream.input_q.put_nowait(frame)
+                        self.audio_stream.input_q.put_nowait(frame)
 
                         # Record AFTER successful queueing
                         if self.recorder:
                             self.recorder.record_outgoing(frame)
                         self._output_frame_count += 1
-                        
+               
+                        if i % (FRAME_SIZE * 4) == 0:
+                            await asyncio.sleep(0)
+
                     except queue.Full:
                         # CRITICAL: Frame dropped due to full queue
                         # This directly impacts audio quality
