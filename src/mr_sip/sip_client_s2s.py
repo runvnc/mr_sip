@@ -355,17 +355,15 @@ class MindRootSIPBotS2S:
                     self._output_frame_count += 1
                     
                 except queue.Full:
-                        try:
-                            # This should never happen with blocking put and reasonable timeout
-                            # But if it does, log it as critical
-                            logger.critical(f"Audio queue full even with blocking put! Queue size: {self.audio_stream.input_q.qsize()}")
-                            self._dropped_frame_count += 1
-                            continue
-                        
+                    # This should never happen with blocking put and reasonable timeout
+                    # But if it does, log it as critical
+                    logger.critical(f"Audio queue full even with blocking put! Queue size: {self.audio_stream.input_q.qsize()}")
+                    self._dropped_frame_count += 1
+                    continue
+                    
                 except Exception as e:
                     logger.error(f"Unexpected error queueing frame: {e}")
                     break
-                        
         except Exception as e:
             logger.error(f"Error in send_tts_audio: {e}")
             logger.error(traceback.format_exc())
