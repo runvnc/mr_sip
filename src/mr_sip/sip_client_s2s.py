@@ -210,28 +210,30 @@ class MindRootSIPBotS2S:
                     
                     # Debug logging every 50 frames (~1 second)
                     if self._input_frame_count % 50 == 0:
-                        logger.debug(f"Received frame #{self._input_frame_count}, size: {len(frame)} bytes")
+                        logger.debug(f"Received frame #{self._input_frame_count}, size: {len(ulaw_bytes)} bytes")
                     
                     # Record incoming audio (non-blocking, already optimized)
                     if self.recorder:
-                        self.recorder.record_incoming(frame)
+                        self.recorder.record_incoming(ulaw_bytes)
                     
                     # NEW: Queue mode - put to queue instead of service call
                     if self._queue_mode:
                         try:
                             # Non-blocking put - drop frame if queue full
-                            self._audio_in_queue.put_nowait(frame)
+                            self._audio_in_queue.put_nowait(ulaw_bytes)
                         except:
                             # Queue full - drop frame (logged elsewhere)
                             pass
                     else:
                         # Original code path - send directly to OpenAI
                         await service_manager.send_s2s_audio_chunk(
-                            audio_bytes=frame,
+                            audio_bytes=ulaw_bytes,
                             context=self.context
                         )
 
                 except Exception as e:
+                    print(f"ERROR in on_frame_received callback: {e}")
+                    print(traceback.format_exc())
                     logger.error(f"Error in on_frame_received callback: {e}")
                     logger.error(traceback.format_exc())
             
