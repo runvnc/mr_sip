@@ -124,20 +124,22 @@ class PySIPProcessProxy:
             logger.error(f"Error in audio forwarder: {e}")
         finally:
             logger.info("Audio forwarder exiting")
-            
-    async def send_tts_audio(self, audio_chunk: bytes):
+    
+    async def send_tts_audio(self, audio_chunk: bytes, timestamp=None):
         """Send TTS audio to subprocess (from OpenAI to phone).
-        
+
         This is called by the session manager when OpenAI sends audio.
         
+
         Args:
             audio_chunk: Audio data from OpenAI (ulaw 8kHz)
+            timestamp:   Optional playback start timestamp from AudioPacer
         """
         if not self.is_active:
             logger.warning("Proxy: Cannot send audio - call not active")
             return
-            
-        await self.wrapper.send_audio(audio_chunk)
+
+        await self.wrapper.send_audio(audio_chunk, timestamp=timestamp)
         
     def clear_audio_queue(self):
         """Clear all queued audio (for interruption)."""

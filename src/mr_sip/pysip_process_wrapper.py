@@ -140,28 +140,35 @@ class PySIPProcessWrapper:
             await self.stop()
             raise Exception("Call establishment timeout")
             
-    async def send_audio(self, audio_chunk: bytes):
+    async def send_audio(self, audio_chunk: bytes, timestamp=None):
         """Send audio chunk to PySIP process (from OpenAI to phone).
-        
+
         Args:
             audio_chunk: Audio data (ulaw 8kHz from OpenAI)
+            timestamp:   Optional playback start timestamp from AudioPacer
         """
         if not self._running or not self._call_established:
             logger.warning("Cannot send audio - call not active")
             return
-            
+
         try:
-            # Non-blocking put with timeout
+            # Non-blocking put with timeout; store (chunk, timestamp)
             await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: self.audio_out_queue.put(audio_chunk, block=True, timeout=0.1)
+                lambda: self.audio_out_queue.put(
+                    (audio_chunk, timestamp),
+                    block=True,
+                    timeout=0.1,
+                ),
             )
             self._audio_out_count += 1
-            
+
             # Periodic logging
             if self._audio_out_count % 50 == 0:
-                logger.debug(f"Sent {self._audio_out_count} audio chunks to PySIP process")
-                
+                logger.debug(
+                    f"Sent {self._audio_out_count} audio chunks to PySIP process"
+                )
+
         except Exception as e:
             logger.warning(f"Failed to queue audio chunk: {e}")
             
@@ -417,32 +424,39 @@ async def _pysip_main(config: Dict[str, Any], audio_in_q: mp.Queue,
 async def _audio_queue_reader(bot, audio_out_q: mp.Queue):
     """Read audio from queue and send to bot.
     
+
     Args:
         bot: MindRootSIPBotS2S instance
         audio_out_q: Queue with audio from main process
     """
     logger = logging.getLogger(__name__)
     logger.info("Audio queue reader started")
-    
+
     try:
         while True:
             try:
-                # Get audio chunk from queue (with timeout)
-                audio_chunk = await asyncio.get_event_loop().run_in_executor(
+                # Get audio item from queue (with timeout)
+                audio_item = await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: audio_out_q.get(block=True, timeout=1.0)
+                    lambda: audio_out_q.get(block=True, timeout=1.0),
                 )
-                
-                if audio_chunk is None:  # Sentinel to stop
+
+                if audio_item is None:  # Sentinel to stop
                     break
-                    
-                # Send to bot
-                await bot.send_tts_audio(audio_chunk)
-                
-            except Exception as e:
+
+                # Support both legacy (bytes) and new (bytes, timestamp) items
+                if isinstance(audio_item, tuple):
+                    audio_chunk, timestamp = audio_item
+                else:
+                    audio_chunk, timestamp = audio_item, None
+
+                # Send to bot with timestamp
+                await bot.send_tts_audio(audio_chunk, timestamp=timestamp)
+
+            except Exception:
                 # Timeout or other error - continue
                 await asyncio.sleep(0.01)
-                
+
     except asyncio.CancelledError:
         logger.info("Audio queue reader cancelled")
     finally:

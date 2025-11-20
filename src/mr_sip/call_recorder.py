@@ -118,47 +118,6 @@ class CallRecorder:
         except asyncio.QueueFull:
             # Drop frame to prevent latency - recording is best-effort
             pass  # Silently drop to avoid log spam
-    
-    def interrupt_outgoing(self):
-        """
-        Called when playback is interrupted; replaces the held outgoing frame with silence
-        to avoid sustaining the last sample during ticked writes.
-        """
-        try:
-            # Replace held frame with ulaw silence
-            self._last_outgoing_frame = b'\xff' * 160  # ulaw silence (20ms)
-            # Engage hard mute window for 300ms to prevent residual buzz
-            self._mute_outgoing_until = time.monotonic() + 0.3
-            # Drain any queued outgoing frames to prevent voiced leftovers after interrupt
-            try:
-                while True:
-                    item = self.outgoing_queue.get_nowait()
-                    if item is None:
-                        # keep stop sentinel behavior if present
-                        break
-            except asyncio.QueueEmpty:
-                pass
-        except Exception:
-            pass
-    
-    def interrupt_incoming(self):
-        """
-        Called near hangup; replaces the held incoming frame with silence and mutes for a short window
-        to avoid tail artifacts at call end.
-        """
-        try:
-            self._last_incoming_frame = b'\xff' * 160  # ulaw silence (20ms)
-            self._mute_incoming_until = time.monotonic() + 0.3
-            # Drain any queued incoming frames
-            try:
-                while True:
-                    item = self.incoming_queue.get_nowait()
-                    if item is None:
-                        break
-            except asyncio.QueueEmpty:
-                pass
-        except Exception:
-            pass
             
     def record_outgoing(self, audio_data: bytes):
         """
@@ -178,47 +137,6 @@ class CallRecorder:
         except asyncio.QueueFull:
             # Drop frame to prevent latency - recording is best-effort
             pass  # Silently drop to avoid log spam
-    
-    def interrupt_outgoing(self):
-        """
-        Called when playback is interrupted; replaces the held outgoing frame with silence
-        to avoid sustaining the last sample during ticked writes.
-        """
-        try:
-            # Replace held frame with ulaw silence
-            self._last_outgoing_frame = b'\xff' * 160  # ulaw silence (20ms)
-            # Engage hard mute window for 300ms to prevent residual buzz
-            self._mute_outgoing_until = time.monotonic() + 0.3
-            # Drain any queued outgoing frames to prevent voiced leftovers after interrupt
-            try:
-                while True:
-                    item = self.outgoing_queue.get_nowait()
-                    if item is None:
-                        # keep stop sentinel behavior if present
-                        break
-            except asyncio.QueueEmpty:
-                pass
-        except Exception:
-            pass
-    
-    def interrupt_incoming(self):
-        """
-        Called near hangup; replaces the held incoming frame with silence and mutes for a short window
-        to avoid tail artifacts at call end.
-        """
-        try:
-            self._last_incoming_frame = b'\xff' * 160  # ulaw silence (20ms)
-            self._mute_incoming_until = time.monotonic() + 0.3
-            # Drain any queued incoming frames
-            try:
-                while True:
-                    item = self.incoming_queue.get_nowait()
-                    if item is None:
-                        break
-            except asyncio.QueueEmpty:
-                pass
-        except Exception:
-            pass
             
     async def _recording_loop(self):
         """Background task that writes audio to files."""
@@ -267,6 +185,8 @@ class CallRecorder:
                 FRAME = FRAME_SIZE
                 inc = None
                 out = None
+                got_outgoing = False
+
                 # Pull at most one frame per channel per tick; else hold last
                 try:
                     inc = self.incoming_queue.get_nowait()
@@ -283,10 +203,7 @@ class CallRecorder:
 
                 # Update last-frame holders if we got fresh full frames
                 if inc is not None:
-                    # handle sentinel
-                    if inc is None:
-                        pass
-                    elif len(inc) >= FRAME:
+                    if len(inc) >= FRAME:
                         # Use only first 160 bytes; if bursts are larger, we consume one frame per tick
                         self._last_incoming_frame = inc[:FRAME]
                         # For separate file, write full available chunk decoded
@@ -296,11 +213,11 @@ class CallRecorder:
                                 frames_written_incoming += 1
                             except Exception:
                                 pass
+
                 if out is not None:
-                    if out is None:
-                        pass
-                    elif len(out) >= FRAME:
+                    if len(out) >= FRAME:
                         self._last_outgoing_frame = out[:FRAME]
+                        got_outgoing = True
                         if self.record_separate and outgoing_wav:
                             try:
                                 outgoing_wav.writeframes(audioop.ulaw2lin(out, 2))
@@ -314,18 +231,23 @@ class CallRecorder:
                         inc_pcm = b'\x00' * (FRAME * 2)
                     else:
                         inc_pcm = audioop.ulaw2lin(self._last_incoming_frame, 2)
-                    # During mute window, force PCM-zero silence on outgoing to avoid buzz/DC
-                    if time.monotonic() < self._mute_outgoing_until:
+
+                    # During mute window, force PCM-zero silence on outgoing to avoid buzz/DC.
+                    # Otherwise, if we did not get a fresh outgoing frame this tick, treat as silence
+                    # instead of repeating the last non-silent frame indefinitely.
+                    if time.monotonic() < self._mute_outgoing_until or not got_outgoing:
                         out_pcm = b'\x00' * (FRAME * 2)
                     else:
                         out_pcm = audioop.ulaw2lin(self._last_outgoing_frame, 2)
+
                     # Interleave
                     stereo = b''.join(
-                        inc_pcm[i*2:i*2+2] + out_pcm[i*2:i*2+2]
+                        inc_pcm[i * 2 : i * 2 + 2] + out_pcm[i * 2 : i * 2 + 2]
                         for i in range(FRAME)
                     )
                     combined_wav.writeframes(stereo)
                     frames_written_combined += 1
+
                 return True
 
             # Main tick loop at 20ms cadence to smooth bursts from producers (e.g., 250ms OpenAI chunks)
