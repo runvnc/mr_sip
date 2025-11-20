@@ -395,8 +395,8 @@ class S2SBufferedRecorder:
         if self._in_base_ts is None:
             self._in_base_ts = rtp_timestamp
             # Record wall-clock time for this first RTP frame
-            import time
-            self._in_base_wallclock = time.time()
+            import time as time_module
+            self._in_base_wallclock = time_module.perf_counter()
             logger.debug(f"Incoming RTP base: {self._in_base_ts} at wallclock {self._in_base_wallclock}")
 
         rel_ticks = max(0, rtp_timestamp - self._in_base_ts)
