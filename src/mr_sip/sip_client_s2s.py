@@ -18,7 +18,7 @@ from typing import Optional
 from PySIP.sip_call import SipCall
 from PySIP.filters import CallState
 from lib.providers.services import service_manager
-from .call_recorder import CallRecorder
+from .call_recorder import CallRecorder, S2SBufferedRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -161,13 +161,23 @@ class MindRootSIPBotS2S:
                     logger.error(traceback.format_exc())
             
             @self.call.on_frame_received
-            async def on_frame(frame: bytes):
+            async def on_frame(frame):
                 """Receive audio from phone and send to OpenAI.
                 
                 PySIP provides ulaw 8kHz frames (typically 160 bytes = 20ms).
                 OpenAI Realtime API accepts ulaw 8kHz directly - no conversion needed!
                 """
                 try:
+                    # Normalize frame and optional RTP timestamp
+                    rtp_ts = None
+                    if hasattr(frame, "data"):
+                        # New-style JitterFrame from PySIP jitter buffer
+                        ulaw_bytes = frame.data
+                        rtp_ts = getattr(frame, "timestamp", None)
+                    else:
+                        # Backwards-compatible path: plain ulaw bytes
+                        ulaw_bytes = frame
+
                     # On first frame, set up audio output stream
                     if not self.audio_stream and self.call and self.call._rtp_session:
                         self.audio_stream = AudioStreamAdapter()
@@ -185,8 +195,15 @@ class MindRootSIPBotS2S:
                         
                         # Start recording if enabled
                         if self.enable_recording:
-                            self.recorder = CallRecorder(self.context.log_id, self.recording_dir, 
-                                                        record_separate=self.record_separate, record_combined=True)
+                            # Use buffered, timestamp-aware recorder for S2S so that
+                            # we can reconstruct a clean stereo call recording
+                            # offline using timestamps and real silence for gaps.
+                            self.recorder = S2SBufferedRecorder(
+                                self.context.log_id,
+                                self.recording_dir,
+                                record_separate=self.record_separate,
+                                record_combined=True,
+                            )
                             await self.recorder.start_recording()
                     
                     self._input_frame_count += 1
@@ -327,9 +344,9 @@ class MindRootSIPBotS2S:
             # Prepare all frames with timestamps first (batching)
             frames_to_send = []
             for i in range(0, len(audio_chunk), FRAME_SIZE):
-                frame = audio_chunk[i:i+FRAME_SIZE]
+                frame = audio_chunk[i : i + FRAME_SIZE]
                 frame_timestamp = timestamp + (i / 8000.0) if timestamp else None
-                
+
                 # Add to batch (send all frames, even partial ones at end)
                 frames_to_send.append((frame, frame_timestamp))
             
@@ -345,13 +362,23 @@ class MindRootSIPBotS2S:
                     # This prevents queue from emptying which causes clicks/pops
                     # Timeout of 0.5s is generous - should never be reached in normal operation
                     if frame_timestamp:
-                        self.audio_stream.input_q.put((frame, frame_timestamp), block=True, timeout=0.5)
+                        self.audio_stream.input_q.put(
+                            (frame, frame_timestamp), block=True, timeout=0.5
+                        )
                     else:
                         self.audio_stream.input_q.put(frame, block=True, timeout=0.5)
-                    
-                    # Record AFTER successful queueing
+
+                    # Record AFTER successful queueing. For the buffered
+                    # recorder we pass the per-frame timestamp so it can
+                    # place audio precisely on the output timeline.
                     if self.recorder:
-                        self.recorder.record_outgoing(frame)
+                        try:
+                            # S2SBufferedRecorder accepts an optional timestamp
+                            self.recorder.record_outgoing(frame, timestamp=frame_timestamp)
+                        except TypeError:
+                            # Fallback for any legacy recorder that only takes
+                            # the audio bytes.
+                            self.recorder.record_outgoing(frame)
                     self._output_frame_count += 1
                     
                 except queue.Full:

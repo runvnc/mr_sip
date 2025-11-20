@@ -16,9 +16,10 @@ import wave
 import struct
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Tuple
 import audioop
 from collections import deque
+import array
 
 logger = logging.getLogger(__name__)
 
@@ -287,3 +288,247 @@ class CallRecorder:
                 outgoing_wav.close()
             if combined_wav:
                 combined_wav.close()
+
+
+class S2SBufferedRecorder:
+    """Buffered, timestamp-aware recorder for S2S (PySIP) calls.
+
+    Instead of writing in (pseudo) real time, this recorder:
+    - Buffers incoming (phone) and outgoing (AI) ulaw frames in memory
+    - Uses timestamps for outgoing frames to place them on a sample timeline
+    - Fills gaps with true PCM-zero silence
+    - Builds the final WAV(s) offline in stop_recording()
+
+    Public API is intentionally similar to CallRecorder so MindRootSIPBotS2S
+    can swap implementations without large changes.
+    """
+
+    def __init__(
+        self,
+        call_id: str,
+        output_dir: str = "recordings",
+        record_separate: bool = False,
+        record_combined: bool = True,
+    ) -> None:
+        self.call_id = call_id
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        self.record_separate = record_separate
+        self.record_combined = record_combined
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.incoming_path = self.output_dir / f"{call_id}_{timestamp}_incoming.wav"
+        self.outgoing_path = self.output_dir / f"{call_id}_{timestamp}_outgoing.wav"
+        self.combined_path = self.output_dir / f"{call_id}.wav"
+
+        # Sample rate is fixed at 8kHz for ulaw telephony
+        self.sample_rate = 8000
+
+        # Segments are (start_sample, ulaw_bytes)
+        self._in_segments: List[Tuple[int, bytes]] = []
+        self._out_segments: List[Tuple[int, bytes]] = []
+
+        # Incoming: support both sequential and RTP-timestamp-based placement
+        self._in_pos_samples: int = 0
+        self._in_base_ts: Optional[int] = None
+
+        # Outgoing uses wall-clock timestamps; base_ts anchors the timeline
+        self._base_ts: Optional[float] = None
+
+        self._is_recording: bool = False
+
+    async def start_recording(self) -> None:
+        """Mark recording as started.
+
+        No background tasks are spawned; all work happens in stop_recording().
+        """
+        if self._is_recording:
+            logger.warning(f"Buffered recording already started for call {self.call_id}")
+            return
+        self._is_recording = True
+
+    async def stop_recording(self) -> None:
+        """Finalize recording by building WAV files from buffered segments."""
+        if not self._is_recording:
+            return
+        self._is_recording = False
+
+        try:
+            self._build_wavs()
+        except Exception as e:
+            logger.error(f"Error finalizing buffered S2S recording: {e}")
+            import traceback
+
+            logger.error(traceback.format_exc())
+
+    # API-compatible helpers -------------------------------------------------
+
+    def record_incoming(self, audio_data: bytes) -> None:
+        """Buffer incoming ulaw audio (phone -> system).
+
+        Each byte is one 8kHz sample in ulaw format, so len(bytes) == samples.
+        """
+        if not self._is_recording:
+            return
+
+        # Default sequential placement when no RTP timestamp is available
+        start = self._in_pos_samples
+        self._in_segments.append((start, audio_data))
+        self._in_pos_samples += len(audio_data)
+
+    def record_incoming_with_timestamp(self, audio_data: bytes, rtp_timestamp: int) -> None:
+        """Buffer incoming ulaw audio using RTP timestamp (ticks @ 8 kHz).
+
+        Args:
+            audio_data:    ulaw 8kHz bytes for this jitter frame
+            rtp_timestamp: RTP timestamp of the first sample in this frame.
+        """
+        if not self._is_recording:
+            return
+
+        # Anchor timeline at the first seen RTP timestamp
+        if self._in_base_ts is None:
+            self._in_base_ts = rtp_timestamp
+
+        rel_ticks = max(0, rtp_timestamp - self._in_base_ts)
+        # For PCMU at 8 kHz, 1 RTP tick == 1 sample
+        start_sample = rel_ticks
+        self._in_segments.append((start_sample, audio_data))
+
+    def record_outgoing(self, audio_data: bytes, timestamp: Optional[float] = None) -> None:
+        """Buffer outgoing ulaw audio (system -> phone) with optional timestamp.
+
+        Args:
+            audio_data: ulaw 8kHz audio bytes (typically 160-byte frames)
+            timestamp:  Absolute playback start time for this frame (seconds),
+                        as provided by the AudioPacer -> MindRootSIPBotS2S.
+        """
+        if not self._is_recording:
+            return
+
+        if timestamp is None:
+            # Fallback: place immediately after the last segment, if any.
+            if self._out_segments:
+                last_start, last_buf = self._out_segments[-1]
+                start_sample = last_start + len(last_buf)
+            else:
+                start_sample = 0
+        else:
+            if self._base_ts is None:
+                self._base_ts = timestamp
+            rel_s = max(0.0, timestamp - self._base_ts)
+            start_sample = int(rel_s * self.sample_rate)
+
+        self._out_segments.append((start_sample, audio_data))
+
+    def interrupt_outgoing(self) -> None:  # compatibility no-op
+        """Compatibility hook; no special handling needed for buffered mode."""
+
+    def interrupt_incoming(self) -> None:  # compatibility no-op
+        """Compatibility hook; no special handling needed for buffered mode."""
+
+    # Internal helpers --------------------------------------------------------
+
+    def _build_wavs(self) -> None:
+        """Construct WAV files from buffered segments."""
+        # Determine total length in samples for each side
+        total_in = (
+            max((start + len(buf) for start, buf in self._in_segments), default=0)
+        )
+        total_out = (
+            max((start + len(buf) for start, buf in self._out_segments), default=0)
+        )
+        total_samples = max(total_in, total_out)
+
+        if total_samples <= 0:
+            logger.info(
+                f"Buffered S2S recorder for call {self.call_id}: no audio captured, skipping files"
+            )
+            return
+
+        # Build combined stereo if requested
+        if self.record_combined:
+            self._build_combined_wav(total_samples)
+
+        # Optionally build separate mono files; these are best-effort and may
+        # ignore exact timing gaps (the combined stereo is the canonical record).
+        if self.record_separate:
+            self._build_separate_wavs()
+
+    def _build_combined_wav(self, total_samples: int) -> None:
+        """Build a stereo WAV (left=incoming, right=outgoing)."""
+        left = array.array("h", [0] * total_samples)
+        right = array.array("h", [0] * total_samples)
+
+        # Fill left channel from incoming segments
+        for start, ulaw_bytes in self._in_segments:
+            pcm = audioop.ulaw2lin(ulaw_bytes, 2)  # 2 bytes/sample
+            frame_count = len(ulaw_bytes)
+            for i in range(frame_count):
+                idx = start + i
+                if idx >= total_samples:
+                    break
+                sample_bytes = pcm[2 * i : 2 * i + 2]
+                left[idx] = int.from_bytes(sample_bytes, "little", signed=True)
+
+        # Fill right channel from outgoing segments using timestamps
+        for start, ulaw_bytes in self._out_segments:
+            pcm = audioop.ulaw2lin(ulaw_bytes, 2)
+            frame_count = len(ulaw_bytes)
+            for i in range(frame_count):
+                idx = start + i
+                if idx >= total_samples:
+                    break
+                sample_bytes = pcm[2 * i : 2 * i + 2]
+                right[idx] = int.from_bytes(sample_bytes, "little", signed=True)
+
+        with wave.open(str(self.combined_path), "wb") as w:
+            w.setnchannels(2)
+            w.setsampwidth(2)
+            w.setframerate(self.sample_rate)
+
+            frames = bytearray()
+            for i in range(total_samples):
+                frames += left[i].to_bytes(2, "little", signed=True)
+                frames += right[i].to_bytes(2, "little", signed=True)
+
+            w.writeframes(frames)
+
+        logger.info(
+            f"Buffered S2S combined recording saved to {self.combined_path} "
+            f"(samples={total_samples})"
+        )
+
+    def _build_separate_wavs(self) -> None:
+        """Build simple mono incoming/outgoing WAVs.
+
+        These are written sequentially in segment order and may not reflect
+        exact timing gaps; the combined stereo file is the authoritative
+        timing-aware recording.
+        """
+        # Incoming mono
+        if self._in_segments:
+            with wave.open(str(self.incoming_path), "wb") as w_in:
+                w_in.setnchannels(1)
+                w_in.setsampwidth(2)
+                w_in.setframerate(self.sample_rate)
+
+                for _start, ulaw_bytes in self._in_segments:
+                    pcm = audioop.ulaw2lin(ulaw_bytes, 2)
+                    w_in.writeframes(pcm)
+
+        # Outgoing mono
+        if self._out_segments:
+            with wave.open(str(self.outgoing_path), "wb") as w_out:
+                w_out.setnchannels(1)
+                w_out.setsampwidth(2)
+                w_out.setframerate(self.sample_rate)
+
+                for _start, ulaw_bytes in self._out_segments:
+                    pcm = audioop.ulaw2lin(ulaw_bytes, 2)
+                    w_out.writeframes(pcm)
+
+        logger.info(
+            f"Buffered S2S separate mono recordings written for call {self.call_id}"
+        )
