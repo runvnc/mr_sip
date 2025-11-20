@@ -332,6 +332,10 @@ class S2SBufferedRecorder:
         # Incoming: support both sequential and RTP-timestamp-based placement
         self._in_pos_samples: int = 0
         self._in_base_ts: Optional[int] = None
+        
+        # NEW: Synchronization between RTP and wall-clock timelines
+        self._in_base_wallclock: Optional[float] = None  # Wall-clock time of first RTP frame
+        self._timeline_synced: bool = False
 
         # Outgoing uses wall-clock timestamps; base_ts anchors the timeline
         self._base_ts: Optional[float] = None
@@ -387,13 +391,33 @@ class S2SBufferedRecorder:
         if not self._is_recording:
             return
 
-        # Anchor timeline at the first seen RTP timestamp
+        # Anchor RTP timeline at the first seen RTP timestamp
         if self._in_base_ts is None:
             self._in_base_ts = rtp_timestamp
+            # Record wall-clock time for this first RTP frame
+            import time
+            self._in_base_wallclock = time.time()
+            logger.debug(f"Incoming RTP base: {self._in_base_ts} at wallclock {self._in_base_wallclock}")
 
         rel_ticks = max(0, rtp_timestamp - self._in_base_ts)
         # For PCMU at 8 kHz, 1 RTP tick == 1 sample
         start_sample = rel_ticks
+        
+        # Synchronize with outgoing timeline if both have started
+        if not self._timeline_synced and self._base_ts is not None and self._in_base_wallclock is not None:
+            # Calculate offset between incoming and outgoing timelines
+            # Outgoing base_ts is wall-clock time of first outgoing frame
+            # Incoming base is wall-clock time of first incoming frame
+            time_offset = self._in_base_wallclock - self._base_ts
+            offset_samples = int(time_offset * self.sample_rate)
+            
+            logger.info(f"Synchronizing timelines: incoming started {time_offset:.3f}s relative to outgoing")
+            logger.info(f"Applying offset of {offset_samples} samples to incoming audio")
+            
+            # Adjust all existing incoming segments
+            self._in_segments = [(start + offset_samples, data) for start, data in self._in_segments]
+            self._timeline_synced = True
+        
         self._in_segments.append((start_sample, audio_data))
 
     def record_outgoing(self, audio_data: bytes, timestamp: Optional[float] = None) -> None:
@@ -419,6 +443,19 @@ class S2SBufferedRecorder:
                 self._base_ts = timestamp
             rel_s = max(0.0, timestamp - self._base_ts)
             start_sample = int(rel_s * self.sample_rate)
+
+        # Synchronize with incoming timeline if both have started
+        if not self._timeline_synced and self._in_base_wallclock is not None and self._base_ts is not None:
+            # Calculate offset between timelines
+            time_offset = self._in_base_wallclock - self._base_ts
+            offset_samples = int(time_offset * self.sample_rate)
+            
+            logger.info(f"Synchronizing timelines: incoming started {time_offset:.3f}s relative to outgoing")
+            logger.info(f"Applying offset of {offset_samples} samples to incoming audio")
+            
+            # Adjust all existing incoming segments
+            self._in_segments = [(start + offset_samples, data) for start, data in self._in_segments]
+            self._timeline_synced = True
 
         self._out_segments.append((start_sample, audio_data))
 

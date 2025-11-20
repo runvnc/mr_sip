@@ -212,9 +212,14 @@ class MindRootSIPBotS2S:
                     if self._input_frame_count % 50 == 0:
                         logger.debug(f"Received frame #{self._input_frame_count}, size: {len(ulaw_bytes)} bytes")
                     
-                    # Record incoming audio (non-blocking, already optimized)
+                    # Record incoming audio with timestamp if available
                     if self.recorder:
-                        self.recorder.record_incoming(ulaw_bytes)
+                        if rtp_ts is not None:
+                            # Use RTP timestamp for precise placement
+                            self.recorder.record_incoming_with_timestamp(ulaw_bytes, rtp_ts)
+                        else:
+                            # Fallback to sequential placement
+                            self.recorder.record_incoming(ulaw_bytes)
                     
                     # NEW: Queue mode - put to queue instead of service call
                     if self._queue_mode:
