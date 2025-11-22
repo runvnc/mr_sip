@@ -387,6 +387,15 @@ class MindRootSIPBotS2S:
             if not self.audio_stream:
                 logger.warning("Cannot send audio - audio stream not initialized")
                 return
+
+            # Update activity timestamp (Output)
+            # Project activity to when this audio will FINISH playing
+            # This handles bursting by chaining consecutive chunks
+            chunk_duration = len(audio_chunk) / 8000.0
+            self.last_activity_time = max(self.last_activity_time, time.time()) + chunk_duration
+            
+            if self.silence_reported:
+                self.silence_reported = False
             
             # Split into 160-byte frames
             FRAME_SIZE = 160
@@ -407,11 +416,6 @@ class MindRootSIPBotS2S:
             # Now send all frames in batch without yielding
             # This is more efficient and keeps queue fuller
             for frame, frame_timestamp in frames_to_send:
-                # Update activity timestamp (Output)
-                self.last_activity_time = time.time() # AI speaking always counts as activity
-                if self.silence_reported:
-                    self.silence_reported = False
-
                 # Check interrupt flag before each put
                 if self._interrupting:
                     return  # Abort immediately on interrupt
@@ -459,6 +463,10 @@ class MindRootSIPBotS2S:
         try:
             # Set interrupt flag to stop ongoing sends
             self._interrupting = True
+
+            # Reset activity timer to now (cancelling future projected time)
+            self.last_activity_time = time.time()
+
             # Reset recorder's outgoing hold to silence to avoid buzz on combined file
             try:
                 if self.recorder:
@@ -508,20 +516,11 @@ class MindRootSIPBotS2S:
         try:
             while self.is_active:
                 await asyncio.sleep(0.5)
-
-                # Check if outgoing audio is still buffered/playing
-                # If so, treat as activity and reset timer
-                if self.audio_stream and not self.audio_stream.input_q.empty():
-                    self.last_activity_time = time.time()
-                    if self.silence_reported:
-                        self.silence_reported = False
-                    continue
-
                 duration = time.time() - self.last_activity_time
                 # print(f"[SILENCE DEBUG] Duration since last activity: {duration:.2f}s")
                 
                 # Trigger if > 4.0s silence and not yet reported for this gap
-                if duration > 4.0 and not self.silence_reported:
+                if duration > 10.0 and not self.silence_reported:
                     self.silence_reported = True
                     msg = f"[SYSTEM: No audio detected on either channel for {duration:.1f} seconds. (RMS Threshold: {self.silence_threshold})]"
                     logger.info(f"Silence detected: {msg}")
@@ -541,7 +540,12 @@ class MindRootSIPBotS2S:
                     else:
                         print(f"[SILENCE DEBUG] Silence detected ({duration:.1f}s), injecting message directly")
                         # Direct Mode: Inject message directly
-                        await self._inject_system_message(msg)
+                        # Use send_s2s_message directly to avoid local logging (let echo handle it)
+                        if hasattr(self.context, 'send_s2s_message'):
+                            payload = { "role": "user", "content": [ { "type": "text", "text": msg} ] }
+                            await self.context.send_s2s_message(payload)
+                        else:
+                            await self._inject_system_message(msg)
                         
         except asyncio.CancelledError:
             pass
