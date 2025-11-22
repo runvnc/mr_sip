@@ -14,6 +14,7 @@ import logging
 import queue
 import traceback
 import time
+import audioop
 from datetime import datetime
 from typing import Optional
 from PySIP.sip_call import SipCall
@@ -129,6 +130,7 @@ class MindRootSIPBotS2S:
 
         # Silence detection
         self.last_activity_time = time.time()
+        self.silence_threshold = 200  # RMS threshold for voice activity
         self.silence_reported = False
         self._silence_monitor_task = None
 
@@ -222,10 +224,27 @@ class MindRootSIPBotS2S:
                     
                     self._input_frame_count += 1
                     
-                    # Update activity timestamp (Input)
-                    self.last_activity_time = time.time()
-                    if self.silence_reported:
-                        self.silence_reported = False
+                    # Calculate Audio Energy (RMS) to detect speech vs silence
+                    try:
+                        # Convert ulaw to 16-bit linear PCM for RMS calculation
+                        pcm_data = audioop.ulaw2lin(ulaw_bytes, 2)
+                        rms = audioop.rms(pcm_data, 2)
+                        
+                        # Only update activity time if energy is above threshold (speech detected)
+                        if rms > self.silence_threshold:
+                            self.last_activity_time = time.time()
+                            if self.silence_reported:
+                                print(f"[SILENCE DEBUG] Voice detected (RMS: {rms}), resetting silence flag")
+                                self.silence_reported = False
+                        
+                        # Debug print every 100 frames (~2s) to help tune threshold
+                        if self._input_frame_count % 100 == 0:
+                            print(f"[SILENCE DEBUG] Current RMS: {rms} (Threshold: {self.silence_threshold})")
+                            
+                    except Exception as e:
+                        print(f"[SILENCE DEBUG] Error calculating RMS: {e}")
+                        # Fallback: update on every frame if calculation fails
+                        self.last_activity_time = time.time()
                     
                     # Debug logging every 50 frames (~1 second)
                     if self._input_frame_count % 50 == 0:
@@ -389,7 +408,7 @@ class MindRootSIPBotS2S:
             # This is more efficient and keeps queue fuller
             for frame, frame_timestamp in frames_to_send:
                 # Update activity timestamp (Output)
-                self.last_activity_time = time.time()
+                self.last_activity_time = time.time() # AI speaking always counts as activity
                 if self.silence_reported:
                     self.silence_reported = False
 
@@ -490,14 +509,16 @@ class MindRootSIPBotS2S:
             while self.is_active:
                 await asyncio.sleep(0.5)
                 duration = time.time() - self.last_activity_time
+                # print(f"[SILENCE DEBUG] Duration since last activity: {duration:.2f}s")
                 
                 # Trigger if > 4.0s silence and not yet reported for this gap
                 if duration > 4.0 and not self.silence_reported:
                     self.silence_reported = True
-                    msg = f"[SYSTEM: No audio detected on either channel for {duration:.1f} seconds.]"
+                    msg = f"[SYSTEM: No audio detected on either channel for {duration:.1f} seconds. (RMS Threshold: {self.silence_threshold})]"
                     logger.info(f"Silence detected: {msg}")
                     
                     if self._queue_mode and self._status_queue:
+                        print(f"[SILENCE DEBUG] Silence detected ({duration:.1f}s), sending event to main process")
                         # Process Isolation: Send event to main process
                         try:
                             self._status_queue.put({
@@ -509,6 +530,7 @@ class MindRootSIPBotS2S:
                         except Exception as e:
                             logger.error(f"Error sending silence event: {e}")
                     else:
+                        print(f"[SILENCE DEBUG] Silence detected ({duration:.1f}s), injecting message directly")
                         # Direct Mode: Inject message directly
                         await self._inject_system_message(msg)
                         
