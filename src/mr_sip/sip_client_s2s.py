@@ -13,6 +13,7 @@ import asyncio
 import logging
 import queue
 import traceback
+import time
 from datetime import datetime
 from typing import Optional
 from PySIP.sip_call import SipCall
@@ -59,7 +60,8 @@ class MindRootSIPBotS2S:
                  record_separate: bool = False,
                  # NEW: Optional queues for process isolation
                  audio_in_queue=None,
-                 audio_out_queue=None):
+                 audio_out_queue=None,
+                 status_queue=None):
         """
         Args:
             user: SIP username
@@ -72,6 +74,7 @@ class MindRootSIPBotS2S:
             record_separate: If True, save separate incoming/outgoing files in addition to combined
             audio_in_queue: Optional multiprocessing.Queue for sending audio to main process
             audio_out_queue: Optional multiprocessing.Queue for receiving audio from main process
+            status_queue: Optional multiprocessing.Queue for sending status updates (Process Isolation)
         """
         self.sip_username = user
         self.sip_password = password
@@ -118,10 +121,16 @@ class MindRootSIPBotS2S:
         # NEW: Queue mode for process isolation
         self._audio_in_queue = audio_in_queue
         self._audio_out_queue = audio_out_queue
+        self._status_queue = status_queue
         self._queue_mode = audio_in_queue is not None and audio_out_queue is not None
         
         mode_str = "QUEUE MODE" if self._queue_mode else "DIRECT MODE"
         logger.info(f"PySIP S2S Bot initialized ({mode_str}) for user {user} on gateway {gateway}")
+
+        # Silence detection
+        self.last_activity_time = time.time()
+        self.silence_reported = False
+        self._silence_monitor_task = None
 
     async def make_call(self, destination: str):
         """Initiate outbound call.
@@ -189,6 +198,11 @@ class MindRootSIPBotS2S:
                         self.call_established = True
                         self.call_start_time = datetime.now()
                         
+                        # Start silence monitor
+                        self.last_activity_time = time.time()
+                        self._silence_monitor_task = asyncio.create_task(self._monitor_silence())
+                        logger.info("Silence monitor started")
+
                         # Signal that call is fully ready
                         self.call_answered.set()
                         logger.info("Call fully answered and ready for audio")
@@ -207,6 +221,11 @@ class MindRootSIPBotS2S:
                             await self.recorder.start_recording()
                     
                     self._input_frame_count += 1
+                    
+                    # Update activity timestamp (Input)
+                    self.last_activity_time = time.time()
+                    if self.silence_reported:
+                        self.silence_reported = False
                     
                     # Debug logging every 50 frames (~1 second)
                     if self._input_frame_count % 50 == 0:
@@ -267,6 +286,15 @@ class MindRootSIPBotS2S:
             
             self.is_active = False
             self.call_established = False
+
+            # Stop silence monitor
+            if self._silence_monitor_task:
+                self._silence_monitor_task.cancel()
+                try:
+                    await self._silence_monitor_task
+                except asyncio.CancelledError:
+                    pass
+                self._silence_monitor_task = None
             
             # Stop audio stream
             if self.audio_stream:
@@ -360,6 +388,11 @@ class MindRootSIPBotS2S:
             # Now send all frames in batch without yielding
             # This is more efficient and keeps queue fuller
             for frame, frame_timestamp in frames_to_send:
+                # Update activity timestamp (Output)
+                self.last_activity_time = time.time()
+                if self.silence_reported:
+                    self.silence_reported = False
+
                 # Check interrupt flag before each put
                 if self._interrupting:
                     return  # Abort immediately on interrupt
@@ -451,17 +484,78 @@ class MindRootSIPBotS2S:
             logger.error(f"Error in hangup_call: {e}")
             logger.error(traceback.format_exc())
     
-    async def _show_disconnected(self):
-        """Send disconnect message to agent."""
+    async def _monitor_silence(self):
+        """Monitor for silence on both channels."""
         try:
-            msg = "\n\nSYSTEM: -- CALL DISCONNECTED --\n\n"
-            
-            await service_manager.backend_user_message(message=msg)
+            while self.is_active:
+                await asyncio.sleep(0.5)
+                duration = time.time() - self.last_activity_time
+                
+                # Trigger if > 4.0s silence and not yet reported for this gap
+                if duration > 4.0 and not self.silence_reported:
+                    self.silence_reported = True
+                    msg = f"[SYSTEM: No audio detected on either channel for {duration:.1f} seconds.]"
+                    logger.info(f"Silence detected: {msg}")
+                    
+                    if self._queue_mode and self._status_queue:
+                        # Process Isolation: Send event to main process
+                        try:
+                            self._status_queue.put({
+                                'type': 'silence_timeout',
+                                'duration': duration,
+                                'message': msg,
+                                'timestamp': datetime.now().isoformat()
+                            })
+                        except Exception as e:
+                            logger.error(f"Error sending silence event: {e}")
+                    else:
+                        # Direct Mode: Inject message directly
+                        await self._inject_system_message(msg)
+                        
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error in silence monitor: {e}")
+            logger.error(traceback.format_exc())
+
+    async def _inject_system_message(self, msg: str):
+        """Helper to inject system message in Direct Mode."""
+        try:
+            await service_manager.backend_user_message(message=msg, context=self.context)
             await service_manager.send_message_to_agent(
                 session_id=self.context.log_id,
                 message=msg,
                 context=self.context
             )
+        except Exception as e:
+            logger.error(f"Error injecting system message: {e}")
+
+    async def _show_disconnected(self):
+        """Send disconnect message to agent."""
+        try:
+            msg = "\n\nSYSTEM: -- CALL DISCONNECTED --\n\n"
+            
+            if self._queue_mode and self._status_queue:
+                # Process Isolation: Send event to main process
+                try:
+                    self._status_queue.put({
+                        'type': 'call_disconnected',
+                        'message': msg,
+                        'timestamp': datetime.now().isoformat()
+                    })
+                except Exception as e:
+                    logger.error(f"Error sending disconnect event: {e}")
+            else:
+                # Direct Mode: Log directly
+                # 1. Update UI
+                await service_manager.backend_user_message(message=msg, context=self.context)
+                # 2. Send to Agent (so it knows call ended) and Chat Log
+                await service_manager.send_message_to_agent(
+                    session_id=self.context.log_id,
+                    message=msg,
+                    context=self.context
+                )
+            
             logger.info("Disconnect message sent to agent")
             
         except Exception as e:

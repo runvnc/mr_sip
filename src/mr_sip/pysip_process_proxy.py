@@ -45,6 +45,7 @@ class PySIPProcessProxy:
         
         # Audio forwarding task
         self._audio_forwarder_task: Optional[asyncio.Task] = None
+        self._status_monitor_task: Optional[asyncio.Task] = None
         
         logger.info(f"PySIP process proxy initialized for context {context.log_id}")
         
@@ -86,6 +87,11 @@ class PySIPProcessProxy:
                 self._forward_audio_to_openai()
             )
             
+            # Start status monitor (for silence events, etc.)
+            self._status_monitor_task = asyncio.create_task(
+                self._monitor_status_events()
+            )
+            
             logger.info(f"Proxy: Call established to {destination}")
         else:
             raise Exception("Failed to establish call")
@@ -124,6 +130,48 @@ class PySIPProcessProxy:
             logger.error(f"Error in audio forwarder: {e}")
         finally:
             logger.info("Audio forwarder exiting")
+
+    async def _monitor_status_events(self):
+        """Monitor status events from subprocess."""
+        from lib.providers.services import service_manager
+        logger.info("Status monitor started")
+        
+        try:
+            while self.is_active:
+                event = await self.wrapper.get_next_status()
+                
+                if event:
+                    if event.get('type') == 'silence_timeout':
+                        msg = event.get('message', '[SYSTEM: Silence detected]')
+                        logger.info(f"Proxy received silence event: {msg}")
+                        
+                        # Inject message into chat
+                        await service_manager.backend_user_message(message=msg, context=self.context)
+                        await service_manager.send_message_to_agent(
+                            session_id=self.context.log_id,
+                            message=msg,
+                            context=self.context
+                        )
+                    elif event.get('type') == 'call_disconnected':
+                        msg = event.get('message', '[SYSTEM: Call Disconnected]')
+                        logger.info(f"Proxy received disconnect event: {msg}")
+                        
+                        # 1. Update UI
+                        await service_manager.backend_user_message(message=msg, context=self.context)
+                        # 2. Send to Agent (so it knows call ended) and Chat Log
+                        await service_manager.send_message_to_agent(
+                            session_id=self.context.log_id,
+                            message=msg,
+                            context=self.context
+                        )
+                        
+                else:
+                    await asyncio.sleep(0.1)
+                    
+        except asyncio.CancelledError:
+            logger.info("Status monitor cancelled")
+        except Exception as e:
+            logger.error(f"Error in status monitor: {e}")
     
     async def send_tts_audio(self, audio_chunk: bytes, timestamp=None):
         """Send TTS audio to subprocess (from OpenAI to phone).
@@ -157,6 +205,13 @@ class PySIPProcessProxy:
             self._audio_forwarder_task.cancel()
             try:
                 await self._audio_forwarder_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._status_monitor_task:
+            self._status_monitor_task.cancel()
+            try:
+                await self._status_monitor_task
             except asyncio.CancelledError:
                 pass
                 

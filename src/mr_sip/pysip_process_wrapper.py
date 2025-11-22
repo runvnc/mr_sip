@@ -140,6 +140,18 @@ class PySIPProcessWrapper:
             await self.stop()
             raise Exception("Call establishment timeout")
             
+    async def get_next_status(self) -> Optional[Dict[str, Any]]:
+        """Get next status event from queue (non-blocking)."""
+        if not self._running:
+            return None
+        try:
+            return await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self.status_queue.get(block=False)
+            )
+        except:
+            return None
+
     async def send_audio(self, audio_chunk: bytes, timestamp=None):
         """Send audio chunk to PySIP process (from OpenAI to phone).
 
@@ -357,7 +369,8 @@ async def _pysip_main(config: Dict[str, Any], audio_in_q: mp.Queue,
         record_separate=config.get('record_separate', False),
         # Enable queue mode
         audio_in_queue=audio_in_q,
-        audio_out_queue=audio_out_q
+        audio_out_queue=audio_out_q,
+        status_queue=status_q
     )
     
     print(f"[PYSIP_MAIN] Starting audio queue reader task...")
