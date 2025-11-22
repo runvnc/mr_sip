@@ -508,6 +508,15 @@ class MindRootSIPBotS2S:
         try:
             while self.is_active:
                 await asyncio.sleep(0.5)
+
+                # Check if outgoing audio is still buffered/playing
+                # If so, treat as activity and reset timer
+                if self.audio_stream and not self.audio_stream.input_q.empty():
+                    self.last_activity_time = time.time()
+                    if self.silence_reported:
+                        self.silence_reported = False
+                    continue
+
                 duration = time.time() - self.last_activity_time
                 # print(f"[SILENCE DEBUG] Duration since last activity: {duration:.2f}s")
                 
