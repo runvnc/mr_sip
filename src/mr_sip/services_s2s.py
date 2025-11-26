@@ -236,6 +236,11 @@ async def end_call_service(context=None) -> Dict[str, Any]:
             if session.baresip_bot.call_start_time:
                 from datetime import datetime
                 call_duration = (datetime.now() - session.baresip_bot.call_start_time).total_seconds()
+
+            # Stop silence monitor before hangup to prevent spurious notifications
+            if hasattr(session.baresip_bot, 'stop_silence_monitor'):
+                session.baresip_bot.stop_silence_monitor()
+                logger.info(f"Stopped silence monitor for session {context.log_id}")
             
             # Hangup the call (this triggers cleanup)
             await session.baresip_bot.hangup_call()

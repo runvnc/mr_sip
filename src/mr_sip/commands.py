@@ -64,8 +64,8 @@ async def call(destination: str, context=None) -> str:
         { "call": { "destination": "sip:user@domain.com" } }
     
     Environment Variables:
-        SIP_GATEWAY: SIP gateway server (default: chicago4.voip.ms)
-        SIP_USER: SIP username (default: 498091)
+        SIP_GATEWAY: SIP gateway server
+        SIP_USER: SIP username
         SIP_PASSWORD: SIP password
         
         # V2 STT Provider Configuration (used if SIP_USE_V2=true)
@@ -432,6 +432,16 @@ async def delegate_call_task(agent:str, phone_number:str, instructions: str, idl
         await command_manager.delegate_task(instructions, agent, log_id=log_id, context=context)
         result = await await_call_result(log_id,agent=agent, idle_timeout_seconds=idle_timeout_seconds, 
                                          finish_timeout_seconds=finish_timeout_seconds, context=context)
+        
+        # Stop silence monitor before closing S2S session
+        try:
+            session_manager = get_session_manager()
+            session = await session_manager.get_session(log_id)
+            if session and session.baresip_bot and hasattr(session.baresip_bot, 'stop_silence_monitor'):
+                session.baresip_bot.stop_silence_monitor()
+        except Exception as e:
+            logger.debug(f"Could not stop silence monitor: {e}")
+        
         try:
             await context.close_s2s_session(context)
         except Exception as e:
@@ -550,6 +560,15 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str,
             finish_timeout_seconds=finish_timeout_seconds, 
             context=context
         )
+        
+        # Stop silence monitor before closing S2S session
+        try:
+            session_manager = get_session_manager()
+            session = await session_manager.get_session(queued_job_id)
+            if session and session.baresip_bot and hasattr(session.baresip_bot, 'stop_silence_monitor'):
+                session.baresip_bot.stop_silence_monitor()
+        except Exception as e:
+            logger.debug(f"Could not stop silence monitor: {e}")
         
         # Try to close S2S session
         try:

@@ -132,6 +132,9 @@ class MindRootSIPBotS2S:
         self.last_activity_time = time.time()
         self.silence_threshold = 200  # RMS threshold for voice activity
         self.silence_reported = False
+        # Flag to track if S2S session is still active (can be set externally)
+        self._s2s_active = True
+        self._silence_monitor_stopped = False
         self._silence_monitor_task = None
 
     async def make_call(self, destination: str):
@@ -540,15 +543,20 @@ class MindRootSIPBotS2S:
                     else:
                         print(f"[SILENCE DEBUG] Silence detected ({duration:.1f}s), injecting message directly")
                         # Direct Mode: Inject message directly
-                        # Use send_s2s_message directly to avoid local logging (let echo handle it)
-                        if hasattr(self.context, 'send_s2s_message'):
-                            payload = { "role": "user", "content": [ { "type": "text", "text": msg} ] }
-                            await self.context.send_s2s_message(payload)
-                        else:
-                            await self._inject_system_message(msg)
-                        
+                        try:
+                            # Use send_s2s_message directly to avoid local logging (let echo handle it)
+                            if hasattr(self.context, 'send_s2s_message'):
+                                payload = { "role": "user", "content": [ { "type": "text", "text": msg} ] }
+                                await self.context.send_s2s_message(payload)
+                            else:
+                                await self._inject_system_message(msg)
+                        except Exception as e:
+                            # S2S session likely closed - stop monitoring
+                            logger.warning(f"Failed to send silence notification (S2S likely closed): {e}")
+                            self._s2s_active = False
+                            break
         except asyncio.CancelledError:
-            pass
+            logger.info("Silence monitor cancelled")
         except Exception as e:
             logger.error(f"Error in silence monitor: {e}")
             logger.error(traceback.format_exc())

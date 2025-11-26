@@ -43,6 +43,9 @@ class PySIPProcessProxy:
         self.call_established = False
         self.call_start_time: Optional[datetime] = None
         
+        # Flag to track if S2S session is still active
+        self._s2s_active = True
+        
         # Audio forwarding task
         self._audio_forwarder_task: Optional[asyncio.Task] = None
         self._status_monitor_task: Optional[asyncio.Task] = None
@@ -137,7 +140,12 @@ class PySIPProcessProxy:
         logger.info("Status monitor started")
         
         try:
-            while self.is_active:
+            while self.is_active and self._s2s_active:
+                # Check if S2S is still active
+                if not self._s2s_active:
+                    logger.info("S2S session closed, stopping status monitor")
+                    break
+                    
                 event = await self.wrapper.get_next_status()
                 
                 if event:
@@ -145,25 +153,39 @@ class PySIPProcessProxy:
                         msg = event.get('message', '[SYSTEM: Silence detected]')
                         logger.info(f"Proxy received silence event: {msg}")
                         
-                        # Inject message into chat
-                        await service_manager.backend_user_message(message=msg, context=self.context)
-                        await service_manager.send_message_to_agent(
-                            session_id=self.context.log_id,
-                            message=msg,
-                            context=self.context
-                        )
+                        # Only inject if S2S is still active
+                        if not self._s2s_active:
+                            logger.info("Ignoring silence event - S2S session closed")
+                            continue
+                            
+                        try:
+                            # Inject message into chat
+                            await service_manager.backend_user_message(message=msg, context=self.context)
+                            await service_manager.send_message_to_agent(
+                                session_id=self.context.log_id,
+                                message=msg,
+                                context=self.context
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to send silence notification: {e}")
+                            self._s2s_active = False
+                            break
+                            
                     elif event.get('type') == 'call_disconnected':
                         msg = event.get('message', '[SYSTEM: Call Disconnected]')
                         logger.info(f"Proxy received disconnect event: {msg}")
                         
-                        # 1. Update UI
-                        await service_manager.backend_user_message(message=msg, context=self.context)
-                        # 2. Send to Agent (so it knows call ended) and Chat Log
-                        await service_manager.send_message_to_agent(
-                            session_id=self.context.log_id,
-                            message=msg,
-                            context=self.context
-                        )
+                        try:
+                            # 1. Update UI
+                            await service_manager.backend_user_message(message=msg, context=self.context)
+                            # 2. Send to Agent (so it knows call ended) and Chat Log
+                            await service_manager.send_message_to_agent(
+                                session_id=self.context.log_id,
+                                message=msg,
+                                context=self.context
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to send disconnect notification: {e}")
                         
                 else:
                     await asyncio.sleep(0.1)
@@ -172,6 +194,15 @@ class PySIPProcessProxy:
             logger.info("Status monitor cancelled")
         except Exception as e:
             logger.error(f"Error in status monitor: {e}")
+    
+    def stop_silence_monitor(self):
+        """Stop the silence/status monitor (called when S2S session closes)."""
+        self._s2s_active = False
+        if self._status_monitor_task:
+            self._status_monitor_task.cancel()
+            logger.info("Status monitor stop requested")
+        # Also tell the subprocess to stop its silence monitor
+        self.wrapper.stop_silence_monitor()
     
     async def send_tts_audio(self, audio_chunk: bytes, timestamp=None):
         """Send TTS audio to subprocess (from OpenAI to phone).

@@ -224,6 +224,16 @@ class PySIPProcessWrapper:
                 
         except Exception as e:
             logger.error(f"Error clearing audio queue: {e}")
+
+    def stop_silence_monitor(self):
+        """Send command to subprocess to stop its silence monitor."""
+        if not self._running:
+            return
+        try:
+            self.control_queue.put_nowait({'command': 'stop_silence_monitor'})
+            logger.info("Sent stop_silence_monitor command to subprocess")
+        except Exception as e:
+            logger.warning(f"Failed to send stop_silence_monitor command: {e}")
             
     async def stop(self):
         """Stop the PySIP process and cleanup."""
@@ -502,6 +512,9 @@ async def _control_queue_monitor(bot, control_q: mp.Queue):
                 elif cmd['command'] == 'clear_audio':
                     logger.info("Clear audio command received")
                     bot.clear_audio_queue()
+                elif cmd['command'] == 'stop_silence_monitor':
+                    logger.info("Stop silence monitor command received")
+                    bot.stop_silence_monitor()
                     
             except Exception:
                 # Timeout - continue
