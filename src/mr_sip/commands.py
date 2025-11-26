@@ -13,6 +13,7 @@ from .services import dial_service, end_call_service
 import nanoid
 from .sip_manager import get_session_manager
 import asyncio 
+from lib.providers.services import service_manager
 import traceback
 import time
 import json
@@ -441,3 +442,124 @@ async def delegate_call_task(agent:str, phone_number:str, instructions: str, idl
         trace = traceback.format_exc()
         logger.error(f"Error in delegate_call_task: {e}\n\n{trace}")
         return f"Error delegating call task: {str(e)} \n\n{trace}"
+
+@command()
+async def delegate_call_job(agent: str, phone_number: str, instructions: str, 
+                            job_type: str = None, timeout: int = 600,
+                            idle_timeout_seconds: int = 120, finish_timeout_seconds: int = 20,
+                            metadata: dict = None, context=None):
+    """
+    Delegate a call task to `agent` via the job queue, with call-specific monitoring.
+    
+    This is like delegate_call_task but uses the job queue for rate limiting and
+    concurrency control. It monitors for call completion via:
+    - task_result command in the log
+    - CALL DISCONNECTED message + finish_timeout
+    - idle_timeout
+    - job completion/failure
+    
+    Parameters:
+        agent: Name of the agent to handle the call
+        phone_number: Phone number to call
+        instructions: Task instructions for the agent
+        job_type: Optional job type for queue organization (default: "call.{agent}")
+        timeout: Maximum seconds to wait for job completion (default: 600)
+        idle_timeout_seconds: Seconds of inactivity before considering call done (default: 120)
+        finish_timeout_seconds: Seconds to wait after CALL DISCONNECTED (default: 20)
+        metadata: Optional dict of metadata to attach to the job
+    
+    Returns:
+        Result from the call task or the call session log
+    
+    Example:
+    
+    { "delegate_call_job": { 
+        "agent": "CustomerService", 
+        "phone_number": "16822625850",
+        "instructions": "Call the customer and inform them about their order status."
+    }}
+    """
+    try:
+        job_id = nanoid.generate()
+        
+        # Build full instructions with phone number
+        full_instructions = instructions + f"\n\n Call the phone number {phone_number} to accomplish the task."
+        
+        # Default job_type for calls
+        if job_type is None:
+            job_type = f"call.{agent}"
+        
+        # Get LLM from context if available
+        llm = None
+        if context is not None:
+            if hasattr(context, 'current_model'):
+                llm = context.current_model
+            elif hasattr(context, 'data') and 'llm' in context.data:
+                llm = context.data['llm']
+        
+        # Build metadata
+        job_metadata = metadata.copy() if metadata else {}
+        job_metadata['phone_number'] = phone_number
+        job_metadata['call_type'] = 'outbound'
+        if context and hasattr(context, 'log_id'):
+            job_metadata['parent_log_id'] = context.log_id
+        
+        # Queue the job
+        result = await service_manager.add_job(
+            instructions=full_instructions,
+            agent_name=agent,
+            job_type=job_type,
+            username=getattr(context, 'username', None) if context else None,
+            metadata=job_metadata,
+            job_id=job_id,
+            llm=llm,
+            context=context
+        )
+        
+        if "error" in result:
+            return f"Failed to queue call job: {result['error']}"
+        
+        queued_job_id = result["job_id"]
+        logger.info(f"Queued call job {queued_job_id} for agent {agent} to call {phone_number}")
+        
+        # Wait for job to start (become active) before monitoring
+        # This handles the case where the job queue is backed up
+        start_wait = time.time()
+        job_started = False
+        max_queue_wait = min(timeout, 720)  # Wait up to 12 min for job to start
+        while (time.time() - start_wait) < max_queue_wait:
+            job_data = await service_manager.get_job_data_service(queued_job_id)
+            if job_data:
+                status = job_data.get("status")
+                if status in ("active", "completed", "failed"):
+                    job_started = True
+                    logger.info(f"Call job {queued_job_id} is now {status}")
+                    break
+            await asyncio.sleep(1)
+        
+        if not job_started:
+            logger.warning(f"Call job {queued_job_id} did not start within {timeout}s")
+            return f"Job {queued_job_id} did not start within {max_queue_wait}s. It may still be queued."
+        
+        # Use await_call_result to monitor the call - it handles all the edge cases
+        # for S2S agents that don't properly call task_result
+        call_result = await await_call_result(
+            log_id=queued_job_id, 
+            agent=agent, 
+            idle_timeout_seconds=idle_timeout_seconds,
+            finish_timeout_seconds=finish_timeout_seconds, 
+            context=context
+        )
+        
+        # Try to close S2S session
+        try:
+            await context.close_s2s_session(context)
+        except Exception as e:
+            logger.warning(f"Could not close s2s session (normal if not s2s): {e}")
+        
+        return f"Job ID: {queued_job_id}. Result: {call_result}"
+        
+    except Exception as e:
+        trace = traceback.format_exc()
+        logger.error(f"Error in delegate_call_job: {e}\n\n{trace}")
+        return f"Error delegating call job: {str(e)}\n\n{trace}"

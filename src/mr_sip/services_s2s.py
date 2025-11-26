@@ -23,16 +23,6 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Configuration from environment
-SIP_GATEWAY = os.getenv('SIP_GATEWAY', 'no sip gateway')
-SIP_USER = os.getenv('SIP_USER', 'nouser')
-SIP_PASSWORD = os.getenv('SIP_PASSWORD', 'no sip password')
-AUDIO_DIR = os.getenv('AUDIO_DIR', os.path.expanduser('.'))
-CALL_ESTABLISH_TIMEOUT = int(os.getenv('SIP_CALL_ESTABLISH_TIMEOUT', '120'))
-# Recording configuration
-ENABLE_RECORDING = os.getenv('SIP_ENABLE_RECORDING', 'false').lower() == 'true'
-RECORDING_DIR = os.getenv('SIP_RECORDING_DIR', 'data/calls')
-RECORD_SEPARATE = os.getenv('SIP_RECORD_SEPARATE', 'false').lower() == 'true'
 
 @service()
 async def dial_service(destination: str, context=None, enable_recording: bool = None,
@@ -65,6 +55,17 @@ async def dial_service(destination: str, context=None, enable_recording: bool = 
     if not context or not context.log_id:
         raise ValueError("Context with log_id is required for SIP calls")
         
+    # Read environment variables inside the function where context is available
+    # This allows context_environ to provide per-agent overrides
+    sip_gateway = os.getenv('SIP_GATEWAY', 'no sip gateway')
+    sip_user = os.getenv('SIP_USER', 'nouser')
+    sip_password = os.getenv('SIP_PASSWORD', 'no sip password')
+    audio_dir = os.getenv('AUDIO_DIR', os.path.expanduser('.'))
+    call_establish_timeout = int(os.getenv('SIP_CALL_ESTABLISH_TIMEOUT', '120'))
+    enable_recording_default = os.getenv('SIP_ENABLE_RECORDING', 'false').lower() == 'true'
+    recording_dir = os.getenv('SIP_RECORDING_DIR', 'data/calls')
+    record_separate = os.getenv('SIP_RECORD_SEPARATE', 'false').lower() == 'true'
+
     print(f"[DIAL_SERVICE] Starting dial to {destination} for session {context.log_id}")
     logger.info(f"Initiating PySIP call to {destination} for session {context.log_id} (S2S mode)")
     
@@ -83,7 +84,7 @@ async def dial_service(destination: str, context=None, enable_recording: bool = 
         print(f"[DIAL_SERVICE] Process isolation: {use_process_isolation}")
         
         # Determine recording setting  
-        record_call = enable_recording if enable_recording is not None else ENABLE_RECORDING
+        record_call = enable_recording if enable_recording is not None else enable_recording_default
         
         if use_process_isolation:
             logger.info(f"Using PROCESS ISOLATION mode for call to {destination}")
@@ -99,12 +100,12 @@ async def dial_service(destination: str, context=None, enable_recording: bool = 
             print(f"[DIAL_SERVICE] Calling bot.make_call()...")
             await bot.make_call(
                 destination=destination,
-                user=SIP_USER,
-                password=SIP_PASSWORD,
-                gateway=SIP_GATEWAY,
+                user=sip_user,
+                password=sip_password,
+                gateway=sip_gateway,
                 enable_recording=record_call,
-                recording_dir=RECORDING_DIR,
-                record_separate=RECORD_SEPARATE
+                recording_dir=recording_dir,
+                record_separate=record_separate
             )
             print(f"[DIAL_SERVICE] bot.make_call() returned successfully")
             
@@ -114,14 +115,14 @@ async def dial_service(destination: str, context=None, enable_recording: bool = 
             print(f"[DIAL_SERVICE] Creating bot directly...")
             # Create bot directly (original behavior)
             bot = MindRootSIPBotS2S(
-                user=SIP_USER,
-                password=SIP_PASSWORD,
-                gateway=SIP_GATEWAY,
-                audio_dir=AUDIO_DIR,
+                user=sip_user,
+                password=sip_password,
+                gateway=sip_gateway,
+                audio_dir=audio_dir,
                 context=context,
                 enable_recording=record_call,
-                recording_dir=RECORDING_DIR,
-                record_separate=RECORD_SEPARATE
+                recording_dir=recording_dir,
+                record_separate=record_separate
             )
             print(f"[DIAL_SERVICE] Bot created, creating session...")
         
@@ -141,7 +142,7 @@ async def dial_service(destination: str, context=None, enable_recording: bool = 
             call_task = asyncio.create_task(bot.make_call(destination))
             
             # Wait for call to be answered and RTP ready (with timeout)
-            max_wait = CALL_ESTABLISH_TIMEOUT
+            max_wait = call_establish_timeout
             print(f"[DIAL_SERVICE] Starting call task and waiting up to {max_wait}s...")
             
             logger.info(f"Waiting for call to be answered (timeout: {max_wait}s)...")

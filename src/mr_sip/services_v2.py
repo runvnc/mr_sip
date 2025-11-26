@@ -20,17 +20,6 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Configuration from environment
-SIP_GATEWAY = os.getenv('SIP_GATEWAY', 'no sip gateway')
-SIP_USER = os.getenv('SIP_USER', 'nouser')
-SIP_PASSWORD = os.getenv('SIP_PASSWORD', 'no sip password')
-STT_PROVIDER = os.getenv('STT_PROVIDER', 'deepgram_flux')  # Default to deepgram_flux
-STT_MODEL_SIZE = os.getenv('STT_MODEL_SIZE', 'small')  # For Whisper
-DEEPGRAM_API_KEY = os.getenv('DEEPGRAM_API_KEY', '')  # For Deepgram
-AUDIO_DIR = os.getenv('AUDIO_DIR', os.path.expanduser('.'))
-REQUIRE_DEEPGRAM = os.getenv('REQUIRE_DEEPGRAM', 'true').lower() in ('true', '1', 'yes', 'on')
-# Allow a longer ring timeout so Deepgram isn't started/given up before answer
-CALL_ESTABLISH_TIMEOUT = int(os.getenv('SIP_CALL_ESTABLISH_TIMEOUT', '120'))
 
 @service()
 async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
@@ -55,16 +44,28 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
     if not context or not context.log_id:
         raise ValueError("Context with log_id is required for SIP calls")
         
+    # Read environment variables inside the function where context is available
+    # This allows context_environ to provide per-agent overrides
+    sip_gateway = os.getenv('SIP_GATEWAY', 'no sip gateway')
+    sip_user = os.getenv('SIP_USER', 'nouser')
+    sip_password = os.getenv('SIP_PASSWORD', 'no sip password')
+    stt_provider = os.getenv('STT_PROVIDER', 'deepgram_flux')
+    stt_model_size = os.getenv('STT_MODEL_SIZE', 'small')
+    deepgram_api_key = os.getenv('DEEPGRAM_API_KEY', '')
+    audio_dir = os.getenv('AUDIO_DIR', os.path.expanduser('.'))
+    require_deepgram = os.getenv('REQUIRE_DEEPGRAM', 'true').lower() in ('true', '1', 'yes', 'on')
+    call_establish_timeout = int(os.getenv('SIP_CALL_ESTABLISH_TIMEOUT', '120'))
+
     logger.info(f"Initiating SIP call to {destination} for session {context.log_id}")
-    logger.info(f"Using STT provider: {STT_PROVIDER}")
+    logger.info(f"Using STT provider: {stt_provider}")
     
     # Enforce Deepgram requirement if configured
-    if REQUIRE_DEEPGRAM:
-        if STT_PROVIDER not in ['deepgram', 'deepgram_flux']:
+    if require_deepgram:
+        if stt_provider not in ['deepgram', 'deepgram_flux']:
             error_msg = (
                 f"\n\n"
                 f"{'='*80}\n"
-                f"FATAL ERROR: Deepgram is required but STT_PROVIDER='{STT_PROVIDER}'\n"
+                f"FATAL ERROR: Deepgram is required but STT_PROVIDER='{stt_provider}'\n"
                 f"{'='*80}\n"
                 f"Please set: export STT_PROVIDER=deepgram_flux (recommended) or deepgram\n"
                 f"Or disable requirement: export REQUIRE_DEEPGRAM=false\n"
@@ -74,7 +75,7 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
             import sys
             sys.exit(1)
         
-        if not DEEPGRAM_API_KEY:
+        if not deepgram_api_key:
             error_msg = (
                 f"\n\n"
                 f"{'='*80}\n"
@@ -96,11 +97,11 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
     
     try:
         # Verbose logging for Deepgram initialization
-        if STT_PROVIDER in ['deepgram', 'deepgram_flux']:
+        if stt_provider in ['deepgram', 'deepgram_flux']:
             logger.info("\n" + "="*80)
-            logger.info(f"INITIALIZING {STT_PROVIDER.upper()} STT PROVIDER")
+            logger.info(f"INITIALIZING {stt_provider.upper()} STT PROVIDER")
             logger.info("="*80)
-            logger.info(f"API Key: {DEEPGRAM_API_KEY[:10]}...{DEEPGRAM_API_KEY[-4:] if len(DEEPGRAM_API_KEY) > 14 else '[too short]'}")
+            logger.info(f"API Key: {deepgram_api_key[:10]}...{deepgram_api_key[-4:] if len(deepgram_api_key) > 14 else '[too short]'}")
             logger.info(f"Destination: {destination}")
             logger.info(f"Session: {context.log_id}")
             logger.info("="*80)
@@ -141,12 +142,12 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
         # Prepare STT configuration
         stt_config = {}
         
-        if STT_PROVIDER in ['deepgram', 'deepgram_flux']:
+        if stt_provider in ['deepgram', 'deepgram_flux']:
             # Don't put api_key in stt_config - it will be read from environment by factory
             # stt_config['api_key'] = DEEPGRAM_API_KEY  # Removed to avoid duplicate
-            logger.info(f"{STT_PROVIDER} configuration prepared")
+            logger.info(f"{stt_provider} configuration prepared")
             # Skip test connection - will connect after call establishment
-            logger.info(f"{STT_PROVIDER} will connect after call establishment")
+            logger.info(f"{stt_provider} will connect after call establishment")
 
             if os.environ.get("DEEPGRAM_EOT_SECONDS", None) is not None:
                 try:
@@ -166,19 +167,19 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
                 except ValueError:
                     logger.warning(f"Invalid DEEPGRAM_EAGER_EOT_SECONDS value: {os.environ.get('DEEPGRAM_EAGER_EOT_SECONDS')} (must be a number)")
 
-        elif STT_PROVIDER == 'whisper_vad':
-            stt_config['model_size'] = STT_MODEL_SIZE
-            logger.info(f"Whisper VAD configuration prepared (model: {STT_MODEL_SIZE})")
+        elif stt_provider == 'whisper_vad':
+            stt_config['model_size'] = stt_model_size
+            logger.info(f"Whisper VAD configuration prepared (model: {stt_model_size})")
        
 
         # Create baresip bot with MindRoot integration and STT provider
         bot = MindRootSIPBotV2(
-            user=SIP_USER,
-            password=SIP_PASSWORD,
-            gateway=SIP_GATEWAY,
-            audio_dir=AUDIO_DIR,
+            user=sip_user,
+            password=sip_password,
+            gateway=sip_gateway,
+            audio_dir=audio_dir,
             on_utterance_callback=on_utterance_callback,
-            stt_provider=STT_PROVIDER,
+            stt_provider=stt_provider,
             stt_config=stt_config,
             context=context
         )
@@ -199,7 +200,7 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
         bot.call(destination)
         
         # Wait for call to be established (with timeout)
-        max_wait = CALL_ESTABLISH_TIMEOUT  # seconds
+        max_wait = call_establish_timeout  # seconds
         wait_count = 0.0
         while not bot.call_established and wait_count < max_wait:
             await asyncio.sleep(0.2)
@@ -214,7 +215,7 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
                 "status": "call_established",
                 "log_id": context.log_id,
                 "destination": destination,
-                "stt_provider": STT_PROVIDER,
+                "stt_provider": stt_provider,
                 "session_created_at": session.created_at.isoformat()
             }
         else:

@@ -16,12 +16,6 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Configuration from environment
-SIP_GATEWAY = os.getenv('SIP_GATEWAY', 'no sip gateway')
-SIP_USER = os.getenv('SIP_USER', 'no sip user')
-SIP_PASSWORD = os.getenv('SIP_PASSWORD', 'no sip password')
-WHISPER_MODEL = os.getenv('WHISPER_MODEL', 'small')
-AUDIO_DIR = os.getenv('AUDIO_DIR', os.path.expanduser('.'))
 
 @service()
 async def dial_service(destination: str, context=None) -> Dict[str, Any]:
@@ -47,6 +41,14 @@ async def dial_service(destination: str, context=None) -> Dict[str, Any]:
     if not context or not context.log_id:
         raise ValueError("Context with log_id is required for SIP calls")
         
+    # Read environment variables inside the function where context is available
+    # This allows context_environ to provide per-agent overrides
+    sip_gateway = os.getenv('SIP_GATEWAY', 'no sip gateway')
+    sip_user = os.getenv('SIP_USER', 'no sip user')
+    sip_password = os.getenv('SIP_PASSWORD', 'no sip password')
+    whisper_model = os.getenv('WHISPER_MODEL', 'small')
+    audio_dir = os.getenv('AUDIO_DIR', os.path.expanduser('.'))
+
     logger.info(f"Initiating SIP call to {destination} for session {context.log_id}")
     
     try:
@@ -78,12 +80,12 @@ async def dial_service(destination: str, context=None) -> Dict[str, Any]:
         
         # Create baresip bot with MindRoot integration
         bot = MindRootSIPBot(
-            user=SIP_USER,
-            password=SIP_PASSWORD,
-            gateway=SIP_GATEWAY,
-            audio_dir=AUDIO_DIR,
+            user=sip_user,
+            password=sip_password,
+            gateway=sip_gateway,
+            audio_dir=audio_dir,
             on_utterance_callback=on_utterance_callback,
-            model_size=WHISPER_MODEL,
+            model_size=whisper_model,
             context=context
         )
         
@@ -282,9 +284,5 @@ async def quit(context=None):
     
     return {"status": "sip_plugin_shutdown_complete"}
 
-# Service registration verification
+# Service registration verification  
 logger.info("MindRoot SIP plugin services loaded")
-logger.info(f"SIP Gateway: {SIP_GATEWAY}")
-logger.info(f"SIP User: {SIP_USER}")
-logger.info(f"Whisper Model: {WHISPER_MODEL}")
-logger.info(f"Audio Directory: {AUDIO_DIR}")
