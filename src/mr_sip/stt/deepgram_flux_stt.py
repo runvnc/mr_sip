@@ -45,7 +45,7 @@ def print_deepgram_event(event_type: str, data: dict):
 class DeepgramFluxSTT(BaseSTTProvider):
     """Deepgram Flux streaming STT provider with conversational turn detection."""
 
-    def __init__(self, api_key: str, sample_rate: int=16000, language: str='en', model: str='flux-general-en', eager_eot_threshold: float=0.7, eot_threshold: float=0.8, eot_timeout_ms: int=5000):
+    def __init__(self, api_key: str, sample_rate: int=16000, encoding: str='linear16', language: str='en', model: str='flux-general-en', eager_eot_threshold: float=0.7, eot_threshold: float=0.8, eot_timeout_ms: int=5000):
         """
         Initialize Deepgram Flux STT provider.
         
@@ -53,6 +53,8 @@ class DeepgramFluxSTT(BaseSTTProvider):
             api_key: Deepgram API key
             sample_rate: Audio sample rate in Hz (default: 16000)
             language: Language code (default: 'en')
+            encoding: Audio encoding format - 'linear16' for PCM or 'mulaw' for ulaw
+                      (default: 'linear16')
             model: Deepgram model to use (default: 'flux-general-en')
             eager_eot_threshold: Threshold for EagerEndOfTurn events (0.3-0.9, default: 0.7 - BALANCED)
             eot_threshold: Threshold for EndOfTurn events (0.5-0.9, default: 0.8 - BALANCED)
@@ -61,6 +63,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         super().__init__(sample_rate=sample_rate)
         self.api_key = api_key
         self.language = language
+        self.encoding = encoding
         self.model = model
         self.eager_eot_threshold = eager_eot_threshold
         self.eot_threshold = eot_threshold
@@ -105,7 +108,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         try:
             logger.info(f'Connecting to Deepgram Flux API (model: {self.model})...')
             self.client = DeepgramClient(api_key=self.api_key)
-            connection_params = {'model': self.model, 'encoding': 'linear16', 'sample_rate': self.sample_rate, 'eager_eot_threshold': self.eager_eot_threshold, 'eot_threshold': self.eot_threshold}
+            connection_params = {'model': self.model, 'encoding': self.encoding, 'sample_rate': self.sample_rate, 'eager_eot_threshold': self.eager_eot_threshold, 'eot_threshold': self.eot_threshold}
             if self.eot_timeout_ms is not None:
                 connection_params['eot_timeout_ms'] = self.eot_timeout_ms
             self.is_running = True
@@ -119,12 +122,17 @@ class DeepgramFluxSTT(BaseSTTProvider):
             raise
 
     def _setup_debug_wav_file(self):
-        """Setup WAV file for debugging audio sent to Deepgram."""
+        """Setup WAV file for debugging audio sent to Deepgram.
+        
+        Note: For mulaw encoding, the debug file will contain raw mulaw bytes,
+        not a proper WAV file. This is intentional for debugging purposes.
+        """
         try:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            self.debug_wav_path = f'/tmp/deepgram_audio_{timestamp}.wav'
+            ext = 'wav' if self.encoding == 'linear16' else 'ulaw'
+            self.debug_wav_path = f'/tmp/deepgram_audio_{timestamp}.{ext}'
             self.debug_wav_file = wave.open(self.debug_wav_path, 'wb')
-            self.debug_wav_file.setnchannels(1)
+            self.debug_wav_file.setnchannels(1) 
             self.debug_wav_file.setsampwidth(2)
             self.debug_wav_file.setframerate(self.sample_rate)
             print_deepgram_event('AudioDebugFile', {'status': 'created', 'path': self.debug_wav_path})
@@ -236,7 +244,10 @@ class DeepgramFluxSTT(BaseSTTProvider):
             self.connection = None
             self.client = None
             self.listen_thread = None
-            self.audio_buffer.clear()
+            # Only clear numpy audio buffer, not raw bytes buffer
+            if hasattr(self, 'audio_buffer'):
+                self.audio_buffer.clear()
+            self.raw_audio_buffer = []
             logger.info('Deepgram Flux STT provider stopped and cleaned up')
         except Exception as e:
             logger.error(f'Error during stop cleanup: {e}')
@@ -275,6 +286,44 @@ class DeepgramFluxSTT(BaseSTTProvider):
                 logger.error(f'Error sending audio to Deepgram Flux: {e}')
                 logger.warning('🔄 TRIGGERING BUFFERED RECONNECTION after send error!')
                 self._schedule_coroutine_threadsafe(self._reconnect_with_buffer())
+
+    async def add_audio_bytes(self, audio_bytes: bytes) -> None:
+        """Send raw audio bytes to Deepgram Flux.
+        
+        This method is optimized for mulaw encoding where we receive raw bytes
+        directly from PySIP and can pass them through without conversion.
+        
+        Args:
+            audio_bytes: Raw audio bytes (mulaw or PCM depending on encoding setting)
+        """
+        # Buffer for reconnection
+        if not hasattr(self, 'raw_audio_buffer'):
+            self.raw_audio_buffer = []
+        self.raw_audio_buffer.append(audio_bytes)
+        if len(self.raw_audio_buffer) > 20:  # ~400ms at 20ms frames
+            self.raw_audio_buffer.pop(0)
+        
+        if not self.is_running or not self.connection:
+            logger.debug('Cannot send audio: not connected to Deepgram Flux')
+            logger.warning('🔄 TRIGGERING BUFFERED RECONNECTION - Connection lost!')
+            self._schedule_coroutine_threadsafe(self._reconnect_with_buffer())
+            return
+        
+        try:
+            self.connection.send_media(audio_bytes)
+            self.total_audio_sent += len(audio_bytes)
+            
+            if self.debug_wav_file:
+                try:
+                    self.debug_wav_file.writeframes(audio_bytes)
+                except Exception as e:
+                    logger.error(f'Failed to write to debug file: {e}')
+            
+            logger.debug(f'Sent {len(audio_bytes)} raw bytes to Deepgram Flux (total: {self.total_audio_sent})')
+        except Exception as e:
+            logger.error(f'Error sending raw audio to Deepgram Flux: {e}')
+            logger.warning('🔄 TRIGGERING BUFFERED RECONNECTION after send error!')
+            self._schedule_coroutine_threadsafe(self._reconnect_with_buffer())
 
     def _on_open(self, *args) -> None:
         """Handle connection open event."""
@@ -440,6 +489,16 @@ class DeepgramFluxSTT(BaseSTTProvider):
                         await asyncio.sleep(0.01)
                     else:
                         logger.error(f'Connection lost during buffer send at chunk {i}')
+                        break
+            # Also send raw audio buffer if using mulaw
+            if hasattr(self, 'raw_audio_buffer') and len(self.raw_audio_buffer) > 0:
+                logger.warning(f'Sending {len(self.raw_audio_buffer)} buffered raw audio chunks...')
+                for i, chunk in enumerate(self.raw_audio_buffer):
+                    if self.connection and self.connection_healthy:
+                        self.connection.send_media(chunk)
+                        await asyncio.sleep(0.01)
+                    else:
+                        logger.error(f'Connection lost during raw buffer send at chunk {i}')
                         break
             else:
                 logger.warning('No buffered audio - connection ready for new audio')

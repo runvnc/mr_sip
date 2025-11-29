@@ -19,6 +19,7 @@ from datetime import datetime
 from typing import Optional, List, Tuple
 import audioop
 from collections import deque
+import threading
 import array
 
 logger = logging.getLogger(__name__)
@@ -329,6 +330,14 @@ class S2SBufferedRecorder:
         self._in_segments: List[Tuple[int, bytes]] = []
         self._out_segments: List[Tuple[int, bytes]] = []
 
+        # Track what's been flushed to disk
+        self._flushed_in_count: int = 0
+        self._flushed_out_count: int = 0
+        
+        # File handles for incremental writing (opened on first flush)
+        self._combined_file: Optional[any] = None
+        self._flush_task: Optional[asyncio.Task] = None
+
         # Incoming: support both sequential and RTP-timestamp-based placement
         self._in_pos_samples: int = 0
         self._in_base_ts: Optional[int] = None
@@ -350,6 +359,9 @@ class S2SBufferedRecorder:
             return
         self._is_recording = True
 
+        # Start background flush task
+        self._flush_task = asyncio.create_task(self._flush_loop())
+
     async def stop_recording(self) -> None:
         """Finalize recording by building WAV files from buffered segments."""
         if not self._is_recording:
@@ -357,9 +369,24 @@ class S2SBufferedRecorder:
         self._is_recording = False
 
         try:
-            self._build_wavs()
+            # Cancel flush task
+            if self._flush_task:
+                self._flush_task.cancel()
+                try:
+                    await self._flush_task
+                except asyncio.CancelledError:
+                    pass
+            
+            # Final flush of any remaining segments
+            await asyncio.to_thread(self._flush_segments)
+            
+            # Fix WAV header with correct size and close file
+            await asyncio.to_thread(self._finalize_wav)
+            
+            # Build separate files if requested
+            if self.record_separate:
+                await asyncio.to_thread(self._build_separate_wavs)
         except Exception as e:
-            logger.error(f"Error finalizing buffered S2S recording: {e}")
             import traceback
 
             logger.error(traceback.format_exc())
@@ -440,6 +467,165 @@ class S2SBufferedRecorder:
 
     def interrupt_incoming(self) -> None:  # compatibility no-op
         """Compatibility hook; no special handling needed for buffered mode."""
+
+    # Incremental flush implementation ----------------------------------------
+
+    async def _flush_loop(self):
+        """Background task that flushes buffered segments to disk periodically."""
+        try:
+            while self._is_recording:
+                await asyncio.sleep(15)  # Flush every 15 seconds
+                if self._is_recording:  # Check again after sleep
+                    await asyncio.to_thread(self._flush_segments)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error in flush loop: {e}")
+
+    def _ensure_wav_open(self):
+        """Open the combined WAV file if not already open, write header with placeholder size."""
+        if self._combined_file is not None:
+            return
+        
+        if self.record_combined:
+            self._combined_file = open(str(self.combined_path), 'wb')
+            # Write WAV header with placeholder sizes (will fix on each flush)
+            # RIFF header
+            self._combined_file.write(b'RIFF')
+            self._combined_file.write(b'\x00\x00\x00\x00')  # Placeholder for file size - 8
+            self._combined_file.write(b'WAVE')
+            # fmt chunk
+            self._combined_file.write(b'fmt ')
+            self._combined_file.write((16).to_bytes(4, 'little'))  # fmt chunk size
+            self._combined_file.write((1).to_bytes(2, 'little'))   # PCM format
+            self._combined_file.write((2).to_bytes(2, 'little'))   # 2 channels (stereo)
+            self._combined_file.write((self.sample_rate).to_bytes(4, 'little'))  # sample rate
+            self._combined_file.write((self.sample_rate * 2 * 2).to_bytes(4, 'little'))  # byte rate
+            self._combined_file.write((4).to_bytes(2, 'little'))   # block align (2 channels * 2 bytes)
+            self._combined_file.write((16).to_bytes(2, 'little'))  # bits per sample
+            # data chunk
+            self._combined_file.write(b'data')
+            self._combined_file.write(b'\x00\x00\x00\x00')  # Placeholder for data size
+            self._combined_file.flush()
+            self._total_samples_written = 0
+
+    def _flush_segments(self):
+        """Flush new segments to disk. Called from thread pool."""
+        if not self.record_combined:
+            return
+        
+        # Get new segments since last flush
+        new_in = self._in_segments[self._flushed_in_count:]
+        new_out = self._out_segments[self._flushed_out_count:]
+        
+        if not new_in and not new_out:
+            return
+        
+        self._ensure_wav_open()
+        
+        if self._combined_file is None:
+            return
+        
+        # Find the range of samples we need to write
+        all_new_segments = []
+        for start, ulaw_bytes in new_in:
+            all_new_segments.append(('in', start, ulaw_bytes))
+        for start, ulaw_bytes in new_out:
+            all_new_segments.append(('out', start, ulaw_bytes))
+        
+        if not all_new_segments:
+            return
+        
+        # Find max sample position needed
+        max_sample = max(start + len(buf) for _, start, buf in all_new_segments)
+        
+        # Extend our written range if needed
+        if max_sample > self._total_samples_written:
+            samples_to_write = max_sample - self._total_samples_written
+            
+            # Build stereo buffer for new samples (initialize with silence)
+            left = array.array("h", [0] * samples_to_write)
+            right = array.array("h", [0] * samples_to_write)
+            
+            # Fill in audio from segments
+            for channel, start, ulaw_bytes in all_new_segments:
+                pcm = audioop.ulaw2lin(ulaw_bytes, 2)
+                frame_count = len(ulaw_bytes)
+                target = left if channel == 'in' else right
+                
+                for i in range(frame_count):
+                    idx = start + i - self._total_samples_written
+                    if 0 <= idx < samples_to_write:
+                        sample_bytes = pcm[2 * i : 2 * i + 2]
+                        target[idx] = int.from_bytes(sample_bytes, "little", signed=True)
+            
+            # Interleave and write
+            frames = bytearray()
+            for i in range(samples_to_write):
+                frames += left[i].to_bytes(2, "little", signed=True)
+                frames += right[i].to_bytes(2, "little", signed=True)
+            
+            self._combined_file.write(frames)
+            self._combined_file.flush()
+            self._total_samples_written = max_sample
+        
+        # Update flush counts
+        self._flushed_in_count = len(self._in_segments)
+        self._flushed_out_count = len(self._out_segments)
+        
+        # Update header with current size so file is always valid
+        self._update_wav_header()
+        
+        logger.debug(f"Flushed segments: {len(new_in)} in, {len(new_out)} out, total samples: {self._total_samples_written}")
+
+    def _update_wav_header(self):
+        """Update WAV header with current sizes (called on each flush)."""
+        if self._combined_file is None:
+            return
+        
+        try:
+            # Calculate sizes
+            data_size = self._total_samples_written * 4  # stereo 16-bit = 4 bytes per sample
+            file_size = data_size + 36  # WAV header is 44 bytes, minus 8 for RIFF header = 36
+            
+            # Remember current position
+            current_pos = self._combined_file.tell()
+            
+            # Seek to RIFF size field (offset 4) and write
+            self._combined_file.seek(4)
+            self._combined_file.write(file_size.to_bytes(4, 'little'))
+            
+            # Seek to data size field (offset 40) and write
+            self._combined_file.seek(40)
+            self._combined_file.write(data_size.to_bytes(4, 'little'))
+            
+            # Seek back to end for next append
+            self._combined_file.seek(current_pos)
+            self._combined_file.flush()
+        except Exception as e:
+            logger.error(f"Error updating WAV header: {e}")
+
+    def _finalize_wav(self):
+        """Final header update and close file."""
+        if self._combined_file is None:
+            return
+        
+        try:
+            # Final header update
+            self._update_wav_header()
+            
+            self._combined_file.close()
+            self._combined_file = None
+            
+            logger.info(
+                f"Buffered S2S combined recording saved to {self.combined_path} "
+                f"(samples={self._total_samples_written})"
+            )
+        except Exception as e:
+            logger.error(f"Error finalizing WAV: {e}")
+            if self._combined_file:
+                self._combined_file.close()
+                self._combined_file = None
 
     # Internal helpers --------------------------------------------------------
 

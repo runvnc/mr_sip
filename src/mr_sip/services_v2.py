@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-MindRoot SIP Plugin - Internal Services (V2 with STT Provider Support)
+MindRoot SIP Plugin - Internal Services (V2 with PySIP + Deepgram STT)
 
-This version supports the new STT provider interface while maintaining
-backward compatibility with the original implementation.
+This version uses PySIP for SIP/RTP handling instead of baresip+JACK.
+Supports Deepgram Flux and other STT providers.
 """
 
 import os
 import asyncio
 import logging
+from datetime import datetime
 from typing import Dict, Any
 from lib.providers.services import service, service_manager
 from lib.providers.hooks import hook
@@ -24,10 +25,10 @@ logger = logging.getLogger(__name__)
 @service()
 async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
     """
-    Service to initiate SIP calls using baresip with STT provider support.
+    Service to initiate SIP calls using PySIP with Deepgram STT.
     
-    This is the V2 version that uses the abstract STT provider interface,
-    allowing easy switching between Deepgram, Whisper, and future providers.
+    This V2 version uses PySIP for SIP/RTP (replacing baresip+JACK)
+    and supports the abstract STT provider interface.
     
     Args:
         destination: Phone number or SIP URI to call
@@ -37,26 +38,32 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
         dict: Session information including log_id, destination, and status
 
     Environment Variables:
+        SIP_GATEWAY: SIP gateway server (format: "host:port")
+        SIP_USER: SIP username
+        SIP_PASSWORD: SIP password
         STT_PROVIDER: 'deepgram_flux', 'deepgram', or 'whisper_vad' (default: 'deepgram_flux')
         DEEPGRAM_API_KEY: Required if using Deepgram
-        STT_MODEL_SIZE: Whisper model size if using Whisper (default: 'small')
+        SIP_ENABLE_RECORDING: Enable call recording (default: false)
+        SIP_RECORDING_DIR: Directory for recordings (default: data/calls)
+        SIP_RECORD_SEPARATE: Save separate incoming/outgoing files (default: false)
     """
     if not context or not context.log_id:
         raise ValueError("Context with log_id is required for SIP calls")
         
-    # Read environment variables inside the function where context is available
-    # This allows context_environ to provide per-agent overrides
+    # Read environment variables
     sip_gateway = os.getenv('SIP_GATEWAY', 'no sip gateway')
     sip_user = os.getenv('SIP_USER', 'nouser')
     sip_password = os.getenv('SIP_PASSWORD', 'no sip password')
     stt_provider = os.getenv('STT_PROVIDER', 'deepgram_flux')
-    stt_model_size = os.getenv('STT_MODEL_SIZE', 'small')
     deepgram_api_key = os.getenv('DEEPGRAM_API_KEY', '')
     audio_dir = os.getenv('AUDIO_DIR', os.path.expanduser('.'))
     require_deepgram = os.getenv('REQUIRE_DEEPGRAM', 'true').lower() in ('true', '1', 'yes', 'on')
     call_establish_timeout = int(os.getenv('SIP_CALL_ESTABLISH_TIMEOUT', '120'))
+    enable_recording = os.getenv('SIP_ENABLE_RECORDING', 'false').lower() == 'true'
+    recording_dir = os.getenv('SIP_RECORDING_DIR', 'data/calls')
+    record_separate = os.getenv('SIP_RECORD_SEPARATE', 'false').lower() == 'true'
 
-    logger.info(f"Initiating SIP call to {destination} for session {context.log_id}")
+    logger.info(f"Initiating PySIP call to {destination} for session {context.log_id}")
     logger.info(f"Using STT provider: {stt_provider}")
     
     # Enforce Deepgram requirement if configured
@@ -96,6 +103,12 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
             sys.exit(1)
     
     try:
+        # Strip non-alphanumeric from destination (keep @)
+        destination = ''.join(c for c in destination if c.isalnum() or c == '@')
+        # Add country code if needed
+        if destination.isdigit() and len(destination) == 10:
+            destination = '1' + destination
+        
         # Verbose logging for Deepgram initialization
         if stt_provider in ['deepgram', 'deepgram_flux']:
             logger.info("\n" + "="*80)
@@ -106,29 +119,18 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
             logger.info(f"Session: {context.log_id}")
             logger.info("="*80)
         
-        # Check/setup sndfile module
-        if not setup_sndfile_module():
-            logger.warning("sndfile module setup failed, audio recording may not work")
-        
         # Create utterance callback that sends messages to MindRoot agent
         async def on_utterance_callback(text: str, utterance_num: int, timestamp: float, ctx, is_eager: bool = False):
             """Callback for when complete utterances are transcribed"""
             try:
                 logger.info(f"SIP_DEBUG Transcribed utterance #{utterance_num}: {text}")
                 
-                # Only cancel active responses if this is NOT an eager EOT
-                # For eager EOT, we want the agent to start responding immediately
-                # For final EOT, the SIP client already handled duplicate detection
-                #if not is_eager:
+                # Cancel active responses
                 res = await service_manager.cancel_and_wait(ctx.log_id, ctx.username)
                 logger.info(f"SIP_DEBUG cancel result: {res}")
-                #else:
-                #    logger.info(f"SIP_DEBUG Skipping cancel for eager EOT - letting agent start responding")
                 
                 # Send the user message to backend
-                await service_manager.backend_user_message(
-                    message=text
-                )
+                await service_manager.backend_user_message(message=text)
                 logger.info(f"SIP_DEBUG Sending message to agent for session {ctx.log_id}")
                 await service_manager.send_message_to_agent(
                     session_id=ctx.log_id,
@@ -143,12 +145,8 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
         stt_config = {}
         
         if stt_provider in ['deepgram', 'deepgram_flux']:
-            # Don't put api_key in stt_config - it will be read from environment by factory
-            # stt_config['api_key'] = DEEPGRAM_API_KEY  # Removed to avoid duplicate
             logger.info(f"{stt_provider} configuration prepared")
-            # Skip test connection - will connect after call establishment
-            logger.info(f"{stt_provider} will connect after call establishment")
-
+            
             if os.environ.get("DEEPGRAM_EOT_SECONDS", None) is not None:
                 try:
                     eot = float(os.environ.get("DEEPGRAM_EOT_SECONDS"))
@@ -156,7 +154,7 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
                         stt_config['eot_threshold'] = eot
                         logger.info(f"Using DEEPGRAM_EOT_SECONDS={eot}")
                 except ValueError:
-                    logger.warning(f"Invalid DEEPGRAM_EOT_SECONDS value: {os.environ.get('DEEPGRAM_EOT_SECONDS')} (must be a number)")
+                    logger.warning(f"Invalid DEEPGRAM_EOT_SECONDS value")
 
             if os.environ.get("DEEPGRAM_EAGER_EOT_SECONDS", None) is not None:
                 try:
@@ -165,14 +163,14 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
                         stt_config['eager_eot_threshold'] = eager_eot
                         logger.info(f"Using DEEPGRAM_EAGER_EOT_SECONDS={eager_eot}")
                 except ValueError:
-                    logger.warning(f"Invalid DEEPGRAM_EAGER_EOT_SECONDS value: {os.environ.get('DEEPGRAM_EAGER_EOT_SECONDS')} (must be a number)")
+                    logger.warning(f"Invalid DEEPGRAM_EAGER_EOT_SECONDS value")
 
         elif stt_provider == 'whisper_vad':
+            stt_model_size = os.getenv('STT_MODEL_SIZE', 'small')
             stt_config['model_size'] = stt_model_size
             logger.info(f"Whisper VAD configuration prepared (model: {stt_model_size})")
-       
-
-        # Create baresip bot with MindRoot integration and STT provider
+        
+        # Create PySIP bot with Deepgram STT
         bot = MindRootSIPBotV2(
             user=sip_user,
             password=sip_password,
@@ -181,32 +179,30 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
             on_utterance_callback=on_utterance_callback,
             stt_provider=stt_provider,
             stt_config=stt_config,
-            context=context
+            context=context,
+            enable_recording=enable_recording,
+            recording_dir=recording_dir,
+            record_separate=record_separate
         )
-        
-        # Wait for bot to be ready
-        bot.wait_until_ready()
         
         # Create SIP session
         session_manager = get_session_manager()
         session = await session_manager.create_session(
             log_id=context.log_id,
             destination=destination,
-            baresip_bot=bot
+            baresip_bot=bot  # Keep parameter name for compatibility
         )
         
-        # Initiate the call
-        logger.info(f"Calling {destination}...")
-        bot.call(destination)
+        # Start the call in a task
+        call_task = asyncio.create_task(bot.make_call(destination))
         
-        # Wait for call to be established (with timeout)
-        max_wait = call_establish_timeout  # seconds
-        wait_count = 0.0
-        while not bot.call_established and wait_count < max_wait:
-            await asyncio.sleep(0.2)
-            wait_count += 0.2
+        # Wait for call to be answered (with timeout)
+        logger.info(f"Waiting for call to be answered (timeout: {call_establish_timeout}s)...")
+        
+        try:
+            await asyncio.wait_for(bot.call_answered.wait(), timeout=call_establish_timeout)
             
-        if bot.call_established:
+            # Call is answered and ready
             session.is_active = True
             await session.start_audio_sender()
             logger.info(f"Call established to {destination}")
@@ -216,22 +212,34 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
                 "log_id": context.log_id,
                 "destination": destination,
                 "stt_provider": stt_provider,
-                "session_created_at": session.created_at.isoformat()
+                "mode": "pysip_v2",
+                "session_created_at": session.created_at.isoformat(),
+                "recording_enabled": enable_recording
             }
-        else:
-            # Call failed to establish
+            
+        except asyncio.TimeoutError:
+            # Call not answered in time
             await session_manager.end_session(context.log_id)
-            logger.error(f"Failed to establish call to {destination} within {max_wait}s")
+            logger.error(f"Call to {destination} not answered within {call_establish_timeout}s")
+            
+            if not call_task.done():
+                call_task.cancel()
+                try:
+                    await call_task
+                except asyncio.CancelledError:
+                    pass
             
             return {
                 "status": "call_failed",
                 "log_id": context.log_id,
                 "destination": destination,
-                "error": "Call failed to establish within timeout"
+                "error": "Call not answered within timeout"
             }
             
     except Exception as e:
         logger.error(f"Error in dial_service_v2: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return {
             "status": "error",
             "log_id": context.log_id if context else None,
@@ -267,14 +275,13 @@ async def end_call_service_v2(context=None) -> Dict[str, Any]:
             transcript = ""
             
             if session.baresip_bot.call_start_time:
-                from datetime import datetime
                 call_duration = (datetime.now() - session.baresip_bot.call_start_time).total_seconds()
             transcript = session.baresip_bot.get_transcript()
             
-            # Use the new hangup method on the bot itself
+            # Hangup the call
             await session.baresip_bot.hangup_call()
             
-            # Clean up the session from the manager
+            # Clean up the session
             await session_manager.end_session(context.log_id)
             
             logger.info(f"Successfully ended V2 SIP call for session {context.log_id}")
@@ -282,7 +289,8 @@ async def end_call_service_v2(context=None) -> Dict[str, Any]:
                 "status": "call_ended",
                 "log_id": context.log_id,
                 "call_duration_seconds": call_duration,
-                "transcript": transcript
+                "transcript": transcript,
+                "mode": "pysip_v2"
             }
         else:
             return {
@@ -292,8 +300,117 @@ async def end_call_service_v2(context=None) -> Dict[str, Any]:
             
     except Exception as e:
         logger.error(f"Error in end_call_service_v2: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return {
             "status": "error",
             "log_id": context.log_id if context else None,
             "error": str(e)
         }
+
+
+@service()
+async def sip_audio_out_chunk(audio_chunk: bytes, timestamp=None, context=None) -> bool:
+    """
+    Service to route TTS audio chunks to active SIP call.
+    
+    This is called by TTS services (mr_eleven_stream, etc.) to send
+    audio to the phone call.
+    
+    Args:
+        audio_chunk: Raw audio data bytes
+        timestamp: Optional timestamp for audio pacing
+        context: MindRoot context (required for session identification)
+    
+    Returns:
+        bool: True if audio was successfully queued, False otherwise
+    """
+    logger.debug(f"sip_audio_out_chunk called with {len(audio_chunk)} bytes")
+    
+    if not context or not context.log_id:
+        logger.warning("sip_audio_out_chunk called without context or log_id")
+        return False
+        
+    try:
+        session_manager = get_session_manager()
+        session = await session_manager.get_session(context.log_id)
+        
+        if session and session.is_active:
+            if session.halt_audio_out:
+                logger.debug("Audio halted - not outputting chunk")
+                return False
+            else:
+                await session.send_audio(audio_chunk, timestamp=timestamp)
+                logger.debug(f"Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes")
+                return True
+        else:
+            logger.warning(f"No active SIP session found for log_id {context.log_id}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error in sip_audio_out_chunk: {e}")
+        return False
+
+
+@service()
+async def sip_clear_audio_queue(context=None) -> Dict[str, Any]:
+    """
+    Service to clear all queued audio for interruption.
+    
+    Called when user interruption is detected to immediately
+    stop playing the current response.
+    
+    Args:
+        context: MindRoot context (required for session identification)
+    
+    Returns:
+        dict: Status information
+    """
+    if not context or not context.log_id:
+        return {
+            "status": "error",
+            "error": "Context with log_id is required"
+        }
+    
+    try:
+        session_manager = get_session_manager()
+        session = await session_manager.get_session(context.log_id)
+        
+        if session and session.is_active:
+            if session.baresip_bot:
+                session.baresip_bot.clear_audio_queue()
+            logger.info(f"Cleared audio queue for session {context.log_id}")
+            return {
+                "status": "cleared",
+                "log_id": context.log_id
+            }
+        else:
+            return {
+                "status": "no_active_session",
+                "log_id": context.log_id
+            }
+    except Exception as e:
+        logger.error(f"Error in sip_clear_audio_queue: {e}")
+        return {
+            "status": "error",
+            "log_id": context.log_id,
+            "error": str(e)
+        }
+
+
+@hook()
+async def quit(context=None):
+    """Cleanup hook called when MindRoot is shutting down"""
+    logger.info("MindRoot SIP plugin (V2) shutting down...")
+    
+    try:
+        session_manager = get_session_manager()
+        await session_manager.cleanup_all_sessions()
+        logger.info("All SIP sessions cleaned up")
+    except Exception as e:
+        logger.error(f"Error during SIP plugin shutdown: {e}")
+    
+    return {"status": "sip_plugin_v2_shutdown_complete"}
+
+
+logger.info("MindRoot SIP plugin V2 (PySIP + Deepgram) services loaded")

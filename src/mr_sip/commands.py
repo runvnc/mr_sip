@@ -18,31 +18,50 @@ import traceback
 import time
 import json
 
-SIP_PROVIDER = os.getenv('SIP_PROVIDER', 'deepgram').lower()
-REQUIRE_DEEPGRAM = os.getenv('REQUIRE_DEEPGRAM', 'true').lower() in ('true', '1', 'yes', 'on')
-STT_PROVIDER = os.getenv('STT_PROVIDER', 'deepgram' if REQUIRE_DEEPGRAM else 'whisper_vad')
-#USE_V2 = V2_AVAILABLE and os.getenv('SIP_USE_V2', 'true').lower() in ('true', '1', 'yes', 'on')
-USE_V2 = True
+# Lazy imports for S2S and V2 services - will be imported when needed
+_s2s_services = None
+_v2_services = None
 
-if SIP_PROVIDER == 's2s':
+def _get_sip_config(context=None):
+    """Get SIP configuration from context or environment."""
+    sip_provider = os.getenv('SIP_PROVIDER', 'deepgram').lower()
+    require_deepgram = os.getenv('REQUIRE_DEEPGRAM', 'true').lower() in ('true', '1', 'yes', 'on')
+    stt_provider = os.getenv('STT_PROVIDER', 'deepgram' if require_deepgram else 'whisper_vad')
+    return sip_provider, require_deepgram, stt_provider
+
+def _get_s2s_services():
+    """Lazy load S2S services."""
+    global _s2s_services
+    if _s2s_services is None:
+        try:
+            from .services_s2s import dial_service as dial_service_s2s, end_call_service as end_call_service_s2s
+            _s2s_services = (dial_service_s2s, end_call_service_s2s, True)
+        except ImportError:
+            _s2s_services = (None, None, False)
+    return _s2s_services
+
+def _get_v2_services():
+    """Lazy load V2 services."""
+    global _v2_services
+    if _v2_services is None:
+        try:
+            from .services_v2 import dial_service_v2, end_call_service_v2
+            _v2_services = (dial_service_v2, end_call_service_v2, True)
+        except ImportError:
+            _v2_services = (None, None, False)
+    return _v2_services
+
+# Check S2S availability at module load for logging purposes only
+def _check_s2s_available():
     try:
         from .services_s2s import dial_service as dial_service_s2s, end_call_service as end_call_service_s2s
-        S2S_AVAILABLE = True
+        return True
     except ImportError:
-        S2S_AVAILABLE = False
-else:
-    try:
-        from .services_v2 import dial_service_v2, end_call_service_v2
-        V2_AVAILABLE = True
-    except ImportError:
-        V2_AVAILABLE = False
+        return False
 
 # Import configuration
 logger = logging.getLogger(__name__)
-logger.info(f"Commands module loaded with SIP_PROVIDER={SIP_PROVIDER}")
-
-# Log configuration on module load
-logger.info(f"SIP Plugin Configuration: V2={'enabled' if USE_V2 else 'disabled'}, STT_PROVIDER={STT_PROVIDER}, REQUIRE_DEEPGRAM={REQUIRE_DEEPGRAM}")
+logger.info("Commands module loaded - SIP config will be read from context/environment at runtime")
 
 @command()
 async def call(destination: str, context=None) -> str:
@@ -87,6 +106,10 @@ async def call(destination: str, context=None) -> str:
         
         logger.info(f"Call command initiated to {destination} for session {context.log_id}")
         
+        # Get config at runtime from context
+        sip_provider, require_deepgram, stt_provider = _get_sip_config(context)
+        logger.info(f"SIP config: provider={sip_provider}, stt={stt_provider}")
+        
         # strip punctuation from destination
         destination = ''.join(filter(str.isalnum, destination + '@'))
         # if it's just area code plus number, add default country code
@@ -94,8 +117,10 @@ async def call(destination: str, context=None) -> str:
             destination = '1' + destination
         
         # Use the appropriate dial service based on SIP_PROVIDER
-        if SIP_PROVIDER == 's2s' and S2S_AVAILABLE:
+        dial_service_s2s, end_call_service_s2s, s2s_available = _get_s2s_services()
+        if sip_provider == 's2s' and s2s_available:
             logger.info(f"Using S2S implementation for call to {destination}")
+            
             try:
                 result = await asyncio.wait_for(
                     dial_service_s2s(destination=destination, context=context),
@@ -105,8 +130,10 @@ async def call(destination: str, context=None) -> str:
                 logger.error(f"S2S dial service timed out after 60 seconds for destination {destination}")
                 return f"Call initiation timed out after 60 seconds. The dial service did not respond."
         else:
+            dial_service_v2, end_call_service_v2, v2_available = _get_v2_services()
             # Use V2 implementation
-            logger.info(f"Using V2 implementation with STT provider: {STT_PROVIDER}")
+            logger.info(f"Using V2 implementation with STT provider: {stt_provider}")
+            
             try:
                 result = await asyncio.wait_for(
                     dial_service_v2(destination=destination, context=context),
@@ -156,11 +183,15 @@ async def hangup(context=None) -> str:
         
         logger.info(f"Hangup command initiated for session {context.log_id}")
         
+        # Get config at runtime from context
+        sip_provider, require_deepgram, stt_provider = _get_sip_config(context)
+        
         # Use the appropriate end call service based on version
-        if SIP_PROVIDER == 's2s' and S2S_AVAILABLE:
+        dial_service_s2s, end_call_service_s2s, s2s_available = _get_s2s_services()
+        dial_service_v2, end_call_service_v2, v2_available = _get_v2_services()
+        
+        if sip_provider == 's2s' and s2s_available:
             result = await end_call_service_s2s(context=context)
-        elif USE_V2:
-            result = await end_call_service_v2(context=context)
         else:
             result = await end_call_service(context=context)
         
