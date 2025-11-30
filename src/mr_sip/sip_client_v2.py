@@ -267,12 +267,17 @@ class MindRootSIPBotV2:
     def _handle_turn_resumed(self):
         """Handle TurnResumed event from Deepgram - user is speaking (barge-in)."""
         logger.info('[BARGE-IN] User speaking - clearing audio queue')
-        self.clear_audio_queue()
+        
+        # Halt audio output immediately via service (this also clears the queue)
+        self._schedule_coroutine(self._halt_audio_output())
         
         self.last_eager_eot_text = ''
         if self.draft_response_active:
             logger.info('[TURN RESUMED] Cancelling draft AI response')
             self._schedule_coroutine(self._cancel_ai_response())
+        else:
+            # Even if no draft response, still clear the queue locally
+            self.clear_audio_queue()
         
         self.draft_response_active = False
 
@@ -288,6 +293,19 @@ class MindRootSIPBotV2:
             logger.info(f'AI response cancelled: {result}')
         except Exception as e:
             logger.error(f'Error cancelling AI response: {e}')
+
+    async def _halt_audio_output(self):
+        """Halt audio output using service manager."""
+        if not self.context or not self.context.log_id:
+            logger.warning('Cannot halt audio: no context or log_id')
+            self.clear_audio_queue()  # Fallback to local clear
+            return
+        try:
+            result = await service_manager.sip_halt_audio(context=self.context)
+            logger.info(f'Audio halt result: {result}')
+        except Exception as e:
+            logger.error(f'Error halting audio: {e}')
+            self.clear_audio_queue()  # Fallback to local clear
 
     async def make_call(self, destination: str):
         """Initiate outbound call.

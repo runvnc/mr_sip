@@ -27,6 +27,7 @@ class SIPSession:
         self.created_at = datetime.now()
         self.is_active = False
         self.halt_audio_out = False
+        self._halt_audio_set_time = None  # Track when halt was set for debugging
         self.audio_queue = asyncio.Queue(maxsize=35)  # Increased to ~700ms headroom for smoother pacing
         self._audio_sender_task = None
         self._audio_sent_count = 0
@@ -145,6 +146,26 @@ class SIPSession:
                 self.baresip_bot.clear_audio_queue()
         except Exception as e:
             logger.error(f"Error clearing audio queue: {e}")
+    
+    def halt_audio(self):
+        """Halt audio output (for interruption).
+        
+        This prevents new audio chunks from being sent while allowing
+        the call to continue receiving audio.
+        """
+        import time
+        self.halt_audio_out = True
+        self._halt_audio_set_time = time.time()
+        logger.info(f"Audio output HALTED for session {self.log_id}")
+        self.clear_audio_queue()
+    
+    def resume_audio(self):
+        """Resume audio output (when new response starts)."""
+        if self.halt_audio_out:
+            import time
+            halt_duration = time.time() - self._halt_audio_set_time if self._halt_audio_set_time else 0
+            logger.info(f"Audio output RESUMED for session {self.log_id} (was halted for {halt_duration:.2f}s)")
+        self.halt_audio_out = False
                 
     async def end_session(self):
         """End the SIP session and cleanup resources"""

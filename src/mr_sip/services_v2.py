@@ -398,6 +398,82 @@ async def sip_clear_audio_queue(context=None) -> Dict[str, Any]:
         }
 
 
+@service()
+async def sip_halt_audio(context=None) -> Dict[str, Any]:
+    """
+    Halt audio output for the SIP session (for interruption).
+    
+    This is called when user interruption is detected to immediately
+    stop sending audio. The halt persists until sip_resume_audio is called.
+    
+    Args:
+        context: MindRoot context (required for session identification)
+    
+    Returns:
+        dict: Status information
+    """
+    if not context or not context.log_id:
+        return {
+            "status": "error",
+            "error": "Context with log_id is required"
+        }
+    
+    try:
+        session_manager = get_session_manager()
+        session = await session_manager.get_session(context.log_id)
+        
+        if session and session.is_active:
+            session.halt_audio()
+            logger.info(f"Audio HALTED for session {context.log_id}")
+            return {
+                "status": "halted",
+                "log_id": context.log_id
+            }
+        else:
+            return {
+                "status": "no_active_session",
+                "log_id": context.log_id
+            }
+    except Exception as e:
+        logger.error(f"Error in sip_halt_audio: {e}")
+        return {
+            "status": "error",
+            "log_id": context.log_id,
+            "error": str(e)
+        }
+
+
+@service()
+async def sip_resume_audio(context=None) -> bool:
+    """
+    Resume audio output for the SIP session.
+    
+    This is called when a new AI response starts to allow audio to flow again.
+    
+    Args:
+        context: MindRoot context (required for session identification)
+    
+    Returns:
+        bool: True if resumed, False otherwise
+    """
+    if not context or not context.log_id:
+        logger.warning("sip_resume_audio called without context or log_id")
+        return False
+    
+    try:
+        session_manager = get_session_manager()
+        session = await session_manager.get_session(context.log_id)
+        
+        if session and session.is_active:
+            session.resume_audio()
+            return True
+        else:
+            return False
+    except Exception as e:
+        logger.error(f"Error in sip_resume_audio: {e}")
+        return False
+
+
 @hook()
 async def quit(context=None):
     """Cleanup hook called when MindRoot is shutting down"""
