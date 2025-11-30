@@ -328,6 +328,7 @@ class MindRootSIPBotV2:
                 We send these directly to Deepgram with mulaw encoding.
                 """
                 try:
+                    print("on frame")
                     # Normalize frame and optional RTP timestamp
                     rtp_ts = None
                     if hasattr(frame, "data"):
@@ -341,7 +342,7 @@ class MindRootSIPBotV2:
                         self.audio_stream = AudioStreamAdapter()
                         self.call._rtp_session.set_audio_stream(self.audio_stream)
                         logger.info("Audio stream set on RTP session")
-                        
+                        print("Audio stream set up on RTP session")
                         # Set call state flags
                         self.is_active = True
                         self.call_established = True
@@ -357,7 +358,8 @@ class MindRootSIPBotV2:
                         # Signal that call is fully ready
                         self.call_answered.set()
                         logger.info("Call fully answered and ready for audio")
-                        
+                        print("Call fully answered and ready for audio")
+                         
                         # Start recording if enabled
                         if self.enable_recording:
                             self.recorder = S2SBufferedRecorder(
