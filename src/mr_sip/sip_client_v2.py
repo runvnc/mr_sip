@@ -298,7 +298,8 @@ class MindRootSIPBotV2:
             destination: Phone number or SIP URI to call
         """
         logger.info(f"=== INITIATING CALL TO {destination} (PySIP V2 + Deepgram) ===")
-        
+        print(f"=== INITIATING CALL TO {destination} (PySIP V2 + Deepgram) ===")
+         
         try:
             # Create SipCall instance
             self.call = SipCall(
