@@ -7,7 +7,7 @@ Audio flows directly between PySIP RTP and Deepgram STT.
 
 Key features:
 - Uses PySIP for SIP signaling and RTP (no baresip, no JACK)
-- Sends ulaw 8kHz audio directly to Deepgram (no conversion needed)
+- Sends ulaw 8kHz audio directly to Deepgram (mulaw encoding, no conversion needed)
 - Receives TTS audio and converts to ulaw 8kHz for RTP output
 - Supports call recording
 """
@@ -21,8 +21,6 @@ import audioop
 import os
 from datetime import datetime
 from typing import Optional, Callable
-from scipy import signal
-import numpy as np
 
 from PySIP.sip_call import SipCall
 from PySIP.filters import CallState
@@ -329,7 +327,6 @@ class MindRootSIPBotV2:
                 We send these directly to Deepgram with mulaw encoding.
                 """
                 try:
-                    print("on frame")
                     # Normalize frame and optional RTP timestamp
                     rtp_ts = None
                     if hasattr(frame, "data"):
@@ -543,50 +540,20 @@ class MindRootSIPBotV2:
             logger.error(traceback.format_exc())
 
     def _convert_to_ulaw(self, audio_chunk: bytes) -> bytes:
-        """Convert audio to ulaw 8kHz format.
+        """Pass through audio - assumes input is already ulaw 8kHz.
         
-        Detects input format and converts as needed.
+        ElevenLabs is configured to output ulaw_8000 format directly,
+        so no conversion is needed. This method exists for compatibility
+        and potential future use with other TTS providers that may send
+        different formats.
+        
+        Args:
+            audio_chunk: Audio data (expected to be ulaw 8kHz from ElevenLabs)
+        
+        Returns:
+            The audio chunk unchanged
         """
-        try:
-            # Try to detect if it's already ulaw (smaller size for same duration)
-            # or PCM (larger size)
-            
-            # Heuristic: try interpreting as PCM first
-            try:
-                test_array = np.frombuffer(audio_chunk, dtype=np.int16)
-                if len(test_array) > 0:
-                    # Likely PCM - detect sample rate by size patterns
-                    # OpenAI sends 24kHz PCM, ElevenLabs sends 8kHz ulaw
-                    
-                    # If chunk size suggests high sample rate PCM, resample
-                    # 24kHz PCM: 48000 bytes/sec, 8kHz ulaw: 8000 bytes/sec
-                    
-                    # Assume 24kHz PCM if large chunks
-                    if len(audio_chunk) > 1000:  # Likely PCM
-                        # Resample from 24kHz to 8kHz
-                        audio_float = test_array.astype(np.float32) / 32768.0
-                        
-                        # Resample 24kHz -> 8kHz (factor of 3)
-                        resampled = signal.resample_poly(audio_float, 1, 3)
-                        
-                        # Convert back to int16
-                        resampled_int16 = (resampled * 32767).astype(np.int16)
-                        pcm_8k = resampled_int16.tobytes()
-                        
-                        # Convert to ulaw
-                        return audioop.lin2ulaw(pcm_8k, 2)
-                    else:
-                        # Small chunk - might be ulaw already, pass through
-                        return audio_chunk
-            except:
-                pass
-            
-            # If detection failed, assume it's already ulaw
-            return audio_chunk
-            
-        except Exception as e:
-            logger.error(f"Error converting audio: {e}")
-            return audio_chunk
+        return audio_chunk
 
     def clear_audio_queue(self):
         """Clear all queued audio frames (for interruption)."""
