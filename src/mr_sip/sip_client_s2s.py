@@ -208,10 +208,6 @@ class MindRootSIPBotS2S:
                         self._silence_monitor_task = asyncio.create_task(self._monitor_silence())
                         logger.info("Silence monitor started")
 
-                        # Signal that call is fully ready
-                        self.call_answered.set()
-                        logger.info("Call fully answered and ready for audio")
-                        
                         # Start recording if enabled
                         if self.enable_recording:
                             # Use buffered, timestamp-aware recorder for S2S so that
@@ -224,6 +220,11 @@ class MindRootSIPBotS2S:
                                 record_combined=True,
                             )
                             await self.recorder.start_recording()
+                        
+                        # Signal that call is fully ready
+                        # NOTE: This must be AFTER recorder init to avoid race condition
+                        self.call_answered.set()
+                        logger.info("Call fully answered and ready for audio")
                     
                     self._input_frame_count += 1
                     

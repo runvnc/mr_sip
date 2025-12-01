@@ -443,8 +443,14 @@ class S2SBufferedRecorder:
         # Outgoing timestamps are perf_counter values from AudioPacer
         # Convert them relative to the call reference time
         if timestamp is None:
-            # Fallback: place sequentially if no timestamp
-            if self._out_segments:
+            # Place at current time in the call, not sequentially
+            # This ensures DTMF and other non-timestamped audio is placed correctly
+            if self._call_reference_time is not None:
+                import time as time_module
+                rel_s = time_module.perf_counter() - self._call_reference_time
+                start_sample = int(rel_s * self.sample_rate)
+            elif self._out_segments:
+                # Fallback to sequential if no reference time yet
                 last_start, last_buf = self._out_segments[-1]
                 start_sample = last_start + len(last_buf)
             else:
