@@ -17,6 +17,7 @@ from lib.providers.services import service_manager
 import traceback
 import time
 import json
+import time as time_module
 
 # Lazy imports for S2S and V2 services - will be imported when needed
 _s2s_services = None
@@ -326,6 +327,10 @@ async def send_dtmf(digits: str, context=None) -> None:
         # This preserves the JACK audio setup unlike baresipy's send_dtmf
         logger.info(f"Generating DTMF tones for '{digits}'")
         
+        # Get current time as base timestamp for proper recording placement
+        # Each digit's audio will be offset from this base time
+        base_timestamp = time_module.perf_counter()
+        
         for digit in digits:
             # Generate tone (100ms duration)
             tone = generate_dtmf_tone(digit, duration=0.1, sample_rate=8000)
@@ -333,13 +338,19 @@ async def send_dtmf(digits: str, context=None) -> None:
             # Convert to μ-law format (same as TTS audio)
             ulaw_data = dtmf_to_ulaw(tone)
             
-            # Send through the audio pipeline
-            await session.send_audio(ulaw_data)
+            # Send through the audio pipeline with timestamp for proper recording
+            await session.send_audio(ulaw_data, timestamp=base_timestamp)
+            
+            # Advance timestamp by tone duration (100ms)
+            base_timestamp += 0.1
             
             # Add silence between digits (50ms)
             silence = np.zeros(int(0.05 * 8000), dtype=np.float32)
             silence_ulaw = dtmf_to_ulaw(silence)
-            await session.send_audio(silence_ulaw)
+            await session.send_audio(silence_ulaw, timestamp=base_timestamp)
+            
+            # Advance timestamp by silence duration (50ms)
+            base_timestamp += 0.05
             
             logger.debug(f"Sent DTMF tone for digit '{digit}'")
         
