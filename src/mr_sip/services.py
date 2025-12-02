@@ -63,6 +63,14 @@ async def dial_service(destination: str, context=None) -> Dict[str, Any]:
                 logger.info(f"Transcribed utterance #{utterance_num}: {text}")
                 
                 await service_manager.cancel_and_wait(ctx.log_id, ctx.username)
+
+                # Resume audio output - this is a NEW user message triggering a NEW response
+                # This clears the halt flag so the new response can play
+                session_manager = get_session_manager()
+                session = await session_manager.get_session(ctx.log_id)
+                if session:
+                    session.resume_audio()
+
  
                 # Update chat frontend with user message
                 await service_manager.backend_user_message(
@@ -275,6 +283,32 @@ async def sip_resume_audio(context=None) -> bool:
             return False
     except Exception as e:
         logger.error(f"Error in sip_resume_audio: {e}")
+        return False
+
+
+@service()
+async def sip_is_audio_halted(context=None) -> bool:
+    """
+    Check if audio output is currently halted for the SIP session.
+    
+    Args:
+        context: MindRoot context (required for session identification)
+    
+    Returns:
+        bool: True if audio is halted, False otherwise
+    """
+    if not context or not context.log_id:
+        return False
+    
+    try:
+        session_manager = get_session_manager()
+        session = await session_manager.get_session(context.log_id)
+        
+        if session and session.is_active:
+            return session.halt_audio_out
+        return False
+    except Exception as e:
+        logger.error(f"Error in sip_is_audio_halted: {e}")
         return False
 
 
