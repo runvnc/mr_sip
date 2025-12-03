@@ -22,6 +22,39 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+def _is_emergency_number(number: str) -> bool:
+    """
+    Check if a number matches emergency patterns like 911.
+    
+    Args:
+        number: The phone number to check
+        
+    Returns:
+        bool: True if number matches emergency pattern
+    """
+    # Normalize the number - remove common separators and spaces
+    normalized = number.replace('-', '').replace('.', '').replace(' ', '')
+    normalized = normalized.replace('(', '').replace(')', '')
+    normalized = normalized.replace('+', '')  # Remove plus sign for international numbers
+    
+    # Emergency numbers are typically 3-4 digits
+    emergency_patterns = ['911', '112', '999', '000', '119', '110', '118']
+    
+    # First check if normalized number matches any emergency pattern
+    for pattern in emergency_patterns:
+        if normalized == pattern:
+            return True
+    
+    # If not, check if it's an emergency number with country code (e.g., 1911, +1911)
+    # Remove leading '1' (US/Canada country code) and check again
+    if normalized.startswith('1') and len(normalized) > 1:
+        normalized_without_country = normalized[1:]
+        for pattern in emergency_patterns:
+            if normalized_without_country == pattern:
+                return True
+    return False
+
+
 @service()
 async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
     """
@@ -50,6 +83,16 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
     if not context or not context.log_id:
         raise ValueError("Context with log_id is required for SIP calls")
         
+    # Block emergency numbers
+    if _is_emergency_number(destination):
+        logger.warning(f"Emergency number dialing blocked: {destination} for session {context.log_id}")
+        return {
+            "status": "blocked",
+            "log_id": context.log_id,
+            "destination": destination,
+            "error": "Emergency number dialing is not permitted"
+        }
+
     # Read environment variables
     sip_gateway = os.getenv('SIP_GATEWAY', 'no sip gateway')
     sip_user = os.getenv('SIP_USER', 'nouser')
