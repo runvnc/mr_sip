@@ -167,11 +167,13 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
             """Callback for when complete utterances are transcribed"""
             try:
                 logger.info(f"SIP_DEBUG Transcribed utterance #{utterance_num}: {text}")
-                
+                print(f"SIP_DEBUG Transcribed utterance #{utterance_num}: {text}")
+                          
                 # Cancel active responses
                 res = await service_manager.cancel_and_wait(ctx.log_id, ctx.username)
                 logger.info(f"SIP_DEBUG cancel result: {res}")
-                
+                print(f"SIP_DEBUG cancel result: {res}")
+                 
                 # Resume audio output - this is a NEW user message triggering a NEW response
                 # This clears the halt flag so the new response can play
                 session_manager = get_session_manager()
