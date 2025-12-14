@@ -45,7 +45,7 @@ def print_deepgram_event(event_type: str, data: dict):
 class DeepgramFluxSTT(BaseSTTProvider):
     """Deepgram Flux streaming STT provider with conversational turn detection."""
 
-    def __init__(self, api_key: str, sample_rate: int=16000, encoding: str='linear16', language: str='en', model: str='flux-general-en', eager_eot_threshold: float=0.7, eot_threshold: float=0.8, eot_timeout_ms: int=5000):
+    def __init__(self, api_key: str, sample_rate: int=16000, encoding: str='linear16', language: str='en', model: str='flux-general-en', eager_eot_threshold: float=0.7, eot_threshold: float=0.8, eot_timeout_ms: int=5000, keyterm: list=None):
         """
         Initialize Deepgram Flux STT provider.
         
@@ -59,6 +59,8 @@ class DeepgramFluxSTT(BaseSTTProvider):
             eager_eot_threshold: Threshold for EagerEndOfTurn events (0.3-0.9, default: 0.7 - BALANCED)
             eot_threshold: Threshold for EndOfTurn events (0.5-0.9, default: 0.8 - BALANCED)
             eot_timeout_ms: Turn timeout in milliseconds (optional)
+            keyterm: List of keyterms to boost recognition of specialized terminology
+                     (e.g., ["employee", "HR", "manager"])
         """
         super().__init__(sample_rate=sample_rate)
         self.api_key = api_key
@@ -68,6 +70,7 @@ class DeepgramFluxSTT(BaseSTTProvider):
         self.eager_eot_threshold = eager_eot_threshold
         self.eot_threshold = eot_threshold
         self.eot_timeout_ms = eot_timeout_ms
+        self.keyterm = keyterm
         self.client: Optional[DeepgramClient] = None
         self.connection = None
         self.listen_thread = None
@@ -111,6 +114,8 @@ class DeepgramFluxSTT(BaseSTTProvider):
             connection_params = {'model': self.model, 'encoding': self.encoding, 'sample_rate': self.sample_rate, 'eager_eot_threshold': self.eager_eot_threshold, 'eot_threshold': self.eot_threshold}
             if self.eot_timeout_ms is not None:
                 connection_params['eot_timeout_ms'] = self.eot_timeout_ms
+            if self.keyterm is not None:
+                connection_params['keyterm'] = self.keyterm
             self.is_running = True
             self.connection_start_time = time.time()
             self.connection_task = asyncio.create_task(self._run_connection(**connection_params))

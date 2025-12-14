@@ -217,6 +217,10 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
                 except ValueError:
                     logger.warning(f"Invalid DEEPGRAM_EAGER_EOT_SECONDS value")
 
+            # Add keyterms for employment verification terminology
+            stt_config['keyterm'] = ["employee", "employees", "employment verification", 
+                                     "manager", "HR", "date-of-birth"]
+
         elif stt_provider == 'whisper_vad':
             stt_model_size = os.getenv('STT_MODEL_SIZE', 'small')
             stt_config['model_size'] = stt_model_size
