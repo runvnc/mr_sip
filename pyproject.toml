@@ -23,8 +23,6 @@ dependencies = [
     "websockets>=12.0",
     "websocket-client",
     "deepgram-sdk>=3.0.0",
-    "pyaudio>=0.2.14",
-    "simpleaudio>=1.0.4",
     "soundfile>=0.13.1",
     "PySIPio @ git+https://github.com/runvnc/PySIP.git"
 ]
