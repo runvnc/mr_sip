@@ -4,7 +4,7 @@ JACK Audio Streamer for MindRoot SIP Plugin
 Adapted from /files/whispertest/jack_streaming_test.py
 """
 
-import jack
+#import jack
 import numpy as np
 import logging
 
@@ -14,6 +14,7 @@ class JACKAudioStreamer:
     """JACK client for streaming TTS audio to baresip calls."""
     
     def __init__(self, client_name="MindRootSIP"):
+        raise ValueError("Jack Not available, use S2S or realtime")
         self.client = jack.Client(client_name)
         self.blocksize = self.client.blocksize
         self.samplerate = self.client.samplerate
