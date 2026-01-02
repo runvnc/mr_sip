@@ -23,6 +23,7 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+print(f"Startup services_s2s")
 
 def _is_emergency_number(number: str) -> bool:
     """

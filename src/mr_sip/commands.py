@@ -3,6 +3,8 @@
 MindRoot SIP Plugin - User Commands
 """
 
+print("mr_sip trying to load commands")
+
 import os
 import logging
 import numpy as np
@@ -22,6 +24,8 @@ import time as time_module
 # Lazy imports for S2S and V2 services - will be imported when needed
 _s2s_services = None
 _v2_services = None
+
+print("mr_sip commands imports done")
 
 def _get_sip_config(context=None):
     """Get SIP configuration from context or environment."""

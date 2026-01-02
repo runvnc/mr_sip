@@ -44,4 +44,5 @@ else:
     # Default to V2 (PySIP) for non-S2S mode as well
     from .services_v2 import *
 
+print(f"MindRoot SIP plugin loaded (SIP_PROVIDER={SIP_PROVIDER})")
 logger.info(f"MindRoot SIP plugin loaded (SIP_PROVIDER={SIP_PROVIDER})")
