@@ -460,7 +460,8 @@ async def await_call_result(log_id: str, agent:str, idle_timeout_seconds: int = 
 
 @command()
 async def delegate_call_task(agent:str, phone_number:str, instructions: str, idle_timeout_seconds: int = 120,
-                             finish_timeout_seconds: int=20, context=None):
+                             finish_timeout_seconds: int=20, max_call_length_seconds: int = 300,
+                             context=None):
     """
     Delegate a task to `agent` to call `phone_number` to accomplish task described in `instructions`.
     Wait for the the call to complete and return the task result from the call
@@ -468,10 +469,14 @@ async def delegate_call_task(agent:str, phone_number:str, instructions: str, idl
 
     Example:
 
-    { "delegate_call_task": { "agent": "CustomerService", "phone_number": "16822625850",
-                              "instructions": "Call the customer and inform them about their order status." } }
+    { "delegate_call_task": { 
+        "agent": "CustomerService", 
+        "phone_number": "16822625850",
+        "instructions": "Call the customer and inform them about their order status.",
+        "max_call_length_seconds": 300
+    }}
 
-    """
+    """    
     try:
         log_id = nanoid.generate()
         instructions = instructions + f"\n\n Call the phone number {phone_number} to accomplish the task."
@@ -479,6 +484,7 @@ async def delegate_call_task(agent:str, phone_number:str, instructions: str, idl
         result = await await_call_result(log_id,agent=agent, idle_timeout_seconds=idle_timeout_seconds, 
                                          finish_timeout_seconds=finish_timeout_seconds, context=context)
         
+        # Note: max_call_length handling would need to be added to await_call_result
         # Stop silence monitor before closing S2S session
         try:
             session_manager = get_session_manager()
@@ -503,6 +509,7 @@ async def delegate_call_task(agent:str, phone_number:str, instructions: str, idl
 async def delegate_call_job(agent: str, phone_number: str, instructions: str, 
                             job_type: str = None, timeout: int = 600,
                             idle_timeout_seconds: int = 120, finish_timeout_seconds: int = 20,
+                            max_call_length_seconds: int = 300,
                             metadata: dict = None, context=None):
     """
     Delegate a call task to `agent` via the job queue, with call-specific monitoring.
@@ -522,6 +529,7 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str,
         timeout: Maximum seconds to wait for job completion (default: 600)
         idle_timeout_seconds: Seconds of inactivity before considering call done (default: 120)
         finish_timeout_seconds: Seconds to wait after CALL DISCONNECTED (default: 20)
+        max_call_length_seconds: Maximum call duration before forced termination (default: 300 = 5 minutes)
         metadata: Optional dict of metadata to attach to the job
     
     Returns:
@@ -538,6 +546,7 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str,
     try:
         job_id = nanoid.generate()
         
+        call_start_time = None  # Will be set when call actually starts
         # Build full instructions with phone number
         full_instructions = instructions + f"\n\n Call the phone number {phone_number} to accomplish the task."
         
@@ -597,15 +606,67 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str,
             logger.warning(f"Call job {queued_job_id} did not start within {timeout}s")
             return f"Job {queued_job_id} did not start within {max_queue_wait}s. It may still be queued."
         
-        # Use await_call_result to monitor the call - it handles all the edge cases
-        # for S2S agents that don't properly call task_result
-        call_result = await await_call_result(
-            log_id=queued_job_id, 
-            agent=agent, 
-            idle_timeout_seconds=idle_timeout_seconds,
-            finish_timeout_seconds=finish_timeout_seconds, 
-            context=context
-        )
+        # Track when call actually started for max_call_length enforcement
+        call_start_time = time.time()
+        max_call_exceeded = False
+        
+        # Monitor the call with max_call_length check
+        # We'll do our own loop here instead of just calling await_call_result
+        # so we can enforce max_call_length
+        finished = False
+        while not finished:
+            await asyncio.sleep(1)
+            
+            # Check max call length
+            call_duration = time.time() - call_start_time
+            if call_duration >= max_call_length_seconds:
+                logger.info(f"Call job {queued_job_id} exceeded max call length ({max_call_length_seconds}s), terminating")
+                max_call_exceeded = True
+                
+                # Terminate the call
+                try:
+                    session_manager = get_session_manager()
+                    session = await session_manager.get_session(queued_job_id)
+                    if session and session.baresip_bot:
+                        # Stop silence monitor first
+                        if hasattr(session.baresip_bot, 'stop_silence_monitor'):
+                            session.baresip_bot.stop_silence_monitor()
+                        # Hangup the call
+                        await session.baresip_bot.hangup_call()
+                        logger.info(f"Call job {queued_job_id} terminated due to max call length")
+                except Exception as e:
+                    logger.error(f"Error terminating call for max length: {e}")
+                
+                finished = True
+                break
+            
+            log = ChatLog(queued_job_id, agent=agent, user=context.username)
+            idle = time.time() - log.last_modified
+            
+            if idle >= idle_timeout_seconds:
+                logger.info(f"Call job {queued_job_id} idle timeout reached ({idle_timeout_seconds}s)")
+                finished = True
+                break
+                
+            commands = log.parsed_commands()
+            for cmd in commands:
+                if 'task_result' in cmd:
+                    logger.info(f"Call job {queued_job_id} received task_result")
+                    finished = True
+                    break
+            
+            if finished:
+                break
+                
+            user_messages = [msg for msg in log.messages if msg['role'] == 'user']
+            for msg in user_messages:
+                if msg['content'] and isinstance(msg['content'], list) and len(msg['content']) > 0:
+                    text = msg['content'][0].get('text', '')
+                    if "-- CALL DISCONNECTED --" in text:
+                        if idle >= finish_timeout_seconds:
+                            logger.info(f"Call job {queued_job_id} finish timeout reached after disconnect")
+                            finished = True
+                            break
         
         # Stop silence monitor before closing S2S session
         try:
@@ -622,7 +683,17 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str,
         except Exception as e:
             logger.warning(f"Could not close s2s session (normal if not s2s): {e}")
         
-        return f"Job ID: {queued_job_id}. Result: {call_result}"
+        # Get final log
+        log = ChatLog(queued_job_id, agent=agent, user=context.username)
+        call_result = json.dumps(log.messages)
+        
+        # Add max call length exceeded note to result
+        if max_call_exceeded:
+            actual_duration = time.time() - call_start_time
+            exceeded_note = f"\n\n--- CALL TERMINATED: Exceeded maximum call length of {max_call_length_seconds} seconds (actual duration: {actual_duration:.1f}s) ---"
+            return f"Job ID: {queued_job_id}. Result: {call_result}{exceeded_note}"
+        else:
+            return f"Job ID: {queued_job_id}. Result: {call_result}"
         
     except Exception as e:
         trace = traceback.format_exc()
