@@ -19,8 +19,8 @@ import traceback
 import time
 import audioop
 import os
-from lib.pipelines.pipelines import PipelineManager
-from lib.providers import HookManager
+#from lib.pipelines.pipelines import PipelineManager
+#from lib.providers import HookManager
 from datetime import datetime
 from typing import Optional, Callable
 
@@ -33,10 +33,10 @@ from .stt import create_stt_provider, BaseSTTProvider, STTResult
 logger = logging.getLogger(__name__)
 
 # Pipeline manager for emitting audio to other plugins
-_pipeline_manager = PipelineManager()
+#_pipeline_manager = PipelineManager()
 
 # Hook manager for emitting events to other plugins
-_hook_manager = HookManager()
+#_hook_manager = HookManager()
 
 
 class AudioStreamAdapter:
@@ -259,12 +259,12 @@ class MindRootSIPBotV2:
         self.last_partial_text = ''
         
         # Emit hook for TTS providers that need user utterance text (e.g., mr_csm_stream)
-        self._schedule_coroutine(
-            _hook_manager.user_utterance_complete(
-                text=result.text,
-                context=self.context
-            )
-        )
+        #self._schedule_coroutine(
+        #    _hook_manager.user_utterance_complete(
+        #        text=result.text,
+        #        context=self.context
+        #    )
+        #)
 
     async def _call_utterance_callback(self, text: str, utterance_num: int, 
                                         timestamp: float, is_eager: bool = False):
@@ -428,15 +428,15 @@ class MindRootSIPBotV2:
                             self.recorder.record_incoming(ulaw_bytes)
                     
                     # Emit audio to pipeline for other plugins (e.g., mr_csm_stream)
-                    try:
-                        await _pipeline_manager.execute_pipeline(
-                            'sip_audio_in',
-                            {'audio_bytes': ulaw_bytes, 'timestamp': time.time()},
-                            context=self.context
-                        )
-                    except Exception as e:
-                        # Don't log every error - too noisy for high-frequency audio
-                        pass
+                    #try:
+                    #    await _pipeline_manager.execute_pipeline(
+                    #        'sip_audio_in',
+                    #        {'audio_bytes': ulaw_bytes, 'timestamp': time.time()},
+                    #        context=self.context
+                    #    )
+                    #except Exception as e:
+                    #    # Don't log every error - too noisy for high-frequency audio
+                    #    pass
                     
                     # Send to Deepgram STT (raw mulaw bytes)
                     if self.stt and self.stt.is_running:
