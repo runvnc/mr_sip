@@ -9,6 +9,7 @@ Handles audio routing between SIP calls and MindRoot's TTS/STT systems.
 import asyncio
 import threading
 import logging
+import time
 from typing import Dict, Optional, Any
 from datetime import datetime
 import traceback
@@ -28,6 +29,10 @@ class SIPSession:
         self.is_active = False
         self.halt_audio_out = False
         self._halt_audio_set_time = None  # Track when halt was set for debugging
+        
+        # Profiling
+        self._first_chunk_queued_time: Optional[float] = None
+        self._first_chunk_sent_time: Optional[float] = None
         self.audio_queue = asyncio.Queue(maxsize=35)  # Increased to ~700ms headroom for smoother pacing
         self._audio_sender_task = None
         self._audio_sent_count = 0
@@ -67,6 +72,17 @@ class SIPSession:
                     if item is None:  # Sentinel to stop
                         break
                     
+                    send_start = time.perf_counter()
+                    
+                    if self._first_chunk_sent_time is None:
+                        self._first_chunk_sent_time = send_start
+                        if self._first_chunk_queued_time:
+                            queue_latency = (send_start - self._first_chunk_queued_time) * 1000
+                            logger.info(f"SIP_SEND: First chunk dequeued, queue_latency={queue_latency:.1f}ms")
+                    
+                    logger.info(
+                        f"SIP_SEND: Sending chunk #{self._audio_sent_count + 1}, queue_size={self.audio_queue.qsize()}"
+                    )
                     # Unpack audio chunk and timestamp
                     audio_chunk, timestamp = item if isinstance(item, tuple) else (item, None)
                     
@@ -74,6 +90,9 @@ class SIPSession:
                     self._audio_sent_count += 1
                     if self._audio_sent_count % 10 == 0:
                         logger.info(f"S2S_DEBUG: Sent {self._audio_sent_count} audio chunks to SIP for session {self.log_id}")
+                    
+                    send_end = time.perf_counter()
+                    logger.debug(f"SIP_SEND: _send_audio_to_sip took {(send_end - send_start)*1000:.1f}ms")
                 except asyncio.TimeoutError:
                     continue
                 except asyncio.CancelledError:
@@ -109,12 +128,23 @@ class SIPSession:
     async def send_audio(self, audio_chunk: bytes, timestamp=None):
         """Queue audio chunk for sending to SIP call"""
         if self.is_active:
+            queue_time = time.perf_counter()
             self._audio_queued_count += 1
+            
+            if self._first_chunk_queued_time is None:
+                self._first_chunk_queued_time = queue_time
+                logger.info(f"SIP_QUEUE: First chunk queued at {queue_time:.3f}")
+            
             try:
                 # Phase 1 optimization: Non-blocking put with timeout to prevent queue buildup
+                queue_size_before = self.audio_queue.qsize()
                 await asyncio.wait_for(
                     self.audio_queue.put((audio_chunk, timestamp)),
                     timeout=0.1
+                )
+                logger.info(
+                    f"SIP_QUEUE: chunk #{self._audio_queued_count}, {len(audio_chunk)} bytes, "
+                    f"queue_size={queue_size_before}->{self.audio_queue.qsize()}"
                 )
                 #logger.debug(f"S2S_DEBUG: Queued audio chunk #{self._audio_queued_count}, queue size: {self.audio_queue.qsize()}")
                 if self._audio_queued_count % 10 == 0:

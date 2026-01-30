@@ -9,6 +9,7 @@ import os
 import logging
 from typing import Optional
 from .base_stt import BaseSTTProvider
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,8 @@ def create_stt_provider(provider_name: Optional[str] = None, **kwargs) -> BaseST
     provider_name = provider_name.lower()
     
     logger.info(f"Creating STT provider: {provider_name}")
-    
+    print(f"Creating STT provider")
+
     if provider_name == 'deepgram':
         from .deepgram_stt import DeepgramSTT
         # Get api_key from kwargs or environment, but remove from kwargs to avoid duplicate
@@ -50,6 +52,7 @@ def create_stt_provider(provider_name: Optional[str] = None, **kwargs) -> BaseST
         api_key = kwargs.pop('api_key', None) or os.getenv('DEEPGRAM_API_KEY')
         if not api_key:
             raise ValueError("Deepgram API key required. Set DEEPGRAM_API_KEY environment variable or pass api_key parameter.")
+        print(f"Deepgram flux, found api key, creating")
         return DeepgramFluxSTT(api_key=api_key, **kwargs)
         
     elif provider_name == 'whisper_vad':

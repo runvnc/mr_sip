@@ -111,11 +111,19 @@ class DeepgramFluxSTT(BaseSTTProvider):
         try:
             logger.info(f'Connecting to Deepgram Flux API (model: {self.model})...')
             self.client = DeepgramClient(api_key=self.api_key)
-            connection_params = {'model': self.model, 'encoding': self.encoding, 'sample_rate': self.sample_rate, 'eager_eot_threshold': self.eager_eot_threshold, 'eot_threshold': self.eot_threshold}
+            # Deepgram SDK 5.0.0 requires all parameters to be strings
+            connection_params = {
+                'model': self.model,
+                'encoding': self.encoding,
+                'sample_rate': str(self.sample_rate),
+                'eager_eot_threshold': str(self.eager_eot_threshold),
+                'eot_threshold': str(self.eot_threshold)
+            }
             if self.eot_timeout_ms is not None:
-                connection_params['eot_timeout_ms'] = self.eot_timeout_ms
+                connection_params['eot_timeout_ms'] = str(self.eot_timeout_ms)
             if self.keyterm is not None:
-                connection_params['keyterm'] = self.keyterm
+                # keyterm should be comma-separated string if list
+                connection_params['keyterm'] = ','.join(self.keyterm) if isinstance(self.keyterm, list) else str(self.keyterm)
             self.is_running = True
             self.connection_start_time = time.time()
             self.connection_task = asyncio.create_task(self._run_connection(**connection_params))
