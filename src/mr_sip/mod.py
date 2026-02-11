@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 MindRoot SIP Plugin - Main Module
 
@@ -14,39 +13,20 @@ This eliminates the need for JACK audio server and baresip configuration.
 This refactored version imports commands and services from separate modules
 for better maintainability and testing.
 """
-
 import logging
 import os
-
-# Check MR_DEBUG env variable
 MR_DEBUG = os.environ.get('MR_DEBUG', '').lower() in ('1', 'true', 'yes')
-
-# Configure logging for entire mr_sip module based on MR_DEBUG
-# This affects all loggers in the mr_sip.* namespace
 if MR_DEBUG:
     logging.getLogger('mr_sip').setLevel(logging.DEBUG)
 else:
     logging.getLogger('mr_sip').setLevel(logging.WARNING)
-
-
-# Initialize this module's logger
 logger = logging.getLogger(__name__)
-# Level already set by parent logger above
-
-# Import commands (provider-agnostic)
 from .commands import *
-
-# Determine which mode to use
 SIP_PROVIDER = os.getenv('SIP_PROVIDER', 'deepgram').lower()
-
-# Import the appropriate service implementation
 if SIP_PROVIDER == 's2s':
     from .services_s2s import *
 elif SIP_PROVIDER == 'deepgram_v2' or os.getenv('SIP_USE_V2', 'true').lower() in ('true', '1', 'yes', 'on'):
     from .services_v2 import *
 else:
-    # Default to V2 (PySIP) for non-S2S mode as well
     from .services_v2 import *
-
-print(f"MindRoot SIP plugin loaded (SIP_PROVIDER={SIP_PROVIDER})")
-logger.info(f"MindRoot SIP plugin loaded (SIP_PROVIDER={SIP_PROVIDER})")
+logger.info(f'MindRoot SIP plugin loaded (SIP_PROVIDER={SIP_PROVIDER})')

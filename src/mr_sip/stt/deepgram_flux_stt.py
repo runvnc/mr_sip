@@ -19,7 +19,12 @@ from datetime import datetime
 from deepgram import DeepgramClient
 from deepgram.core.events import EventType
 from .base_stt import BaseSTTProvider, STTResult
+
+# Check MR_DEBUG env variable
+MR_DEBUG = os.environ.get('MR_DEBUG', '').lower() in ('1', 'true', 'yes')
+
 logger = logging.getLogger(__name__)
+
 BLUE_BG_YELLOW_TEXT = '\x1b[44m\x1b[93m'
 RESET_COLOR = '\x1b[0m'
 
@@ -35,10 +40,12 @@ def print_deepgram_event(event_type: str, data: dict):
     logger.info(f'[DEEPGRAM EVENT] {console_message}')
     log_payload = {'timestamp': datetime.utcnow().isoformat(), 'event_type': event_type, **data}
     try:
-        json_string = json.dumps(log_payload, default=str) + '\n'
-        with open('/tmp/deepgram_events.log', 'a') as f:
-            f.write(json_string)
-            f.flush()
+        # Only write to log file if MR_DEBUG is enabled
+        if MR_DEBUG:
+            json_string = json.dumps(log_payload, default=str) + '\n'
+            with open('/tmp/deepgram_events.log', 'a') as f:
+                f.write(json_string)
+                f.flush()
     except Exception as e:
         logger.error(f'Failed to write deepgram event to log file: {e}')
 
@@ -99,8 +106,6 @@ class DeepgramFluxSTT(BaseSTTProvider):
         self.total_reconnections = 0
         self._on_turn_resumed_callback: Optional[Callable[[], None]] = None
         self.debug_wav_file = None
-        self.debug_wav_path = None
-        self._setup_debug_wav_file()
 
     async def start(self) -> None:
         """Connect to Deepgram Flux API."""
@@ -133,32 +138,6 @@ class DeepgramFluxSTT(BaseSTTProvider):
         except Exception as e:
             logger.error(f'Failed to connect to Deepgram Flux: {e}')
             raise
-
-    def _setup_debug_wav_file(self):
-        """Setup WAV file for debugging audio sent to Deepgram.
-        
-        Note: For mulaw encoding, the debug file will contain raw mulaw bytes,
-        not a proper WAV file. This is intentional for debugging purposes.
-        """
-        try:
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            ext = 'wav' if self.encoding == 'linear16' else 'ulaw'
-            self.debug_wav_path = f'/tmp/deepgram_audio_{timestamp}.{ext}'
-            self.debug_wav_file = wave.open(self.debug_wav_path, 'wb')
-            self.debug_wav_file.setnchannels(1) 
-            self.debug_wav_file.setsampwidth(2)
-            self.debug_wav_file.setframerate(self.sample_rate)
-            print_deepgram_event('AudioDebugFile', {'status': 'created', 'path': self.debug_wav_path})
-            logger.info(f'Audio debug WAV file created: {self.debug_wav_path}')
-        except Exception as e:
-            logger.error(f'Failed to create debug WAV file: {e}')
-            self.debug_wav_file = None
-
-    def _close_debug_wav_file(self):
-        """Close the debug WAV file."""
-        if self.debug_wav_file:
-            self.debug_wav_file.close()
-            print_deepgram_event('AudioDebugFile', {'status': 'closed', 'path': self.debug_wav_path})
 
     async def _monitor_connection_health(self):
         """Monitor connection health; do not kill the process, and defer checks until SIP call is established and audio is flowing."""
@@ -221,10 +200,6 @@ class DeepgramFluxSTT(BaseSTTProvider):
         self.shutting_down = True
         self.is_running = False
         try:
-            try:
-                self._close_debug_wav_file()
-            except Exception as e:
-                logger.error(f'Error closing debug WAV file: {e}')
             if self.connection:
                 try:
                     logger.info('Closing Deepgram connection...')
@@ -285,11 +260,6 @@ class DeepgramFluxSTT(BaseSTTProvider):
             audio_bytes = audio_int16.tobytes()
             self.connection.send_media(audio_bytes)
             self.total_audio_sent += len(audio_bytes)
-            if self.debug_wav_file:
-                try:
-                    self.debug_wav_file.writeframes(audio_bytes)
-                except Exception as e:
-                    logger.error(f'Failed to write to debug WAV file: {e}')
             logger.debug(f'Sent {len(audio_bytes)} bytes to Deepgram Flux (total: {self.total_audio_sent})')
         except Exception as e:
             error_msg = str(e)
@@ -325,13 +295,6 @@ class DeepgramFluxSTT(BaseSTTProvider):
         try:
             self.connection.send_media(audio_bytes)
             self.total_audio_sent += len(audio_bytes)
-            
-            if self.debug_wav_file:
-                try:
-                    self.debug_wav_file.writeframes(audio_bytes)
-                except Exception as e:
-                    logger.error(f'Failed to write to debug file: {e}')
-            
             logger.debug(f'Sent {len(audio_bytes)} raw bytes to Deepgram Flux (total: {self.total_audio_sent})')
         except Exception as e:
             logger.error(f'Error sending raw audio to Deepgram Flux: {e}')
