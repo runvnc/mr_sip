@@ -18,11 +18,15 @@ for better maintainability and testing.
 import logging
 import os
 
-# Configure logging for entire mr_sip module - CRITICAL only
+# Check MR_DEBUG env variable
+MR_DEBUG = os.environ.get('MR_DEBUG', '').lower() in ('1', 'true', 'yes')
+
+# Configure logging for entire mr_sip module based on MR_DEBUG
 # This affects all loggers in the mr_sip.* namespace
-#logging.getLogger('mr_sip').setLevel(logging.CRITICAL)
-#logging.getLogger('mr_sip').setLevel(logging.ERROR)
-logging.getLogger('mr_sip').setLevel(logging.DEBUG)
+if MR_DEBUG:
+    logging.getLogger('mr_sip').setLevel(logging.DEBUG)
+else:
+    logging.getLogger('mr_sip').setLevel(logging.WARNING)
 
 
 # Initialize this module's logger
