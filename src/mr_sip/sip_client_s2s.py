@@ -336,10 +336,6 @@ class MindRootSIPBotS2S:
             frames_to_send = []
             for i in range(0, len(audio_chunk), FRAME_SIZE):
                 frame = audio_chunk[i:i + FRAME_SIZE]
-                if len(frame) < FRAME_SIZE:
-                    frame = frame + b'\xff' * (FRAME_SIZE - len(frame))
-                else:
-                    pass
                 frame_timestamp = timestamp + i / 8000.0 if timestamp else None
                 frames_to_send.append((frame, frame_timestamp))
             else:

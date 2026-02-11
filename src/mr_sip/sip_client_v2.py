@@ -478,10 +478,6 @@ class MindRootSIPBotV2:
                 else:
                     pass
                 frame = ulaw_audio[i:i + FRAME_SIZE]
-                if len(frame) < FRAME_SIZE:
-                    frame = frame + b'\xff' * (FRAME_SIZE - len(frame))
-                else:
-                    pass
                 frame_timestamp = timestamp + i / 8000.0 if timestamp else None
                 try:
                     if frame_timestamp:
