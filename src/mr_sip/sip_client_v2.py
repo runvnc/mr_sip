@@ -112,6 +112,7 @@ class MindRootSIPBotV2:
         self.silence_reported = False
         self._s2s_active = True
         self._silence_monitor_task = None
+        self._aborted = False
         logger.info(f'PySIP V2 Bot initialized for user {user} on gateway {gateway}')
         logger.info(f'STT provider: {self.stt_provider_name}')
 
@@ -295,6 +296,12 @@ class MindRootSIPBotV2:
                 """
                 try:
                     rtp_ts = None
+                    if self._aborted:
+                        logger.warning('on_frame called but bot is aborted (timeout cleanup) - ignoring frame and hanging up')
+                        if self.call:
+                            await self.call.stop('Aborted - call connected after timeout')
+                        return
+
                     if hasattr(frame, 'data'):
                         ulaw_bytes = frame.data
                         rtp_ts = getattr(frame, 'timestamp', None)

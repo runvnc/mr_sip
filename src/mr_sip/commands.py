@@ -121,23 +121,11 @@ async def call(destination: str, context=None) -> str:
         dial_service_s2s, end_call_service_s2s, s2s_available = _get_s2s_services()
         if sip_provider == 's2s' and s2s_available:
             logger.info(f'Using S2S implementation for call to {destination}')
-            try:
-                result = await asyncio.wait_for(dial_service_s2s(destination=destination, context=context), timeout=60.0)
-            except asyncio.TimeoutError:
-                logger.error(f'S2S dial service timed out after 60 seconds for destination {destination}')
-                return f'Call initiation timed out after 60 seconds. The dial service did not respond.'
-            finally:
-                pass
+            result = await dial_service_s2s(destination=destination, context=context)
         else:
             dial_service_v2, end_call_service_v2, v2_available = _get_v2_services()
             logger.info(f'Using V2 implementation with STT provider: {stt_provider}')
-            try:
-                result = await asyncio.wait_for(dial_service_v2(destination=destination, context=context), timeout=60.0)
-            except asyncio.TimeoutError:
-                logger.error(f'Dial service timed out after 30 seconds for destination {destination}')
-                return f'Call initiation timed out after 30 seconds. The dial service did not respond.'
-            finally:
-                pass
+            result = await dial_service_v2(destination=destination, context=context)
         if result['status'] == 'call_established':
             msg = f'Call established to {destination}. Voice conversation is now active. Speak naturally and I will respond through the phone.'
             if result.get('stt_provider'):

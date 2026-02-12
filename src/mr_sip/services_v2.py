@@ -201,6 +201,7 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
             logger.info(f'Call established to {destination}')
             return {'status': 'call_established', 'log_id': context.log_id, 'destination': destination, 'stt_provider': stt_provider, 'mode': 'pysip_v2', 'session_created_at': session.created_at.isoformat(), 'recording_enabled': enable_recording}
         except asyncio.TimeoutError:
+            bot._aborted = True
             await session_manager.end_session(context.log_id)
             logger.error(f'Call to {destination} not answered within {call_establish_timeout}s')
             if not call_task.done():
