@@ -12,7 +12,7 @@ import whisper
 router = APIRouter()
 
 @router.get('/calls')
-async def list_calls(raw: bool = False, exclude_numbers: str = '')
+async def list_calls(raw: bool = False, exclude_numbers: str = ''):
     """List all call recordings with metadata"""
     # option: get raw data
     exclude_numbers = [num.strip() for num in exclude_numbers.split(',') if num.strip()]
