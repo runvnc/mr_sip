@@ -37,7 +37,13 @@ async def list_calls(raw: bool = False, exclude_numbers: str = ''):
             calls_dict[unique_key] = {'log_id': log_id, 'filename': wav_file.name, 'date': mtime.strftime('%m/%d'), 'time': mtime.strftime('%I:%M %p').lstrip('0'), 'agent_name': agent_name or 'Unknown', 'phone_number': phone_number or 'Unknown', 'session_path': f'/session/{agent_name}/{log_id}' if agent_name else None}
     calls = list(calls_dict.values())
     if exclude_numbers:
-        calls = [call for call in calls if call['phone_number'] not in exclude_numbers]
+        tmp = []
+        for call in calls:
+            for num in exclude_numbers:
+                if num in call['phone_number']:
+                    break
+            tmp.append(call)
+        calls = tmp
     if raw:
         return JSONResponse(calls)
     html = await render('calls', {'calls': calls})
