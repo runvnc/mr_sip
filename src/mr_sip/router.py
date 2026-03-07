@@ -14,6 +14,11 @@ router = APIRouter()
 @router.get('/calls')
 async def list_calls(request: Request):
     """List all call recordings with metadata"""
+    # option: get raw data
+    raw_json = request.query_params.get('raw', 'false').lower() == 'true'
+    # option, exclude numbers (comma separated)
+    exclude_numbers = request.query_params.get('exclude_numbers', '')
+    exclude_numbers = [num.strip() for num in exclude_numbers.split(',') if num.strip()]
     calls_dir = Path('data/calls')
     chicago_tz = pytz.timezone('America/Chicago')
     calls_dict = {}
@@ -34,6 +39,10 @@ async def list_calls(request: Request):
             mtime = mtime_chicago
             calls_dict[unique_key] = {'log_id': log_id, 'filename': wav_file.name, 'date': mtime.strftime('%m/%d'), 'time': mtime.strftime('%I:%M %p').lstrip('0'), 'agent_name': agent_name or 'Unknown', 'phone_number': phone_number or 'Unknown', 'session_path': f'/session/{agent_name}/{log_id}' if agent_name else None}
     calls = list(calls_dict.values())
+    if exclude_numbers:
+        calls = [call for call in calls if call['phone_number'] not in exclude_numbers]
+    if raw_json:
+        return JSONResponse({'calls': calls})
     html = await render('calls', {'calls': calls})
     return HTMLResponse(html)
 
