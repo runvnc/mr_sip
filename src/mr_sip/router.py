@@ -12,7 +12,7 @@ import whisper
 router = APIRouter()
 
 @router.get('/calls')
-async def list_calls(raw: bool = False, exclude_numbers: str = ''):
+async def list_calls(raw: bool = False, exclude_numbers: str = '', sessions: bool = False):
     """List all call recordings with metadata"""
     # option: get raw data
     exclude_numbers = [num.strip() for num in exclude_numbers.split(',') if num.strip()]
@@ -23,24 +23,31 @@ async def list_calls(raw: bool = False, exclude_numbers: str = ''):
         for wav_file in sorted(calls_dir.glob('*.wav'), key=os.path.getmtime, reverse=True):
             log_id = wav_file.stem
             chatlog_path = find_chatlog(log_id)
+             
             phone_number = None
             agent_name = None
+            session_log = None
             if chatlog_path:
                 phone_number = extract_phone_number(chatlog_path)
                 agent_name = extract_agent_name(chatlog_path)
+                if sessions:
+                    with open(chatlog_path, 'r') as f:
+                        session_log = json.load(f)
+
             unique_key = f'{log_id}_{phone_number}'
             if unique_key in calls_dict:
                 continue
             mtime_utc = datetime.fromtimestamp(wav_file.stat().st_mtime, tz=pytz.UTC)
             mtime_chicago = mtime_utc.astimezone(chicago_tz)
             mtime = mtime_chicago
-            calls_dict[unique_key] = {'log_id': log_id, 'filename': wav_file.name, 'date': mtime.strftime('%m/%d'), 'time': mtime.strftime('%I:%M %p').lstrip('0'), 'agent_name': agent_name or 'Unknown', 'phone_number': phone_number or 'Unknown', 'session_path': f'/session/{agent_name}/{log_id}' if agent_name else None}
+            calls_dict[unique_key] = {'log_id': log_id, 'filename': wav_file.name, 'session_log': session_log if session_log else None, 'date': mtime.strftime('%m/%d'), 'time': mtime.strftime('%I:%M %p').lstrip('0'), 'agent_name': agent_name or 'Unknown', 'phone_number': phone_number or 'Unknown', 'session_path': f'/session/{agent_name}/{log_id}' if agent_name else None}
     calls = list(calls_dict.values())
     if exclude_numbers:
         calls = [
             call for call in calls 
             if not any(num in call['phone_number'] for num in exclude_numbers)
         ]
+
     if raw:
         return JSONResponse(calls)
     html = await render('calls', {'calls': calls})
