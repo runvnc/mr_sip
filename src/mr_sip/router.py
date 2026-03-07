@@ -38,8 +38,8 @@ async def list_calls(raw: bool = False, exclude_numbers: str = ''):
     calls = list(calls_dict.values())
     if exclude_numbers:
         calls = [call for call in calls if call['phone_number'] not in exclude_numbers]
-    if raw_json:
-        return JSONResponse({'calls': calls})
+    if raw:
+        return JSONResponse(calls)
     html = await render('calls', {'calls': calls})
     return HTMLResponse(html)
 
