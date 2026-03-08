@@ -19,6 +19,7 @@ from datetime import datetime
 from typing import Optional, List, Tuple
 import audioop
 from collections import deque
+import numpy as np
 import threading
 import array
 
@@ -480,7 +481,7 @@ class S2SBufferedRecorder:
         """Background task that flushes buffered segments to disk periodically."""
         try:
             while self._is_recording:
-                await asyncio.sleep(15)  # Flush every 15 seconds
+                await asyncio.sleep(3)  # Flush every 3 seconds (smaller batches = less GIL pressure)
                 if self._is_recording:  # Check again after sleep
                     await asyncio.to_thread(self._flush_segments)
         except asyncio.CancelledError:
@@ -549,29 +550,32 @@ class S2SBufferedRecorder:
         if max_sample > self._total_samples_written:
             samples_to_write = max_sample - self._total_samples_written
             
-            # Build stereo buffer for new samples (initialize with silence)
-            left = array.array("h", [0] * samples_to_write)
-            right = array.array("h", [0] * samples_to_write)
+            # Use numpy arrays - C-level ops release the GIL, no pure-Python sample loops
+            left = np.zeros(samples_to_write, dtype=np.int16)
+            right = np.zeros(samples_to_write, dtype=np.int16)
             
-            # Fill in audio from segments
             for channel, start, ulaw_bytes in all_new_segments:
                 pcm = audioop.ulaw2lin(ulaw_bytes, 2)
+                pcm_np = np.frombuffer(pcm, dtype=np.int16)
                 frame_count = len(ulaw_bytes)
                 target = left if channel == 'in' else right
-                
-                for i in range(frame_count):
-                    idx = start + i - self._total_samples_written
-                    if 0 <= idx < samples_to_write:
-                        sample_bytes = pcm[2 * i : 2 * i + 2]
-                        target[idx] = int.from_bytes(sample_bytes, "little", signed=True)
-            
-            # Interleave and write
-            frames = bytearray()
-            for i in range(samples_to_write):
-                frames += left[i].to_bytes(2, "little", signed=True)
-                frames += right[i].to_bytes(2, "little", signed=True)
-            
-            self._combined_file.write(frames)
+
+                # Map segment position into the current write window
+                dst_start = start - self._total_samples_written
+                dst_end = dst_start + frame_count
+                src_start = max(0, -dst_start)
+                dst_start = max(0, dst_start)
+                dst_end = min(samples_to_write, dst_end)
+                src_end = src_start + (dst_end - dst_start)
+                if dst_start < dst_end and src_start < src_end:
+                    target[dst_start:dst_end] = pcm_np[src_start:src_end]
+
+            # Interleave with numpy - single C-level operation, GIL released
+            stereo = np.empty(samples_to_write * 2, dtype=np.int16)
+            stereo[0::2] = left
+            stereo[1::2] = right
+
+            self._combined_file.write(stereo.tobytes())
             self._combined_file.flush()
             self._total_samples_written = max_sample
         
@@ -663,42 +667,34 @@ class S2SBufferedRecorder:
 
     def _build_combined_wav(self, total_samples: int) -> None:
         """Build a stereo WAV (left=incoming, right=outgoing)."""
-        left = array.array("h", [0] * total_samples)
-        right = array.array("h", [0] * total_samples)
+        left = np.zeros(total_samples, dtype=np.int16)
+        right = np.zeros(total_samples, dtype=np.int16)
 
         # Fill left channel from incoming segments
         for start, ulaw_bytes in self._in_segments:
             pcm = audioop.ulaw2lin(ulaw_bytes, 2)  # 2 bytes/sample
-            frame_count = len(ulaw_bytes)
-            for i in range(frame_count):
-                idx = start + i
-                if idx >= total_samples:
-                    break
-                sample_bytes = pcm[2 * i : 2 * i + 2]
-                left[idx] = int.from_bytes(sample_bytes, "little", signed=True)
+            pcm_np = np.frombuffer(pcm, dtype=np.int16)
+            end = min(start + len(ulaw_bytes), total_samples)
+            if start < total_samples:
+                left[start:end] = pcm_np[:end - start]
 
         # Fill right channel from outgoing segments using timestamps
         for start, ulaw_bytes in self._out_segments:
             pcm = audioop.ulaw2lin(ulaw_bytes, 2)
-            frame_count = len(ulaw_bytes)
-            for i in range(frame_count):
-                idx = start + i
-                if idx >= total_samples:
-                    break
-                sample_bytes = pcm[2 * i : 2 * i + 2]
-                right[idx] = int.from_bytes(sample_bytes, "little", signed=True)
+            pcm_np = np.frombuffer(pcm, dtype=np.int16)
+            end = min(start + len(ulaw_bytes), total_samples)
+            if start < total_samples:
+                right[start:end] = pcm_np[:end - start]
 
         with wave.open(str(self.combined_path), "wb") as w:
             w.setnchannels(2)
             w.setsampwidth(2)
             w.setframerate(self.sample_rate)
 
-            frames = bytearray()
-            for i in range(total_samples):
-                frames += left[i].to_bytes(2, "little", signed=True)
-                frames += right[i].to_bytes(2, "little", signed=True)
-
-            w.writeframes(frames)
+            stereo = np.empty(total_samples * 2, dtype=np.int16)
+            stereo[0::2] = left
+            stereo[1::2] = right
+            w.writeframes(stereo.tobytes())
 
         logger.info(
             f"Buffered S2S combined recording saved to {self.combined_path} "
