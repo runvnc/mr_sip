@@ -535,7 +535,7 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str, jo
         logger.info(f'Queued call job {queued_job_id} for agent {agent} to call {phone_number}')
         start_wait = time.time()
         job_started = False
-        max_queue_wait = min(timeout, 720)
+        max_queue_wait = min(timeout, 420)  # 7 minutes max
         while time.time() - start_wait < max_queue_wait:
             job_data = await service_manager.get_job_data_service(queued_job_id)
             if job_data:
@@ -553,7 +553,25 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str, jo
             pass
         if not job_started:
             logger.warning(f'Call job {queued_job_id} did not start within {timeout}s')
-            return f'Job {queued_job_id} did not start within {max_queue_wait}s. It may still be queued.'
+            # Cancel the orphaned queued job
+            cancel_succeeded = False
+            try:
+                from lib.providers.commands import command_manager
+                await command_manager.cancel_job(queued_job_id)
+                logger.info(f'Cancelled orphaned call job {queued_job_id}')
+                cancel_succeeded = True
+            except Exception as ce:
+                logger.warning(f'Could not cancel orphaned job {queued_job_id}: {ce}')
+            if cancel_succeeded:
+                return (
+                    f'The call task was cancelled because the worker did not pick it up within {max_queue_wait}s. '
+                    f'Wait 10 seconds and try again, up to 3 times, after that fail the task.'
+                )
+            else:
+                return (
+                    f'The call task timed out after {max_queue_wait}s and could NOT be cancelled (job_id: {queued_job_id}). '
+                    f'DO NOT reattempt this call as it may result in a duplicate call.'
+                )
         else:
             pass
         call_start_time = time.time()
