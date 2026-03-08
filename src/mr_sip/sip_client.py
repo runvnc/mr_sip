@@ -19,7 +19,6 @@ import asyncio
 import logging
 from typing import Callable, Optional, Any
 from .audio_handler import AudioHandler
-from .whisper_vad import WhisperStreamingVAD
 
 logger = logging.getLogger(__name__)
 

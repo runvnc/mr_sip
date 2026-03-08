@@ -15,7 +15,7 @@ def create_stt_provider(provider_name: Optional[str]=None, **kwargs) -> BaseSTTP
     Create an STT provider instance.
     
     Args:
-        provider_name: Name of the provider ('deepgram', 'whisper_vad', 'streaming_whisper')
+        provider_name: Name of the provider ('deepgram', 'deepgram_flux')
                       If None, uses STT_PROVIDER environment variable or defaults to 'deepgram_flux'
         **kwargs: Additional arguments passed to the provider constructor
         
@@ -25,7 +25,6 @@ def create_stt_provider(provider_name: Optional[str]=None, **kwargs) -> BaseSTTP
     Environment Variables:
         STT_PROVIDER: Default provider name
         DEEPGRAM_API_KEY: API key for Deepgram (required for deepgram provider)
-        STT_MODEL_SIZE: Whisper model size for whisper providers (default: 'small')
     """
     if provider_name is None:
         provider_name = os.getenv('STT_PROVIDER', 'deepgram_flux')
@@ -49,11 +48,5 @@ def create_stt_provider(provider_name: Optional[str]=None, **kwargs) -> BaseSTTP
         else:
             pass
         return DeepgramFluxSTT(api_key=api_key, **kwargs)
-    elif provider_name == 'whisper_vad':
-        from .whisper_vad_stt import WhisperVADSTT
-        model_size = kwargs.get('model_size') or os.getenv('STT_MODEL_SIZE', 'small')
-        return WhisperVADSTT(model_size=model_size, **kwargs)
-    elif provider_name == 'streaming_whisper':
-        raise NotImplementedError("Streaming Whisper provider not yet implemented. Use 'whisper_vad' or 'deepgram'.")
     else:
-        raise ValueError(f'Unknown STT provider: {provider_name}. Available: deepgram, deepgram_flux, whisper_vad, streaming_whisper')
+        raise ValueError(f'Unknown STT provider: {provider_name}. Available: deepgram, deepgram_flux')

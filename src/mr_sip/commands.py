@@ -23,7 +23,7 @@ def _get_sip_config(context=None):
     """Get SIP configuration from context or environment."""
     sip_provider = os.getenv('SIP_PROVIDER', 'deepgram').lower()
     require_deepgram = os.getenv('REQUIRE_DEEPGRAM', 'true').lower() in ('true', '1', 'yes', 'on')
-    stt_provider = os.getenv('STT_PROVIDER', 'deepgram' if require_deepgram else 'whisper_vad')
+    stt_provider = os.getenv('STT_PROVIDER', 'deepgram_flux')
     return (sip_provider, require_deepgram, stt_provider)
 
 def _get_s2s_services():
