@@ -91,6 +91,7 @@ class MindRootSIPBotV2:
         self._input_frame_count = 0
         self._output_frame_count = 0
         self._dropped_frame_count = 0
+        self._frame_remainder = b""  # leftover bytes waiting to complete a 160-byte frame
         self.call_answered = asyncio.Event()
         self.enable_recording = enable_recording
         self.recording_dir = recording_dir
@@ -474,6 +475,14 @@ class MindRootSIPBotV2:
             else:
                 pass
             ulaw_audio = self._convert_to_ulaw(audio_chunk)
+
+            # Prepend leftover bytes from previous chunk so frames are always
+            # exactly 160 bytes. Short frames cause clicks/pops at the receiver.
+            ulaw_audio = self._frame_remainder + ulaw_audio
+            n_complete = (len(ulaw_audio) // 160) * 160
+            self._frame_remainder = ulaw_audio[n_complete:]
+            ulaw_audio = ulaw_audio[:n_complete]
+
             if self._interrupting:
                 return
             else:
