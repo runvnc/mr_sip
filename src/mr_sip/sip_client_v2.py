@@ -25,6 +25,7 @@ from PySIP.sip_call import SipCall
 from PySIP.filters import CallState
 from lib.providers.services import service_manager
 from .call_recorder import CallRecorder, S2SBufferedRecorder
+from .simple_recorder import SimpleRecorder
 from .stt import create_stt_provider, BaseSTTProvider, STTResult
 logger = logging.getLogger(__name__)
 
@@ -321,7 +322,7 @@ class MindRootSIPBotV2:
                         self.call_answered.set()
                         logger.info('Call fully answered and ready for audio')
                         if self.enable_recording:
-                            self.recorder = S2SBufferedRecorder(self.context.log_id, self.recording_dir, record_separate=self.record_separate, record_combined=True)
+                            self.recorder = SimpleRecorder(self.context.log_id, self.recording_dir, record_separate=self.record_separate, record_combined=True)
                             await self.recorder.start_recording()
                         else:
                             pass
