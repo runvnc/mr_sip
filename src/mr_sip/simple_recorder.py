@@ -126,26 +126,34 @@ class SimpleRecorder:
     # ------------------------------------------------------------------
 
     def record_outgoing(self, audio_data: bytes, timestamp: Optional[float] = None) -> None:
-        """Sequential placement anchored to call timeline on first frame.
+        """Place outgoing audio using a hybrid timestamp+sequential strategy.
 
-        The timestamp parameter is accepted for API compatibility but
-        not used for placement - sequential is cleaner and avoids gaps
-        from AudioPacer timing jitter.
+        - Uses the AudioPacer timestamp to anchor position in the call timeline.
+        - Takes max(timestamp-based, sequential) so:
+            * Within an utterance: sequential wins (clean, no jitter gaps)
+            * Between utterances: timestamp wins (correct gap in recording)
+            * Remainder bytes shifted backward: sequential wins (no backward placement)
         """
         if not self._is_recording:
             return
 
+        def _ts_sample(ts):
+            if ts is not None and self._call_reference_time is not None:
+                return int(max(0.0, ts - self._call_reference_time) * self.sample_rate)
+            return None
+
         if self._out_pos_samples is None:
-            # Anchor to current position in the call timeline
-            if self._call_reference_time is not None:
-                rel_s = time.perf_counter() - self._call_reference_time
-                self._out_pos_samples = int(rel_s * self.sample_rate)
-                logger.debug(
-                    f"SimpleRecorder: outgoing anchor {rel_s:.3f}s "
-                    f"= sample {self._out_pos_samples}"
-                )
-            else:
-                self._out_pos_samples = 0
+            ts = _ts_sample(timestamp)
+            if ts is None and self._call_reference_time is not None:
+                ts = int((time.perf_counter() - self._call_reference_time) * self.sample_rate)
+            self._out_pos_samples = ts or 0
+            logger.debug(f"SimpleRecorder: outgoing anchor = sample {self._out_pos_samples}")
+        elif timestamp is not None:
+            ts = _ts_sample(timestamp)
+            if ts is not None:
+                # max() keeps sequential continuity within utterance but
+                # jumps forward to timestamp position between utterances
+                self._out_pos_samples = max(self._out_pos_samples, ts)
 
         start = self._out_pos_samples
         self._out_pos_samples += len(audio_data)
