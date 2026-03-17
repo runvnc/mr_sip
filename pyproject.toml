@@ -10,7 +10,7 @@ authors = [{name = "MindRoot Team"}]
 requires-python = ">=3.8"
 dependencies = [
     "baresipy",
-    "numpy>=1.21.0",
+    "numpy>=1.21.0,<2.3",
     "scipy>=1.7.0",
     "JACK-Client>=0.5.0",
     "pydub>=0.25.0",
