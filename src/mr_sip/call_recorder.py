@@ -347,7 +347,7 @@ class S2SBufferedRecorder:
         self._call_reference_time: Optional[float] = None
         
         # Outgoing: sequential placement (timestamps kept for reference/logging only)
-        self._out_pos_samples: int = 0
+        self._out_pos_samples: Optional[int] = None  # None until first outgoing frame
 
         self._is_recording: bool = False
 
@@ -445,12 +445,20 @@ class S2SBufferedRecorder:
         if not self._is_recording:
             return
 
-        # Always place outgoing sequentially - timestamp-based placement caused
-        # gaps/artifacts due to AudioPacer timing jitter. Timestamps are kept
-        # as a parameter for API compatibility and future use.
+        # On first outgoing frame, anchor position to the call timeline so the
+        # outgoing channel starts at the right place relative to incoming.
+        # After that, place sequentially to avoid gaps from timing jitter.
+        if self._out_pos_samples is None:
+            if self._call_reference_time is not None:
+                import time as time_module
+                rel_s = time_module.perf_counter() - self._call_reference_time
+                self._out_pos_samples = int(rel_s * self.sample_rate)
+                logger.debug(f"Outgoing anchor: {rel_s:.3f}s into call = sample {self._out_pos_samples}")
+            else:
+                self._out_pos_samples = 0
+
         start_sample = self._out_pos_samples
         self._out_pos_samples += len(audio_data)
-
         self._out_segments.append((start_sample, audio_data))
 
     def interrupt_outgoing(self) -> None:  # compatibility no-op
