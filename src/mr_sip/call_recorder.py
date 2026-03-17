@@ -346,7 +346,8 @@ class S2SBufferedRecorder:
         # Single reference time for the entire call (perf_counter when first incoming frame arrives)
         self._call_reference_time: Optional[float] = None
         
-        # Outgoing uses wall-clock timestamps; base_ts anchors the timeline
+        # Outgoing: sequential placement (timestamps kept for reference/logging only)
+        self._out_pos_samples: int = 0
 
         self._is_recording: bool = False
 
@@ -435,37 +436,20 @@ class S2SBufferedRecorder:
 
         Args:
             audio_data: ulaw 8kHz audio bytes (typically 160-byte frames)
+            timestamp:  Timestamp kept for reference/logging; outgoing audio is
+                        placed sequentially to avoid gaps from timing jitter.
+                        (timestamp-based placement was causing recording artifacts)
             timestamp:  Absolute playback start time for this frame (seconds),
                         as provided by the AudioPacer -> MindRootSIPBotS2S.
         """
         if not self._is_recording:
             return
 
-        # Outgoing timestamps are perf_counter values from AudioPacer
-        # Convert them relative to the call reference time
-        if timestamp is None:
-            # Place at current time in the call, not sequentially
-            # This ensures DTMF and other non-timestamped audio is placed correctly
-            if self._call_reference_time is not None:
-                import time as time_module
-                rel_s = time_module.perf_counter() - self._call_reference_time
-                start_sample = int(rel_s * self.sample_rate)
-            elif self._out_segments:
-                # Fallback to sequential if no reference time yet
-                last_start, last_buf = self._out_segments[-1]
-                start_sample = last_start + len(last_buf)
-            else:
-                start_sample = 0
-        else:
-            if self._call_reference_time is not None:
-                # Convert absolute perf_counter timestamp to samples relative to call start
-                rel_s = max(0.0, timestamp - self._call_reference_time)
-                start_sample = int(rel_s * self.sample_rate)
-                logger.debug(f"Outgoing frame: timestamp={timestamp:.3f}, relative={rel_s:.3f}s, sample={start_sample}")
-            else:
-                # If no reference time yet (shouldn't happen), place at 0
-                logger.warning("Outgoing frame received before call reference time established")
-                start_sample = 0
+        # Always place outgoing sequentially - timestamp-based placement caused
+        # gaps/artifacts due to AudioPacer timing jitter. Timestamps are kept
+        # as a parameter for API compatibility and future use.
+        start_sample = self._out_pos_samples
+        self._out_pos_samples += len(audio_data)
 
         self._out_segments.append((start_sample, audio_data))
 
