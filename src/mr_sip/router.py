@@ -8,7 +8,6 @@ import re
 from pathlib import Path
 from datetime import datetime
 import pytz
-import whisper
 router = APIRouter()
 
 @router.get('/calls')
@@ -99,6 +98,7 @@ async def get_audio_transcript(log_id: str):
         if chatlog_path:
             agent_name = extract_agent_name(chatlog_path) or 'Unknown'
             phone_number = extract_phone_number(chatlog_path) or 'Unknown'
+        import whisper
         model = whisper.load_model('base')
         result = model.transcribe(str(audio_path))
         transcript_text = result['text']
