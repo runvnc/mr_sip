@@ -17,6 +17,7 @@ def create_stt_provider(provider_name: Optional[str]=None, **kwargs) -> BaseSTTP
     Args:
         provider_name: Name of the provider ('deepgram', 'deepgram_flux')
                       If None, uses STT_PROVIDER environment variable or defaults to 'deepgram_flux'
+                      Also supports 'silero_cohere' for local VAD+ASR (no cloud dependency).
         **kwargs: Additional arguments passed to the provider constructor
         
     Returns:
@@ -25,6 +26,7 @@ def create_stt_provider(provider_name: Optional[str]=None, **kwargs) -> BaseSTTP
     Environment Variables:
         STT_PROVIDER: Default provider name
         DEEPGRAM_API_KEY: API key for Deepgram (required for deepgram provider)
+        SILERO_VAD_THRESHOLD, SILERO_MIN_SILENCE_MS, COHERE_TRANSCRIBE_MODEL, etc.
     """
     if provider_name is None:
         provider_name = os.getenv('STT_PROVIDER', 'deepgram_flux')
@@ -49,4 +51,14 @@ def create_stt_provider(provider_name: Optional[str]=None, **kwargs) -> BaseSTTP
             pass
         return DeepgramFluxSTT(api_key=api_key, **kwargs)
     else:
-        raise ValueError(f'Unknown STT provider: {provider_name}. Available: deepgram, deepgram_flux')
+        pass
+    if provider_name == 'silero_cohere':
+        from .silero_cohere_stt import SileroCohereSTT
+        # Remove deepgram-specific keys that don't apply
+        kwargs.pop('api_key', None)
+        kwargs.pop('encoding', None)
+        return SileroCohereSTT(**kwargs)
+    raise ValueError(
+        f'Unknown STT provider: {provider_name}. '
+        f'Available: deepgram, deepgram_flux, silero_cohere'
+    )

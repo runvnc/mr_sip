@@ -92,13 +92,14 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
     deepgram_api_key = os.getenv('DEEPGRAM_API_KEY', '')
     audio_dir = os.getenv('AUDIO_DIR', os.path.expanduser('.'))
     require_deepgram = os.getenv('REQUIRE_DEEPGRAM', 'true').lower() in ('true', '1', 'yes', 'on')
+    is_local_provider = stt_provider in ('silero_cohere',)
     call_establish_timeout = int(os.getenv('SIP_CALL_ESTABLISH_TIMEOUT', '120'))
     enable_recording = os.getenv('SIP_ENABLE_RECORDING', 'false').lower() == 'true'
     recording_dir = os.getenv('SIP_RECORDING_DIR', 'data/calls')
     record_separate = os.getenv('SIP_RECORD_SEPARATE', 'false').lower() == 'true'
     logger.info(f'Initiating PySIP call to {destination} for session {context.log_id}')
     logger.info(f'Using STT provider: {stt_provider}')
-    if require_deepgram:
+    if require_deepgram and not is_local_provider:
         if stt_provider not in ['deepgram', 'deepgram_flux']:
             error_msg = f"\n\n{'=' * 80}\nFATAL ERROR: Deepgram is required but STT_PROVIDER='{stt_provider}'\n{'=' * 80}\nPlease set: export STT_PROVIDER=deepgram_flux (recommended) or deepgram\nOr disable requirement: export REQUIRE_DEEPGRAM=false\n{'=' * 80}\n"
             logger.error(error_msg)
@@ -106,7 +107,7 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
             sys.exit(1)
         else:
             pass
-        if not deepgram_api_key:
+        if not deepgram_api_key and not is_local_provider:
             error_msg = f"\n\n{'=' * 80}\nFATAL ERROR: DEEPGRAM_API_KEY environment variable not set\n{'=' * 80}\nDeepgram is required but no API key was provided.\n\nTo fix this:\n1. Get an API key from https://deepgram.com/\n2. Set it: export DEEPGRAM_API_KEY='your_key_here'\n\nOr to disable this requirement:\n   export REQUIRE_DEEPGRAM=false\n{'=' * 80}\n"
             logger.error(error_msg)
             import sys
@@ -183,6 +184,19 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
             else:
                 pass
             stt_config['keyterm'] = ['employee', 'employees', 'employment verification', 'manager', 'HR', 'date-of-birth']
+        elif stt_provider == 'silero_cohere':
+            logger.info('silero_cohere configuration prepared')
+            for env_key, cfg_key in [
+                ('SILERO_VAD_THRESHOLD',    'threshold'),
+                ('SILERO_MIN_SILENCE_MS',   'min_silence_duration_ms'),
+                ('SILERO_SPEECH_PAD_MS',    'speech_pad_ms'),
+                ('COHERE_TRANSCRIBE_MODEL', 'cohere_model_id'),
+                ('COHERE_TRANSCRIBE_LANGUAGE', 'language'),
+                ('COHERE_MAX_UTTERANCE_S',  'max_utterance_duration_s'),
+            ]:
+                val = os.environ.get(env_key)
+                if val is not None:
+                    stt_config[cfg_key] = val
         elif stt_provider == 'whisper_vad':
             stt_model_size = os.getenv('STT_MODEL_SIZE', 'small')
             stt_config['model_size'] = stt_model_size
