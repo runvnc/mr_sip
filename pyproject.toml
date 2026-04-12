@@ -21,6 +21,7 @@ dependencies = [
     "deepgram-sdk>=3.0.0",
     "soundfile>=0.13.1",
     "PySIPio @ git+https://github.com/runvnc/PySIP.git"
+    "silero-vad",
 ]
 
 [project.optional-dependencies]
