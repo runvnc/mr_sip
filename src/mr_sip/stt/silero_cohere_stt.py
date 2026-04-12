@@ -7,9 +7,7 @@ Audio pipeline:
   ulaw 8kHz (SIP) -> Silero VAD (8kHz native) -> speech detection
   On speech start  -> fire barge-in callback (turn_resumed)
   Buffer ulaw during speech
-  On speech end    -> ulaw -> PCM float32 -> resample 8->16kHz
-                  -> Cohere Transcribe -> text -> emit final
-  (Cohere Transcribe is called via HTTP POST to COHERE_TRANSCRIBE_URL)
+  On speech end    -> POST ulaw bytes to COHERE_TRANSCRIBE_URL -> text -> emit final
 
 Key tuning parameters (all configurable via stt_config dict or env vars):
   threshold              - VAD speech sensitivity (0.0-1.0, default 0.5)
@@ -21,7 +19,9 @@ import asyncio
 import audioop
 import logging
 import os
+import sys
 import time
+import traceback
 from typing import Optional, Callable
 
 import urllib.request
@@ -38,15 +38,29 @@ VAD_CHUNK_SAMPLES = 256
 VAD_SAMPLE_RATE = 8000
 COHERE_SAMPLE_RATE = 16000
 
+# Dedicated debug log file - always written regardless of log level
+DEBUG_LOG = '/tmp/silero_cohere_stt.log'
+
+
+def _dlog(msg: str):
+    """Write a timestamped line to the debug log file and also to logger.info."""
+    line = f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] {msg}'
+    try:
+        with open(DEBUG_LOG, 'a') as f:
+            f.write(line + '\n')
+            f.flush()
+    except Exception:
+        pass
+    logger.info(msg)
+
 
 class SileroCohereSTT(BaseSTTProvider):
     """
-    Local VAD + ASR STT provider.
+    Local VAD + remote ASR STT provider.
 
     Barge-in detection: Silero VAD fires on every speech onset.
     The turn_resumed_callback is called immediately, which halts AI audio
-    output and cancels any in-progress LLM response - same behaviour as
-    Deepgram Flux TurnResumed.
+    output and cancels any in-progress LLM response.
     """
 
     def __init__(
@@ -62,22 +76,6 @@ class SileroCohereSTT(BaseSTTProvider):
         cohere_transcribe_url: Optional[str] = None,
         **kwargs,
     ):
-        """
-        Args:
-            sample_rate: Input audio sample rate (must be 8000 for SIP ulaw).
-            threshold: Silero VAD speech probability threshold (0-1, default 0.5).
-                       Lower = more sensitive, higher = fewer false triggers.
-            min_silence_duration_ms: Silence duration (ms) required to end an
-                       utterance. Controls end-of-speech latency (default 400ms).
-            speech_pad_ms: Padding added to start/end of detected speech (default 30ms).
-            language: Language code for Cohere Transcribe (default 'en').
-            cohere_model_id: HuggingFace model ID for Cohere Transcribe.
-            device: Torch device ('cuda', 'cpu', or None for auto-detect).
-            max_utterance_duration_s: Hard cap on utterance buffer length (default 30s).
-            cohere_transcribe_url: URL of the remote Cohere Transcribe HTTP server.
-                e.g. 'https://<POD_ID>-8881.proxy.runpod.net'
-                If None, falls back to COHERE_TRANSCRIBE_URL env var.
-        """
         super().__init__(sample_rate=sample_rate)
 
         self.threshold = float(os.getenv('SILERO_VAD_THRESHOLD', str(threshold)))
@@ -97,21 +95,24 @@ class SileroCohereSTT(BaseSTTProvider):
             self.device = device
         self.device = os.getenv('COHERE_TRANSCRIBE_DEVICE', self.device)
 
-        # Remote transcription endpoint (preferred over local model)
         self.cohere_transcribe_url = (
             cohere_transcribe_url
             or os.getenv('COHERE_TRANSCRIBE_URL', '')
         ).rstrip('/')
 
-        # Models - loaded lazily in start()
+        # Models (only used for local fallback)
         self.vad_model = None
         self.vad_iterator = None
+        self.cohere_model = None
+        self.cohere_processor = None
 
         # Audio state
-        self._vad_buffer: bytes = b''       # accumulate bytes until VAD chunk size
-        self._speech_buffer: bytes = b''    # ulaw bytes buffered during speech
+        self._vad_buffer: bytes = b''
+        self._speech_buffer: bytes = b''
         self._is_speaking: bool = False
         self._speech_start_time: float = 0.0
+        self._frames_received: int = 0
+        self._vad_chunks_processed: int = 0
 
         # Callbacks
         self._turn_resumed_callback: Optional[Callable] = None
@@ -121,10 +122,12 @@ class SileroCohereSTT(BaseSTTProvider):
         self._total_audio_bytes: int = 0
         self._transcription_times: list = []
 
-        logger.info(
-            f'SileroCohereSTT init: threshold={self.threshold}, '
+        _dlog(
+            f'SileroCohereSTT.__init__: threshold={self.threshold}, '
             f'min_silence={self.min_silence_duration_ms}ms, '
-            f'remote_url={self.cohere_transcribe_url or "(none - will load locally)"}'
+            f'speech_pad={self.speech_pad_ms}ms, '
+            f'remote_url="{self.cohere_transcribe_url or "(none - local fallback)"}", '
+            f'language={self.language}'
         )
 
     # ------------------------------------------------------------------
@@ -132,24 +135,53 @@ class SileroCohereSTT(BaseSTTProvider):
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Load Silero VAD and Cohere Transcribe models."""
+        """Load Silero VAD. Validate remote URL if configured."""
         if self.is_running:
-            logger.warning('SileroCohereSTT already running')
+            _dlog('SileroCohereSTT.start: already running, skipping')
             return
 
-        logger.info('Loading Silero VAD model...')
-        await asyncio.get_event_loop().run_in_executor(None, self._load_vad_model)
-        logger.info('Silero VAD loaded.')
+        _dlog('SileroCohereSTT.start: loading Silero VAD model...')
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, self._load_vad_model)
+        except Exception as e:
+            _dlog(f'SileroCohereSTT.start: FATAL - failed to load Silero VAD: {e}')
+            _dlog(traceback.format_exc())
+            raise RuntimeError(
+                f'SileroCohereSTT: failed to load Silero VAD model. '
+                f'Is silero-vad installed? Error: {e}'
+            ) from e
 
-        if not self.cohere_transcribe_url:
-            logger.info(f'No COHERE_TRANSCRIBE_URL set - loading model locally ({self.cohere_model_id})...')
-            await asyncio.get_event_loop().run_in_executor(None, self._load_cohere_model)
-            logger.info('Cohere Transcribe loaded locally.')
+        _dlog('SileroCohereSTT.start: Silero VAD loaded OK.')
+
+        if self.cohere_transcribe_url:
+            _dlog(f'SileroCohereSTT.start: checking remote Cohere Transcribe at {self.cohere_transcribe_url} ...')
+            try:
+                health_url = f'{self.cohere_transcribe_url}/health'
+                with urllib.request.urlopen(health_url, timeout=10) as resp:
+                    body = _json.loads(resp.read())
+                _dlog(f'SileroCohereSTT.start: remote health OK: {body}')
+            except Exception as e:
+                _dlog(f'SileroCohereSTT.start: FATAL - remote Cohere Transcribe not reachable at {self.cohere_transcribe_url}: {e}')
+                raise RuntimeError(
+                    f'SileroCohereSTT: remote Cohere Transcribe server not reachable at '
+                    f'{self.cohere_transcribe_url}/health. '
+                    f'Set COHERE_TRANSCRIBE_URL correctly or start the server. Error: {e}'
+                ) from e
         else:
-            logger.info(f'Using remote Cohere Transcribe at {self.cohere_transcribe_url}')
+            _dlog('SileroCohereSTT.start: no remote URL - loading Cohere model locally...')
+            try:
+                await asyncio.get_event_loop().run_in_executor(None, self._load_cohere_model)
+                _dlog('SileroCohereSTT.start: local Cohere model loaded OK.')
+            except Exception as e:
+                _dlog(f'SileroCohereSTT.start: FATAL - failed to load local Cohere model: {e}')
+                _dlog(traceback.format_exc())
+                raise RuntimeError(
+                    f'SileroCohereSTT: failed to load Cohere Transcribe model locally. '
+                    f'Set COHERE_TRANSCRIBE_URL to use remote server instead. Error: {e}'
+                ) from e
 
         self.is_running = True
-        logger.info('SileroCohereSTT started.')
+        _dlog('SileroCohereSTT.start: provider started and ready.')
 
     def _load_vad_model(self):
         """Load Silero VAD (blocking, run in executor)."""
@@ -157,10 +189,8 @@ class SileroCohereSTT(BaseSTTProvider):
             from silero_vad import load_silero_vad, VADIterator
         except ImportError:
             raise ImportError(
-                'silero-vad package not installed. '
-                'Run: pip install silero-vad'
+                'silero-vad package not installed. Run: pip install silero-vad'
             )
-
         self.vad_model = load_silero_vad(onnx=False)
         self.vad_iterator = VADIterator(
             model=self.vad_model,
@@ -169,6 +199,8 @@ class SileroCohereSTT(BaseSTTProvider):
             min_silence_duration_ms=self.min_silence_duration_ms,
             speech_pad_ms=self.speech_pad_ms,
         )
+        _dlog(f'_load_vad_model: VADIterator created (threshold={self.threshold}, '
+              f'min_silence={self.min_silence_duration_ms}ms, sr={VAD_SAMPLE_RATE})')
 
     def _load_cohere_model(self):
         """Load Cohere Transcribe model locally (fallback when no remote URL)."""
@@ -196,7 +228,8 @@ class SileroCohereSTT(BaseSTTProvider):
                 self.vad_iterator.reset_states()
             except Exception:
                 pass
-        logger.info('SileroCohereSTT stopped.')
+        _dlog(f'SileroCohereSTT stopped. Stats: frames={self._frames_received}, '
+              f'vad_chunks={self._vad_chunks_processed}, utterances={self._utterance_count}')
 
     # ------------------------------------------------------------------
     # Audio ingestion
@@ -205,25 +238,30 @@ class SileroCohereSTT(BaseSTTProvider):
     async def add_audio_bytes(self, audio_bytes: bytes) -> None:
         """
         Feed raw ulaw 8kHz bytes from SIP into the VAD pipeline.
-
         Called for every RTP frame (~20ms / 160 bytes).
-        Accumulates bytes into 256-byte (32ms) VAD chunks.
         """
         if not self.is_running:
             return
 
+        self._frames_received += 1
         self._total_audio_bytes += len(audio_bytes)
+
+        # Periodic heartbeat log every 500 frames (~10s)
+        if self._frames_received % 500 == 0:
+            _dlog(
+                f'add_audio_bytes: heartbeat - frames={self._frames_received}, '
+                f'vad_chunks={self._vad_chunks_processed}, '
+                f'is_speaking={self._is_speaking}, '
+                f'speech_buf={len(self._speech_buffer)}B, '
+                f'utterances={self._utterance_count}'
+            )
 
         # Buffer audio during speech for transcription
         if self._is_speaking:
             self._speech_buffer += audio_bytes
-            # Hard cap: prevent runaway buffering
             max_bytes = int(self.max_utterance_duration_s * VAD_SAMPLE_RATE)
             if len(self._speech_buffer) > max_bytes:
-                logger.warning(
-                    f'Utterance exceeded {self.max_utterance_duration_s}s limit, '
-                    'forcing end-of-speech.'
-                )
+                _dlog(f'add_audio_bytes: utterance exceeded {self.max_utterance_duration_s}s limit, forcing end-of-speech')
                 await self._on_speech_end()
                 return
 
@@ -237,13 +275,9 @@ class SileroCohereSTT(BaseSTTProvider):
             await self._process_vad_chunk(chunk_bytes)
 
     async def add_audio(self, audio_chunk: np.ndarray) -> None:
-        """
-        Compatibility: accept float32 numpy audio and convert to ulaw bytes.
-        Not the primary path for SIP (use add_audio_bytes instead).
-        """
+        """Compatibility: accept float32 numpy audio and convert to ulaw bytes."""
         if not self.is_running:
             return
-        # Convert float32 -> int16 -> ulaw
         audio_int16 = (np.clip(audio_chunk, -1.0, 1.0) * 32767).astype(np.int16)
         pcm_bytes = audio_int16.tobytes()
         ulaw_bytes = audioop.lin2ulaw(pcm_bytes, 2)
@@ -254,11 +288,14 @@ class SileroCohereSTT(BaseSTTProvider):
     # ------------------------------------------------------------------
 
     async def _process_vad_chunk(self, chunk_bytes: bytes) -> None:
-        """
-        Run one 256-byte (32ms) ulaw chunk through Silero VAD.
-        Fires speech start/end events.
-        """
+        """Run one 256-byte (32ms) ulaw chunk through Silero VAD."""
         try:
+            self._vad_chunks_processed += 1
+
+            # Log first chunk to confirm VAD is receiving audio
+            if self._vad_chunks_processed == 1:
+                _dlog('_process_vad_chunk: first VAD chunk received - VAD is active')
+
             # ulaw -> PCM int16 -> float32 tensor
             pcm_bytes = audioop.ulaw2lin(chunk_bytes, 2)
             audio_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
@@ -271,72 +308,65 @@ class SileroCohereSTT(BaseSTTProvider):
             if result is None:
                 return
 
+            _dlog(f'_process_vad_chunk: VAD event: {result}')
+
             if 'start' in result:
                 await self._on_speech_start()
             elif 'end' in result:
                 await self._on_speech_end()
 
         except Exception as e:
-            logger.error(f'Error in VAD chunk processing: {e}')
+            _dlog(f'_process_vad_chunk: ERROR: {e}\n{traceback.format_exc()}')
 
     async def _on_speech_start(self) -> None:
-        """
-        Called when Silero VAD detects speech onset.
-
-        Fires the barge-in (turn_resumed) callback unconditionally.
-        This halts AI audio output and cancels any in-progress LLM response.
-        The caller (sip_client_v2._handle_turn_resumed) is safe to call even
-        when the AI is not speaking - it will be a no-op in that case.
-        """
+        """Called when Silero VAD detects speech onset."""
         if self._is_speaking:
-            return  # already in a speech segment
+            return
 
-        logger.info('[VAD] Speech start detected')
         self._is_speaking = True
         self._speech_start_time = time.time()
-        self._speech_buffer = b''  # reset buffer for new utterance
+        self._speech_buffer = b''
+        _dlog(f'[VAD] Speech START (utterance #{self._utterance_count + 1})')
 
-        # Fire barge-in callback - stops AI audio and cancels draft response
         if self._turn_resumed_callback is not None:
             try:
+                _dlog('[VAD] Firing turn_resumed_callback (barge-in)')
                 self._turn_resumed_callback()
             except Exception as e:
-                logger.error(f'Error in turn_resumed_callback: {e}')
+                _dlog(f'_on_speech_start: turn_resumed_callback error: {e}')
 
     async def _on_speech_end(self) -> None:
-        """
-        Called when Silero VAD detects end-of-speech.
-        Transcribes the buffered audio and emits a final STTResult.
-        """
+        """Called when Silero VAD detects end-of-speech. Transcribes buffered audio."""
         if not self._is_speaking:
             return
 
-        logger.info('[VAD] Speech end detected')
         self._is_speaking = False
-
+        speech_duration = time.time() - self._speech_start_time
         speech_bytes = self._speech_buffer
         self._speech_buffer = b''
 
+        _dlog(f'[VAD] Speech END: {speech_duration:.2f}s, {len(speech_bytes)} bytes buffered')
+
         if len(speech_bytes) < VAD_CHUNK_SAMPLES * 2:
-            logger.debug('Speech segment too short, skipping transcription.')
+            _dlog('[VAD] Speech segment too short (<512 bytes), skipping transcription')
             return
 
-        # Transcribe in executor to avoid blocking the event loop
         t0 = time.time()
+        _dlog(f'[TRANSCRIBE] Starting transcription of {len(speech_bytes)} bytes...')
         try:
             text = await asyncio.get_event_loop().run_in_executor(
                 None, self._transcribe_ulaw, speech_bytes
             )
         except Exception as e:
-            logger.error(f'Transcription error: {e}')
+            _dlog(f'[TRANSCRIBE] ERROR: {e}\n{traceback.format_exc()}')
             return
 
         elapsed = time.time() - t0
         self._transcription_times.append(elapsed)
-        logger.info(f'[TRANSCRIBE] {elapsed*1000:.0f}ms -> "{text}"')
+        _dlog(f'[TRANSCRIBE] Done in {elapsed*1000:.0f}ms -> "{text}"')
 
         if not text or not text.strip():
-            logger.debug('Empty transcription, skipping.')
+            _dlog('[TRANSCRIBE] Empty result, skipping emit')
             return
 
         self._utterance_count += 1
@@ -348,6 +378,7 @@ class SileroCohereSTT(BaseSTTProvider):
             timestamp=time.time(),
         )
         result.utterance_num = self._utterance_count
+        _dlog(f'[EMIT] Final utterance #{self._utterance_count}: "{text.strip()}"')
         self._emit_final(result)
 
     # ------------------------------------------------------------------
@@ -355,13 +386,7 @@ class SileroCohereSTT(BaseSTTProvider):
     # ------------------------------------------------------------------
 
     def _transcribe_ulaw(self, ulaw_bytes: bytes) -> str:
-        """
-        Convert ulaw 8kHz bytes -> float32 PCM -> resample to 16kHz
-        -> Cohere Transcribe -> text.
-
-        If COHERE_TRANSCRIBE_URL is set, POSTs to the remote server.
-        Otherwise falls back to local model inference.
-        """
+        """Route to remote or local transcription."""
         if self.cohere_transcribe_url:
             return self._transcribe_remote(ulaw_bytes)
         return self._transcribe_local(ulaw_bytes)
@@ -369,6 +394,7 @@ class SileroCohereSTT(BaseSTTProvider):
     def _transcribe_remote(self, ulaw_bytes: bytes) -> str:
         """POST ulaw bytes to the remote Cohere Transcribe HTTP server."""
         url = f'{self.cohere_transcribe_url}/transcribe?language={self.language}'
+        _dlog(f'_transcribe_remote: POST {len(ulaw_bytes)} bytes to {url}')
         req = urllib.request.Request(
             url,
             data=ulaw_bytes,
@@ -378,37 +404,31 @@ class SileroCohereSTT(BaseSTTProvider):
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 body = _json.loads(resp.read())
-                return body.get('text', '')
+                text = body.get('text', '')
+                _dlog(f'_transcribe_remote: response: {body}')
+                return text
         except Exception as e:
-            logger.error(f'Remote transcription failed: {e}')
+            _dlog(f'_transcribe_remote: FAILED: {e}\n{traceback.format_exc()}')
             return ''
 
     def _transcribe_local(self, ulaw_bytes: bytes) -> str:
-        """Run Cohere Transcribe locally (fallback, requires local model loaded)."""
+        """Run Cohere Transcribe locally (fallback)."""
         if self.cohere_model is None:
-            logger.error('Local Cohere model not loaded and no remote URL configured.')
+            _dlog('_transcribe_local: ERROR - local model not loaded and no remote URL')
             return ''
 
-        # ulaw -> PCM int16
         pcm_bytes = audioop.ulaw2lin(ulaw_bytes, 2)
         audio_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
         audio_float = audio_int16.astype(np.float32) / 32768.0
-
-        # Resample 8kHz -> 16kHz (simple 2x linear interpolation)
         audio_16k = self._resample_2x(audio_float)
 
-        # Run Cohere Transcribe
         inputs = self.cohere_processor(
             audio=audio_16k,
             sampling_rate=COHERE_SAMPLE_RATE,
             return_tensors='pt',
             language=self.language,
         )
-
-        # Extract audio_chunk_index before moving tensors to device
         audio_chunk_index = inputs.pop('audio_chunk_index', None)
-
-        # Move inputs to device
         inputs_on_device = {
             k: v.to(self.device) if hasattr(v, 'to') else v
             for k, v in inputs.items()
@@ -417,7 +437,6 @@ class SileroCohereSTT(BaseSTTProvider):
         with torch.no_grad():
             outputs = self.cohere_model(**inputs_on_device)
 
-        # Decode
         try:
             text = self.cohere_processor.decode(
                 outputs,
@@ -425,33 +444,22 @@ class SileroCohereSTT(BaseSTTProvider):
                 audio_chunk_index=audio_chunk_index,
                 language=self.language,
             )
-            # decode() may return a list or a string depending on version
             if isinstance(text, list):
                 text = text[0] if text else ''
         except Exception:
-            # Fallback: try batch_decode on the raw output tensor
             try:
-                if hasattr(outputs, 'logits'):
-                    ids = outputs.logits.argmax(dim=-1)
-                else:
-                    ids = outputs
-                text = self.cohere_processor.batch_decode(
-                    ids, skip_special_tokens=True
-                )[0]
+                ids = outputs.logits.argmax(dim=-1) if hasattr(outputs, 'logits') else outputs
+                text = self.cohere_processor.batch_decode(ids, skip_special_tokens=True)[0]
             except Exception as e2:
-                logger.error(f'Decode fallback failed: {e2}')
+                _dlog(f'_transcribe_local: decode fallback failed: {e2}')
                 text = ''
 
         return text
 
     @staticmethod
     def _resample_2x(audio: np.ndarray) -> np.ndarray:
-        """
-        Upsample audio by 2x using linear interpolation (8kHz -> 16kHz).
-        Fast and dependency-free.
-        """
+        """Upsample by 2x via linear interpolation (8kHz -> 16kHz)."""
         n = len(audio)
-        # Interleave original samples with interpolated midpoints
         out = np.empty(n * 2, dtype=np.float32)
         out[0::2] = audio
         out[1::2] = np.concatenate([
@@ -465,12 +473,9 @@ class SileroCohereSTT(BaseSTTProvider):
     # ------------------------------------------------------------------
 
     def set_turn_resumed_callback(self, callback: Optional[Callable]) -> None:
-        """
-        Set the barge-in callback.
-        Called by sip_client_v2 during STT setup.
-        Fired on every speech onset to halt AI audio and cancel draft responses.
-        """
+        """Set the barge-in callback (called on every speech onset)."""
         self._turn_resumed_callback = callback
+        _dlog(f'set_turn_resumed_callback: callback set to {callback}')
 
     # ------------------------------------------------------------------
     # Stats
@@ -487,9 +492,13 @@ class SileroCohereSTT(BaseSTTProvider):
             'asr_model': self.cohere_model_id,
             'is_running': self.is_running,
             'utterance_count': self._utterance_count,
+            'frames_received': self._frames_received,
+            'vad_chunks_processed': self._vad_chunks_processed,
             'total_audio_bytes': self._total_audio_bytes,
             'avg_transcription_ms': avg_transcription_ms,
             'threshold': self.threshold,
             'min_silence_duration_ms': self.min_silence_duration_ms,
             'device': self.device,
+            'remote_url': self.cohere_transcribe_url,
+            'debug_log': DEBUG_LOG,
         }
