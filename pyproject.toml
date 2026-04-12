@@ -20,7 +20,7 @@ dependencies = [
     "websocket-client",
     "deepgram-sdk>=3.0.0",
     "soundfile>=0.13.1",
-    "PySIPio @ git+https://github.com/runvnc/PySIP.git"
+    "PySIPio @ git+https://github.com/runvnc/PySIP.git",
     "silero-vad",
 ]
 
