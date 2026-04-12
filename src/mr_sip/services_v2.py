@@ -193,6 +193,7 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
                 ('COHERE_TRANSCRIBE_MODEL', 'cohere_model_id'),
                 ('COHERE_TRANSCRIBE_LANGUAGE', 'language'),
                 ('COHERE_MAX_UTTERANCE_S',  'max_utterance_duration_s'),
+                ('COHERE_TRANSCRIBE_URL',   'cohere_transcribe_url'),
             ]:
                 val = os.environ.get(env_key)
                 if val is not None:

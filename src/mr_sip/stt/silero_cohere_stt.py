@@ -1,7 +1,7 @@
 """
 Silero VAD + Cohere Transcribe STT Provider
 
-Local, zero-cloud-dependency speech-to-text for SIP calls.
+Silero VAD runs locally (CPU-friendly). Cohere Transcribe runs on a remote GPU server.
 
 Audio pipeline:
   ulaw 8kHz (SIP) -> Silero VAD (8kHz native) -> speech detection
@@ -9,6 +9,7 @@ Audio pipeline:
   Buffer ulaw during speech
   On speech end    -> ulaw -> PCM float32 -> resample 8->16kHz
                   -> Cohere Transcribe -> text -> emit final
+  (Cohere Transcribe is called via HTTP POST to COHERE_TRANSCRIBE_URL)
 
 Key tuning parameters (all configurable via stt_config dict or env vars):
   threshold              - VAD speech sensitivity (0.0-1.0, default 0.5)
@@ -23,6 +24,8 @@ import os
 import time
 from typing import Optional, Callable
 
+import urllib.request
+import json as _json
 import numpy as np
 import torch
 
@@ -56,6 +59,7 @@ class SileroCohereSTT(BaseSTTProvider):
         cohere_model_id: str = 'CohereLabs/cohere-transcribe-03-2026',
         device: Optional[str] = None,
         max_utterance_duration_s: float = 30.0,
+        cohere_transcribe_url: Optional[str] = None,
         **kwargs,
     ):
         """
@@ -70,6 +74,9 @@ class SileroCohereSTT(BaseSTTProvider):
             cohere_model_id: HuggingFace model ID for Cohere Transcribe.
             device: Torch device ('cuda', 'cpu', or None for auto-detect).
             max_utterance_duration_s: Hard cap on utterance buffer length (default 30s).
+            cohere_transcribe_url: URL of the remote Cohere Transcribe HTTP server.
+                e.g. 'https://<POD_ID>-8881.proxy.runpod.net'
+                If None, falls back to COHERE_TRANSCRIBE_URL env var.
         """
         super().__init__(sample_rate=sample_rate)
 
@@ -90,11 +97,15 @@ class SileroCohereSTT(BaseSTTProvider):
             self.device = device
         self.device = os.getenv('COHERE_TRANSCRIBE_DEVICE', self.device)
 
+        # Remote transcription endpoint (preferred over local model)
+        self.cohere_transcribe_url = (
+            cohere_transcribe_url
+            or os.getenv('COHERE_TRANSCRIBE_URL', '')
+        ).rstrip('/')
+
         # Models - loaded lazily in start()
         self.vad_model = None
         self.vad_iterator = None
-        self.cohere_model = None
-        self.cohere_processor = None
 
         # Audio state
         self._vad_buffer: bytes = b''       # accumulate bytes until VAD chunk size
@@ -113,7 +124,7 @@ class SileroCohereSTT(BaseSTTProvider):
         logger.info(
             f'SileroCohereSTT init: threshold={self.threshold}, '
             f'min_silence={self.min_silence_duration_ms}ms, '
-            f'device={self.device}, model={self.cohere_model_id}'
+            f'remote_url={self.cohere_transcribe_url or "(none - will load locally)"}'
         )
 
     # ------------------------------------------------------------------
@@ -130,9 +141,12 @@ class SileroCohereSTT(BaseSTTProvider):
         await asyncio.get_event_loop().run_in_executor(None, self._load_vad_model)
         logger.info('Silero VAD loaded.')
 
-        logger.info(f'Loading Cohere Transcribe model ({self.cohere_model_id})...')
-        await asyncio.get_event_loop().run_in_executor(None, self._load_cohere_model)
-        logger.info('Cohere Transcribe loaded.')
+        if not self.cohere_transcribe_url:
+            logger.info(f'No COHERE_TRANSCRIBE_URL set - loading model locally ({self.cohere_model_id})...')
+            await asyncio.get_event_loop().run_in_executor(None, self._load_cohere_model)
+            logger.info('Cohere Transcribe loaded locally.')
+        else:
+            logger.info(f'Using remote Cohere Transcribe at {self.cohere_transcribe_url}')
 
         self.is_running = True
         logger.info('SileroCohereSTT started.')
@@ -157,13 +171,10 @@ class SileroCohereSTT(BaseSTTProvider):
         )
 
     def _load_cohere_model(self):
-        """Load Cohere Transcribe model (blocking, run in executor)."""
+        """Load Cohere Transcribe model locally (fallback when no remote URL)."""
         from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
-
         self.cohere_processor = AutoProcessor.from_pretrained(
-            self.cohere_model_id,
-            trust_remote_code=True,
-        )
+            self.cohere_model_id, trust_remote_code=True)
         self.cohere_model = AutoModelForSpeechSeq2Seq.from_pretrained(
             self.cohere_model_id,
             device_map=self.device,
@@ -348,8 +359,36 @@ class SileroCohereSTT(BaseSTTProvider):
         Convert ulaw 8kHz bytes -> float32 PCM -> resample to 16kHz
         -> Cohere Transcribe -> text.
 
-        Runs synchronously (called via run_in_executor).
+        If COHERE_TRANSCRIBE_URL is set, POSTs to the remote server.
+        Otherwise falls back to local model inference.
         """
+        if self.cohere_transcribe_url:
+            return self._transcribe_remote(ulaw_bytes)
+        return self._transcribe_local(ulaw_bytes)
+
+    def _transcribe_remote(self, ulaw_bytes: bytes) -> str:
+        """POST ulaw bytes to the remote Cohere Transcribe HTTP server."""
+        url = f'{self.cohere_transcribe_url}/transcribe?language={self.language}'
+        req = urllib.request.Request(
+            url,
+            data=ulaw_bytes,
+            headers={'Content-Type': 'application/octet-stream'},
+            method='POST',
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = _json.loads(resp.read())
+                return body.get('text', '')
+        except Exception as e:
+            logger.error(f'Remote transcription failed: {e}')
+            return ''
+
+    def _transcribe_local(self, ulaw_bytes: bytes) -> str:
+        """Run Cohere Transcribe locally (fallback, requires local model loaded)."""
+        if self.cohere_model is None:
+            logger.error('Local Cohere model not loaded and no remote URL configured.')
+            return ''
+
         # ulaw -> PCM int16
         pcm_bytes = audioop.ulaw2lin(ulaw_bytes, 2)
         audio_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
