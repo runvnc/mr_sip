@@ -157,7 +157,12 @@ class SileroCohereSTT(BaseSTTProvider):
             _dlog(f'SileroCohereSTT.start: checking remote Cohere Transcribe at {self.cohere_transcribe_url} ...')
             try:
                 health_url = f'{self.cohere_transcribe_url}/health'
-                with urllib.request.urlopen(health_url, timeout=10) as resp:
+                req = urllib.request.Request(
+                    health_url,
+                    headers={'User-Agent': 'mr-sip/1.0'},
+                    method='GET',
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
                     body = _json.loads(resp.read())
                 _dlog(f'SileroCohereSTT.start: remote health OK: {body}')
             except Exception as e:
