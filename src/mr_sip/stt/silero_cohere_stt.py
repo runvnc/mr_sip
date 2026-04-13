@@ -403,7 +403,8 @@ class SileroCohereSTT(BaseSTTProvider):
         req = urllib.request.Request(
             url,
             data=ulaw_bytes,
-            headers={'Content-Type': 'application/octet-stream'},
+            headers={'Content-Type': 'application/octet-stream',
+                     'User-Agent': 'mr-sip/1.0'},
             method='POST',
         )
         try:
