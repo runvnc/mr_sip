@@ -6,6 +6,7 @@ Silero VAD runs locally (CPU-friendly). Cohere Transcribe runs on a remote GPU s
 Audio pipeline:
   ulaw 8kHz (SIP) -> Silero VAD (8kHz native) -> speech detection
   AGC normalization applied per chunk before VAD and speech buffering
+  Pre-roll buffer: last ~300ms of audio prepended to speech buffer on speech start
   On speech start  -> fire barge-in callback (turn_resumed)
   Buffer ulaw during speech
   On speech end    -> POST ulaw bytes to COHERE_TRANSCRIBE_URL -> text -> emit final
@@ -16,6 +17,7 @@ Key tuning parameters (all configurable via stt_config dict or env vars):
   speech_pad_ms          - padding added around speech (default 30ms)
   max_utterance_duration_s - hard cap on utterance length (default 30s)
   agc_target_rms         - AGC target RMS level (default 0.1, 0 to disable)
+  preroll_ms             - pre-roll buffer size in ms (default 300ms, 0 to disable)
 """
 import asyncio
 import audioop
@@ -30,6 +32,7 @@ import urllib.request
 import json as _json
 import numpy as np
 import torch
+from collections import deque
 
 from .base_stt import BaseSTTProvider, STTResult
 
@@ -96,6 +99,12 @@ class SileroCohereSTT(BaseSTTProvider):
             os.getenv('SILERO_AGC_TARGET_RMS', '0.1')
         )
 
+        # Pre-roll: keep a rolling buffer of recent chunks to prepend on speech start
+        preroll_ms = int(os.getenv('SILERO_PREROLL_MS', '300'))
+        # Each VAD chunk is 32ms; calculate how many chunks to keep
+        self._preroll_chunks = max(0, preroll_ms // 32)
+        self._preroll_buffer: deque = deque(maxlen=self._preroll_chunks) if self._preroll_chunks > 0 else deque(maxlen=0)
+
         if device is None:
             self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         else:
@@ -134,6 +143,7 @@ class SileroCohereSTT(BaseSTTProvider):
             f'min_silence={self.min_silence_duration_ms}ms, '
             f'speech_pad={self.speech_pad_ms}ms, '
             f'agc_target_rms={self.agc_target_rms}, '
+            f'preroll_chunks={self._preroll_chunks} (~{self._preroll_chunks * 32}ms), '
             f'remote_url="{self.cohere_transcribe_url or "(none - local fallback)"}", '
             f'language={self.language}'
         )
@@ -236,6 +246,7 @@ class SileroCohereSTT(BaseSTTProvider):
         self._is_speaking = False
         self._vad_buffer = b''
         self._speech_buffer = b''
+        self._preroll_buffer.clear()
         if self.vad_iterator is not None:
             try:
                 self.vad_iterator.reset_states()
@@ -336,6 +347,10 @@ class SileroCohereSTT(BaseSTTProvider):
 
             _dlog(f'_process_vad_chunk: VAD event: {result}')
 
+            # Always update pre-roll buffer with normalized chunk (before speech start)
+            if not self._is_speaking:
+                self._preroll_buffer.append(chunk_bytes)
+
             if 'start' in result:
                 await self._on_speech_start()
             elif 'end' in result:
@@ -352,6 +367,13 @@ class SileroCohereSTT(BaseSTTProvider):
         self._is_speaking = True
         self._speech_start_time = time.time()
         self._speech_buffer = b''
+
+        # Prepend pre-roll buffer to capture audio before VAD trigger
+        if self._preroll_buffer:
+            preroll_bytes = b''.join(self._preroll_buffer)
+            self._speech_buffer = preroll_bytes
+            _dlog(f'[VAD] Pre-roll: prepended {len(preroll_bytes)} bytes ({len(self._preroll_buffer)} chunks)')
+
         _dlog(f'[VAD] Speech START (utterance #{self._utterance_count + 1})')
 
         if self._turn_resumed_callback is not None:
