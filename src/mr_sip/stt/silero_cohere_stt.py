@@ -5,15 +5,17 @@ Silero VAD runs locally (CPU-friendly). Cohere Transcribe runs on a remote GPU s
 
 Audio pipeline:
   ulaw 8kHz (SIP) -> Silero VAD (8kHz native) -> speech detection
+  AGC normalization applied per chunk before VAD and speech buffering
   On speech start  -> fire barge-in callback (turn_resumed)
   Buffer ulaw during speech
   On speech end    -> POST ulaw bytes to COHERE_TRANSCRIBE_URL -> text -> emit final
 
 Key tuning parameters (all configurable via stt_config dict or env vars):
   threshold              - VAD speech sensitivity (0.0-1.0, default 0.5)
-  min_silence_duration_ms - silence needed to end utterance (default 400ms)
+  min_silence_duration_ms - silence needed to end utterance (default 600ms)
   speech_pad_ms          - padding added around speech (default 30ms)
   max_utterance_duration_s - hard cap on utterance length (default 30s)
+  agc_target_rms         - AGC target RMS level (default 0.1, 0 to disable)
 """
 import asyncio
 import audioop
@@ -67,7 +69,7 @@ class SileroCohereSTT(BaseSTTProvider):
         self,
         sample_rate: int = 8000,
         threshold: float = 0.5,
-        min_silence_duration_ms: int = 400,
+        min_silence_duration_ms: int = 600,
         speech_pad_ms: int = 30,
         language: str = 'en',
         cohere_model_id: str = 'CohereLabs/cohere-transcribe-03-2026',
@@ -87,6 +89,11 @@ class SileroCohereSTT(BaseSTTProvider):
         self.cohere_model_id = os.getenv('COHERE_TRANSCRIBE_MODEL', cohere_model_id)
         self.max_utterance_duration_s = float(
             os.getenv('COHERE_MAX_UTTERANCE_S', str(max_utterance_duration_s))
+        )
+
+        # AGC: normalize each chunk to this RMS level (0 = disabled)
+        self.agc_target_rms = float(
+            os.getenv('SILERO_AGC_TARGET_RMS', '0.1')
         )
 
         if device is None:
@@ -126,6 +133,7 @@ class SileroCohereSTT(BaseSTTProvider):
             f'SileroCohereSTT.__init__: threshold={self.threshold}, '
             f'min_silence={self.min_silence_duration_ms}ms, '
             f'speech_pad={self.speech_pad_ms}ms, '
+            f'agc_target_rms={self.agc_target_rms}, '
             f'remote_url="{self.cohere_transcribe_url or "(none - local fallback)"}", '
             f'language={self.language}'
         )
@@ -305,6 +313,19 @@ class SileroCohereSTT(BaseSTTProvider):
             pcm_bytes = audioop.ulaw2lin(chunk_bytes, 2)
             audio_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
             audio_float = audio_int16.astype(np.float32) / 32768.0
+
+            # AGC: normalize to target RMS to handle low-volume phones
+            if self.agc_target_rms > 0:
+                rms = float(np.sqrt(np.mean(audio_float ** 2)))
+                if rms > 1e-6:
+                    gain = self.agc_target_rms / rms
+                    # Cap gain at 20x to avoid amplifying pure noise
+                    gain = min(gain, 20.0)
+                    audio_float = np.clip(audio_float * gain, -1.0, 1.0)
+                    # Re-encode normalized audio back to ulaw for speech buffer
+                    norm_int16 = (audio_float * 32767).astype(np.int16)
+                    chunk_bytes = audioop.lin2ulaw(norm_int16.tobytes(), 2)
+
             chunk_tensor = torch.from_numpy(audio_float)
 
             # VADIterator returns {'start': N} or {'end': N} or None
