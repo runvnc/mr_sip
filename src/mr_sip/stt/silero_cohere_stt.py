@@ -18,6 +18,8 @@ Key tuning parameters (all configurable via stt_config dict or env vars):
   max_utterance_duration_s - hard cap on utterance length (default 30s)
   agc_target_rms         - AGC target RMS level (default 0.1, 0 to disable)
   preroll_ms             - pre-roll buffer size in ms (default 300ms, 0 to disable)
+  agc_max_gain           - max gain for per-chunk AGC (default 40x, was 20x)
+  transcribe_target_rms  - full-buffer normalization before transcription (default 0.2, 0 to disable)
 """
 import asyncio
 import audioop
@@ -98,6 +100,15 @@ class SileroCohereSTT(BaseSTTProvider):
         self.agc_target_rms = float(
             os.getenv('SILERO_AGC_TARGET_RMS', '0.1')
         )
+        # Max gain cap for per-chunk AGC (increased from 20x for quiet phones)
+        self.agc_max_gain = float(
+            os.getenv('SILERO_AGC_MAX_GAIN', '40.0')
+        )
+        # Full-buffer normalization target RMS applied before sending to transcription
+        # More stable than per-chunk AGC; 0 to disable
+        self.transcribe_target_rms = float(
+            os.getenv('SILERO_TRANSCRIBE_TARGET_RMS', '0.2')
+        )
 
         # Pre-roll: keep a rolling buffer of recent chunks to prepend on speech start
         preroll_ms = int(os.getenv('SILERO_PREROLL_MS', '300'))
@@ -143,6 +154,8 @@ class SileroCohereSTT(BaseSTTProvider):
             f'min_silence={self.min_silence_duration_ms}ms, '
             f'speech_pad={self.speech_pad_ms}ms, '
             f'agc_target_rms={self.agc_target_rms}, '
+            f'agc_max_gain={self.agc_max_gain}x, '
+            f'transcribe_target_rms={self.transcribe_target_rms}, '
             f'preroll_chunks={self._preroll_chunks} (~{self._preroll_chunks * 32}ms), '
             f'remote_url="{self.cohere_transcribe_url or "(none - local fallback)"}", '
             f'language={self.language}'
@@ -330,8 +343,7 @@ class SileroCohereSTT(BaseSTTProvider):
                 rms = float(np.sqrt(np.mean(audio_float ** 2)))
                 if rms > 1e-6:
                     gain = self.agc_target_rms / rms
-                    # Cap gain at 20x to avoid amplifying pure noise
-                    gain = min(gain, 20.0)
+                    gain = min(gain, self.agc_max_gain)
                     audio_float = np.clip(audio_float * gain, -1.0, 1.0)
                     # Re-encode normalized audio back to ulaw for speech buffer
                     norm_int16 = (audio_float * 32767).astype(np.int16)
@@ -399,6 +411,9 @@ class SileroCohereSTT(BaseSTTProvider):
             _dlog('[VAD] Speech segment too short (<512 bytes), skipping transcription')
             return
 
+        # Full-buffer normalization: more stable than per-chunk AGC for ASR accuracy
+        speech_bytes = self._normalize_buffer(speech_bytes)
+
         t0 = time.time()
         _dlog(f'[TRANSCRIBE] Starting transcription of {len(speech_bytes)} bytes...')
         try:
@@ -435,9 +450,32 @@ class SileroCohereSTT(BaseSTTProvider):
 
     def _transcribe_ulaw(self, ulaw_bytes: bytes) -> str:
         """Route to remote or local transcription."""
+
         if self.cohere_transcribe_url:
             return self._transcribe_remote(ulaw_bytes)
         return self._transcribe_local(ulaw_bytes)
+
+    def _normalize_buffer(self, ulaw_bytes: bytes) -> bytes:
+        """Normalize the full speech buffer to a target RMS level.
+
+        Applied once before transcription for stable level normalization.
+        More accurate than per-chunk AGC since it uses the full utterance RMS.
+        """
+        if self.transcribe_target_rms <= 0:
+            return ulaw_bytes
+        pcm_bytes = audioop.ulaw2lin(ulaw_bytes, 2)
+        audio_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
+        audio_float = audio_int16.astype(np.float32) / 32768.0
+        rms = float(np.sqrt(np.mean(audio_float ** 2)))
+        if rms < 1e-6:
+            return ulaw_bytes  # Silent buffer, nothing to normalize
+        gain = self.transcribe_target_rms / rms
+        # Cap at 50x - if the whole utterance is this quiet it's probably noise
+        gain = min(gain, 50.0)
+        audio_float = np.clip(audio_float * gain, -1.0, 1.0)
+        _dlog(f'[AGC] full-buffer normalize: rms={rms:.4f} gain={gain:.1f}x target={self.transcribe_target_rms}')
+        norm_int16 = (audio_float * 32767).astype(np.int16)
+        return audioop.lin2ulaw(norm_int16.tobytes(), 2)
 
     def _transcribe_remote(self, ulaw_bytes: bytes) -> str:
         """POST ulaw bytes to the remote Cohere Transcribe HTTP server."""
