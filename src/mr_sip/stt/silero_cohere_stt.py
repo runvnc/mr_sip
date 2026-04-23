@@ -9,16 +9,27 @@ Audio pipeline:
   Pre-roll buffer: last ~300ms of audio prepended to speech buffer on speech start
   On speech start  -> fire barge-in callback (turn_resumed)
   Buffer ulaw during speech
-  On speech end    -> POST ulaw bytes to COHERE_TRANSCRIBE_URL -> text -> emit final
+  On speech end (eager) -> POST ulaw bytes to COHERE_TRANSCRIBE_URL -> text -> emit eager
+  After confirmation delay -> emit final (or cancel if user resumes speaking)
+
+Two-stage end-of-turn detection (similar to Deepgram Flux eager EOT):
+  eager_silence_ms  - silence needed for eager EOT (default 500ms)
+  final_silence_ms  - total silence needed for final EOT (default 700ms)
+  The VAD fires at eager_silence_ms. We transcribe immediately and emit as
+  is_eager_eot=True so the agent can start preparing a response. A confirmation
+  timer runs for (final_silence_ms - eager_silence_ms). If the user doesn't
+  resume speaking, we emit the same text as is_final=True. If the user speaks
+  again, we cancel the eager and fire TurnResumed.
 
 Key tuning parameters (all configurable via stt_config dict or env vars):
   threshold              - VAD speech sensitivity (0.0-1.0, default 0.5)
-  min_silence_duration_ms - silence needed to end utterance (default 600ms)
+  eager_silence_ms       - silence for eager EOT (default 500ms)
+  final_silence_ms       - silence for final EOT (default 700ms)
   speech_pad_ms          - padding added around speech (default 30ms)
   max_utterance_duration_s - hard cap on utterance length (default 30s)
   agc_target_rms         - AGC target RMS level (default 0.1, 0 to disable)
   preroll_ms             - pre-roll buffer size in ms (default 300ms, 0 to disable)
-  agc_max_gain           - max gain for per-chunk AGC (default 40x, was 20x)
+  agc_max_gain           - max gain for per-chunk AGC (default 40x)
   transcribe_target_rms  - full-buffer normalization before transcription (default 0.2, 0 to disable)
 """
 import asyncio
@@ -30,11 +41,17 @@ import time
 import traceback
 from typing import Optional, Callable
 
-import urllib.request
 import json as _json
 import numpy as np
 import torch
 from collections import deque
+
+try:
+    import requests as _requests
+except ImportError:
+    _requests = None
+
+import urllib.request
 
 from .base_stt import BaseSTTProvider, STTResult
 
@@ -63,11 +80,15 @@ def _dlog(msg: str):
 
 class SileroCohereSTT(BaseSTTProvider):
     """
-    Local VAD + remote ASR STT provider.
+    Local VAD + remote ASR STT provider with two-stage eager end-of-turn.
 
     Barge-in detection: Silero VAD fires on every speech onset.
     The turn_resumed_callback is called immediately, which halts AI audio
     output and cancels any in-progress LLM response.
+
+    Eager EOT: After eager_silence_ms of silence, transcription fires and
+    emits is_eager_eot=True. After final_silence_ms total silence, emits
+    is_final=True. If user resumes speaking before final, cancels eager.
     """
 
     def __init__(
@@ -86,9 +107,20 @@ class SileroCohereSTT(BaseSTTProvider):
         super().__init__(sample_rate=sample_rate)
 
         self.threshold = float(os.getenv('SILERO_VAD_THRESHOLD', str(threshold)))
-        self.min_silence_duration_ms = int(
-            os.getenv('SILERO_MIN_SILENCE_MS', str(min_silence_duration_ms))
+
+        # Two-stage silence detection
+        # eager_silence_ms: VAD fires here, we transcribe and emit eager EOT
+        # final_silence_ms: confirmation timer expires, we emit final EOT
+        self._eager_silence_ms = int(
+            os.getenv('SILERO_EAGER_SILENCE_MS',
+                      os.getenv('SILERO_MIN_SILENCE_MS', '500'))
         )
+        self._final_silence_ms = int(
+            os.getenv('SILERO_FINAL_SILENCE_MS', '700')
+        )
+        # Legacy compat: min_silence_duration_ms is set to eager value
+        self.min_silence_duration_ms = self._eager_silence_ms
+
         self.speech_pad_ms = int(os.getenv('SILERO_SPEECH_PAD_MS', str(speech_pad_ms)))
         self.language = os.getenv('COHERE_TRANSCRIBE_LANGUAGE', language)
         self.cohere_model_id = os.getenv('COHERE_TRANSCRIBE_MODEL', cohere_model_id)
@@ -100,19 +132,17 @@ class SileroCohereSTT(BaseSTTProvider):
         self.agc_target_rms = float(
             os.getenv('SILERO_AGC_TARGET_RMS', '0.1')
         )
-        # Max gain cap for per-chunk AGC (increased from 20x for quiet phones)
+        # Max gain cap for per-chunk AGC
         self.agc_max_gain = float(
             os.getenv('SILERO_AGC_MAX_GAIN', '40.0')
         )
         # Full-buffer normalization target RMS applied before sending to transcription
-        # More stable than per-chunk AGC; 0 to disable
         self.transcribe_target_rms = float(
             os.getenv('SILERO_TRANSCRIBE_TARGET_RMS', '0.2')
         )
 
         # Pre-roll: keep a rolling buffer of recent chunks to prepend on speech start
         preroll_ms = int(os.getenv('SILERO_PREROLL_MS', '300'))
-        # Each VAD chunk is 32ms; calculate how many chunks to keep
         self._preroll_chunks = max(0, preroll_ms // 32)
         self._preroll_buffer: deque = deque(maxlen=self._preroll_chunks) if self._preroll_chunks > 0 else deque(maxlen=0)
 
@@ -126,6 +156,15 @@ class SileroCohereSTT(BaseSTTProvider):
             cohere_transcribe_url
             or os.getenv('COHERE_TRANSCRIBE_URL', '')
         ).rstrip('/')
+
+        # Persistent HTTP session for remote transcription (keep-alive)
+        self._http_session = None
+        if _requests is not None and self.cohere_transcribe_url:
+            self._http_session = _requests.Session()
+            self._http_session.headers.update({
+                'Content-Type': 'application/octet-stream',
+                'User-Agent': 'mr-sip/1.0',
+            })
 
         # Models (only used for local fallback)
         self.vad_model = None
@@ -141,6 +180,12 @@ class SileroCohereSTT(BaseSTTProvider):
         self._frames_received: int = 0
         self._vad_chunks_processed: int = 0
 
+        # Eager EOT state
+        self._eager_pending: bool = False
+        self._eager_text: str = ''
+        self._eager_timer_task: Optional[asyncio.Task] = None
+        self._eager_utterance_num: int = 0
+
         # Callbacks
         self._turn_resumed_callback: Optional[Callable] = None
 
@@ -148,15 +193,20 @@ class SileroCohereSTT(BaseSTTProvider):
         self._utterance_count: int = 0
         self._total_audio_bytes: int = 0
         self._transcription_times: list = []
+        self._total_eager_eots: int = 0
+        self._total_eager_confirmed: int = 0
+        self._total_eager_cancelled: int = 0
 
         _dlog(
             f'SileroCohereSTT.__init__: threshold={self.threshold}, '
-            f'min_silence={self.min_silence_duration_ms}ms, '
+            f'eager_silence={self._eager_silence_ms}ms, '
+            f'final_silence={self._final_silence_ms}ms, '
             f'speech_pad={self.speech_pad_ms}ms, '
             f'agc_target_rms={self.agc_target_rms}, '
             f'agc_max_gain={self.agc_max_gain}x, '
             f'transcribe_target_rms={self.transcribe_target_rms}, '
             f'preroll_chunks={self._preroll_chunks} (~{self._preroll_chunks * 32}ms), '
+            f'http_session={"requests" if self._http_session else "urllib"}, '
             f'remote_url="{self.cohere_transcribe_url or "(none - local fallback)"}", '
             f'language={self.language}'
         )
@@ -228,15 +278,16 @@ class SileroCohereSTT(BaseSTTProvider):
                 'silero-vad package not installed. Run: pip install silero-vad'
             )
         self.vad_model = load_silero_vad(onnx=False)
+        # VAD fires at eager_silence_ms; final confirmation is handled by our timer
         self.vad_iterator = VADIterator(
             model=self.vad_model,
             threshold=self.threshold,
             sampling_rate=VAD_SAMPLE_RATE,
-            min_silence_duration_ms=self.min_silence_duration_ms,
+            min_silence_duration_ms=self._eager_silence_ms,
             speech_pad_ms=self.speech_pad_ms,
         )
         _dlog(f'_load_vad_model: VADIterator created (threshold={self.threshold}, '
-              f'min_silence={self.min_silence_duration_ms}ms, sr={VAD_SAMPLE_RATE})')
+              f'min_silence={self._eager_silence_ms}ms [eager], sr={VAD_SAMPLE_RATE})')
 
     def _load_cohere_model(self):
         """Load Cohere Transcribe model locally (fallback when no remote URL)."""
@@ -260,13 +311,27 @@ class SileroCohereSTT(BaseSTTProvider):
         self._vad_buffer = b''
         self._speech_buffer = b''
         self._preroll_buffer.clear()
+        # Cancel any pending eager confirmation
+        if self._eager_timer_task and not self._eager_timer_task.done():
+            self._eager_timer_task.cancel()
+            self._eager_timer_task = None
+        self._eager_pending = False
+        self._eager_text = ''
+        # Close persistent HTTP session
+        if self._http_session is not None:
+            try:
+                self._http_session.close()
+            except Exception:
+                pass
         if self.vad_iterator is not None:
             try:
                 self.vad_iterator.reset_states()
             except Exception:
                 pass
         _dlog(f'SileroCohereSTT stopped. Stats: frames={self._frames_received}, '
-              f'vad_chunks={self._vad_chunks_processed}, utterances={self._utterance_count}')
+              f'vad_chunks={self._vad_chunks_processed}, utterances={self._utterance_count}, '
+              f'eager_eots={self._total_eager_eots}, confirmed={self._total_eager_confirmed}, '
+              f'cancelled={self._total_eager_cancelled}')
 
     # ------------------------------------------------------------------
     # Audio ingestion
@@ -290,6 +355,7 @@ class SileroCohereSTT(BaseSTTProvider):
                 f'vad_chunks={self._vad_chunks_processed}, '
                 f'is_speaking={self._is_speaking}, '
                 f'speech_buf={len(self._speech_buffer)}B, '
+                f'eager_pending={self._eager_pending}, '
                 f'utterances={self._utterance_count}'
             )
 
@@ -355,6 +421,9 @@ class SileroCohereSTT(BaseSTTProvider):
             result = self.vad_iterator(chunk_tensor, return_seconds=False)
 
             if result is None:
+                # Always update pre-roll buffer (before speech start)
+                if not self._is_speaking:
+                    self._preroll_buffer.append(chunk_bytes)
                 return
 
             _dlog(f'_process_vad_chunk: VAD event: {result}')
@@ -376,6 +445,16 @@ class SileroCohereSTT(BaseSTTProvider):
         if self._is_speaking:
             return
 
+        # Cancel any pending eager confirmation - user is speaking again
+        if self._eager_pending:
+            self._total_eager_cancelled += 1
+            _dlog(f'[EAGER] Cancelled eager EOT #{self._eager_utterance_num} - user resumed speaking')
+            if self._eager_timer_task and not self._eager_timer_task.done():
+                self._eager_timer_task.cancel()
+                self._eager_timer_task = None
+            self._eager_pending = False
+            self._eager_text = ''
+
         self._is_speaking = True
         self._speech_start_time = time.time()
         self._speech_buffer = b''
@@ -396,7 +475,11 @@ class SileroCohereSTT(BaseSTTProvider):
                 _dlog(f'_on_speech_start: turn_resumed_callback error: {e}')
 
     async def _on_speech_end(self) -> None:
-        """Called when Silero VAD detects end-of-speech. Transcribes buffered audio."""
+        """Called when Silero VAD detects end-of-speech (at eager_silence_ms).
+
+        Transcribes buffered audio and emits as eager EOT.
+        Starts a confirmation timer for final EOT.
+        """
         if not self._is_speaking:
             return
 
@@ -405,13 +488,13 @@ class SileroCohereSTT(BaseSTTProvider):
         speech_bytes = self._speech_buffer
         self._speech_buffer = b''
 
-        _dlog(f'[VAD] Speech END: {speech_duration:.2f}s, {len(speech_bytes)} bytes buffered')
+        _dlog(f'[VAD] Speech END (eager): {speech_duration:.2f}s, {len(speech_bytes)} bytes buffered')
 
         if len(speech_bytes) < VAD_CHUNK_SAMPLES * 2:
             _dlog('[VAD] Speech segment too short (<512 bytes), skipping transcription')
             return
 
-        # Full-buffer normalization: more stable than per-chunk AGC for ASR accuracy
+        # Full-buffer normalization
         speech_bytes = self._normalize_buffer(speech_bytes)
 
         t0 = time.time()
@@ -432,16 +515,61 @@ class SileroCohereSTT(BaseSTTProvider):
             _dlog('[TRANSCRIBE] Empty result, skipping emit')
             return
 
+        text = text.strip()
         self._utterance_count += 1
+        self._total_eager_eots += 1
+
+        # Emit as eager EOT
+        eager_result = STTResult(
+            text=text,
+            is_final=False,
+            is_eager_eot=True,
+            confidence=0.8,
+            timestamp=time.time(),
+        )
+        eager_result.utterance_num = self._utterance_count
+        _dlog(f'[EMIT] Eager EOT #{self._utterance_count}: "{text}"')
+        self._emit_partial(eager_result)
+
+        # Store eager state and start confirmation timer
+        self._eager_pending = True
+        self._eager_text = text
+        self._eager_utterance_num = self._utterance_count
+
+        confirmation_delay_ms = max(0, self._final_silence_ms - self._eager_silence_ms)
+        _dlog(f'[EAGER] Starting confirmation timer: {confirmation_delay_ms}ms')
+        self._eager_timer_task = asyncio.ensure_future(
+            self._eager_confirmation_timer(confirmation_delay_ms / 1000.0)
+        )
+
+    async def _eager_confirmation_timer(self, delay_seconds: float) -> None:
+        """Wait for confirmation delay, then emit final if still pending."""
+        try:
+            await asyncio.sleep(delay_seconds)
+        except asyncio.CancelledError:
+            _dlog('[EAGER] Confirmation timer cancelled')
+            return
+
+        if not self._eager_pending:
+            _dlog('[EAGER] Confirmation timer fired but eager no longer pending')
+            return
+
+        # Confirm: emit as final
+        self._eager_pending = False
+        self._total_eager_confirmed += 1
+        text = self._eager_text
+        utterance_num = self._eager_utterance_num
+        self._eager_text = ''
+
         result = STTResult(
-            text=text.strip(),
+            text=text,
             is_final=True,
             is_eager_eot=False,
             confidence=0.95,
             timestamp=time.time(),
         )
-        result.utterance_num = self._utterance_count
-        _dlog(f'[EMIT] Final utterance #{self._utterance_count}: "{text.strip()}"')
+        result.utterance_num = utterance_num
+        _dlog(f'[EMIT] Final (confirmed) #{utterance_num}: "{text}"')
         self._emit_final(result)
 
     # ------------------------------------------------------------------
@@ -450,7 +578,6 @@ class SileroCohereSTT(BaseSTTProvider):
 
     def _transcribe_ulaw(self, ulaw_bytes: bytes) -> str:
         """Route to remote or local transcription."""
-
         if self.cohere_transcribe_url:
             return self._transcribe_remote(ulaw_bytes)
         return self._transcribe_local(ulaw_bytes)
@@ -470,7 +597,6 @@ class SileroCohereSTT(BaseSTTProvider):
         if rms < 1e-6:
             return ulaw_bytes  # Silent buffer, nothing to normalize
         gain = self.transcribe_target_rms / rms
-        # Cap at 50x - if the whole utterance is this quiet it's probably noise
         gain = min(gain, 50.0)
         audio_float = np.clip(audio_float * gain, -1.0, 1.0)
         _dlog(f'[AGC] full-buffer normalize: rms={rms:.4f} gain={gain:.1f}x target={self.transcribe_target_rms}')
@@ -478,9 +604,31 @@ class SileroCohereSTT(BaseSTTProvider):
         return audioop.lin2ulaw(norm_int16.tobytes(), 2)
 
     def _transcribe_remote(self, ulaw_bytes: bytes) -> str:
-        """POST ulaw bytes to the remote Cohere Transcribe HTTP server."""
+        """POST ulaw bytes to the remote Cohere Transcribe HTTP server.
+
+        Uses persistent requests.Session (keep-alive) when available,
+        falls back to urllib for single-shot requests.
+        """
         url = f'{self.cohere_transcribe_url}/transcribe?language={self.language}'
         _dlog(f'_transcribe_remote: POST {len(ulaw_bytes)} bytes to {url}')
+
+        # Prefer persistent session (requests library)
+        if self._http_session is not None:
+            try:
+                resp = self._http_session.post(
+                    url,
+                    data=ulaw_bytes,
+                    timeout=30,
+                )
+                body = resp.json()
+                text = body.get('text', '')
+                _dlog(f'_transcribe_remote: response: {body}')
+                return text
+            except Exception as e:
+                _dlog(f'_transcribe_remote (requests): FAILED: {e}\n{traceback.format_exc()}')
+                return ''
+
+        # Fallback: urllib (no keep-alive)
         req = urllib.request.Request(
             url,
             data=ulaw_bytes,
@@ -584,8 +732,13 @@ class SileroCohereSTT(BaseSTTProvider):
             'total_audio_bytes': self._total_audio_bytes,
             'avg_transcription_ms': avg_transcription_ms,
             'threshold': self.threshold,
-            'min_silence_duration_ms': self.min_silence_duration_ms,
+            'eager_silence_ms': self._eager_silence_ms,
+            'final_silence_ms': self._final_silence_ms,
+            'total_eager_eots': self._total_eager_eots,
+            'total_eager_confirmed': self._total_eager_confirmed,
+            'total_eager_cancelled': self._total_eager_cancelled,
             'device': self.device,
             'remote_url': self.cohere_transcribe_url,
+            'http_session': 'requests' if self._http_session else 'urllib',
             'debug_log': DEBUG_LOG,
         }
