@@ -203,6 +203,10 @@ class SileroCohereSTT(BaseSTTProvider):
         self._total_eager_eots: int = 0
         self._total_eager_confirmed: int = 0
         self._total_eager_cancelled: int = 0
+        # VAD timing stats (rolling averages)
+        self._vad_preprocess_times: list = []  # ulaw decode + AGC per chunk
+        self._vad_inference_times: list = []    # VAD model call per chunk
+        self._vad_total_times: list = []        # full _process_vad_chunk time
 
         _dlog(
             f'SileroCohereSTT.__init__: threshold={self.threshold}, '
@@ -400,12 +404,15 @@ class SileroCohereSTT(BaseSTTProvider):
 
     async def _process_vad_chunk(self, chunk_bytes: bytes) -> None:
         """Run one 256-byte (32ms) ulaw chunk through Silero VAD."""
+        t_chunk_start = time.perf_counter()
         try:
             self._vad_chunks_processed += 1
 
             # Log first chunk to confirm VAD is receiving audio
             if self._vad_chunks_processed == 1:
                 _dlog('_process_vad_chunk: first VAD chunk received - VAD is active')
+
+            t_preprocess = time.perf_counter()
 
             # ulaw -> PCM int16 -> float32 tensor
             pcm_bytes = audioop.ulaw2lin(chunk_bytes, 2)
@@ -425,8 +432,14 @@ class SileroCohereSTT(BaseSTTProvider):
 
             chunk_tensor = torch.from_numpy(audio_float)
 
+            preprocess_us = (time.perf_counter() - t_preprocess) * 1e6
+
             # VADIterator returns {'start': N} or {'end': N} or None
+            t_vad = time.perf_counter()
             result = self.vad_iterator(chunk_tensor, return_seconds=False)
+            vad_us = (time.perf_counter() - t_vad) * 1e6
+
+            chunk_total_us = (time.perf_counter() - t_chunk_start) * 1e6
 
             if result is None:
                 # Always update pre-roll buffer (before speech start)
@@ -434,7 +447,26 @@ class SileroCohereSTT(BaseSTTProvider):
                     self._preroll_buffer.append(chunk_bytes)
                 return
 
-            _dlog(f'_process_vad_chunk: VAD event: {result}')
+            # Log timing on VAD events and periodically
+            self._vad_preprocess_times.append(preprocess_us)
+            self._vad_inference_times.append(vad_us)
+            self._vad_total_times.append(chunk_total_us)
+
+            _dlog(f'_process_vad_chunk: VAD event: {result} | '
+                  f'preprocess={preprocess_us:.0f}us vad={vad_us:.0f}us total={chunk_total_us:.0f}us')
+
+            # Log rolling averages every 50 events
+            if len(self._vad_inference_times) % 50 == 0:
+                avg_pre = sum(self._vad_preprocess_times[-50:]) / min(50, len(self._vad_preprocess_times))
+                avg_vad = sum(self._vad_inference_times[-50:]) / min(50, len(self._vad_inference_times))
+                avg_tot = sum(self._vad_total_times[-50:]) / min(50, len(self._vad_total_times))
+                _dlog(f'[VAD TIMING] avg over last 50 events: preprocess={avg_pre:.0f}us '
+                      f'vad_inference={avg_vad:.0f}us total={avg_tot:.0f}us')
+                # Trim to prevent unbounded growth
+                if len(self._vad_inference_times) > 200:
+                    self._vad_preprocess_times = self._vad_preprocess_times[-100:]
+                    self._vad_inference_times = self._vad_inference_times[-100:]
+                    self._vad_total_times = self._vad_total_times[-100:]
 
             # Always update pre-roll buffer with normalized chunk (before speech start)
             if not self._is_speaking:
