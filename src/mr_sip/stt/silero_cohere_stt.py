@@ -39,6 +39,7 @@ import os
 import sys
 import time
 import traceback
+from datetime import datetime
 from typing import Optional, Callable
 
 import json as _json
@@ -67,8 +68,10 @@ DEBUG_LOG = '/tmp/silero_cohere_stt.log'
 
 
 def _dlog(msg: str):
-    """Write a timestamped line to the debug log file and also to logger.info."""
-    line = f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] {msg}'
+    """Write a timestamped line (with ms resolution) to the debug log file and also to logger.info."""
+    now = datetime.now()
+    ts = now.strftime('%Y-%m-%d %H:%M:%S') + f'.{now.microsecond // 1000:03d}'
+    line = f'[{ts}] {msg}'
     try:
         with open(DEBUG_LOG, 'a') as f:
             f.write(line + '\n')
@@ -112,13 +115,16 @@ class SileroCohereSTT(BaseSTTProvider):
         # eager_silence_ms: VAD fires here, we transcribe and emit eager EOT
         # final_silence_ms: confirmation timer expires, we emit final EOT
         self._eager_silence_ms = int(
-            os.getenv('SILERO_EAGER_SILENCE_MS',
-                      os.getenv('SILERO_MIN_SILENCE_MS', '500'))
+            os.getenv('SILERO_EAGER_SILENCE_MS', '500')
         )
         self._final_silence_ms = int(
             os.getenv('SILERO_FINAL_SILENCE_MS', '700')
         )
-        # Legacy compat: min_silence_duration_ms is set to eager value
+        # Legacy compat: SILERO_MIN_SILENCE_MS overrides eager if set explicitly
+        legacy_min = os.getenv('SILERO_MIN_SILENCE_MS', '')
+        if legacy_min:
+            self._eager_silence_ms = int(legacy_min)
+        # min_silence_duration_ms is set to eager value for VADIterator
         self.min_silence_duration_ms = self._eager_silence_ms
 
         self.speech_pad_ms = int(os.getenv('SILERO_SPEECH_PAD_MS', str(speech_pad_ms)))
@@ -177,6 +183,7 @@ class SileroCohereSTT(BaseSTTProvider):
         self._speech_buffer: bytes = b''
         self._is_speaking: bool = False
         self._speech_start_time: float = 0.0
+        self._last_speech_audio_time: float = 0.0  # perf_counter when last speech audio was buffered
         self._frames_received: int = 0
         self._vad_chunks_processed: int = 0
 
@@ -362,6 +369,7 @@ class SileroCohereSTT(BaseSTTProvider):
         # Buffer audio during speech for transcription
         if self._is_speaking:
             self._speech_buffer += audio_bytes
+            self._last_speech_audio_time = time.perf_counter()
             max_bytes = int(self.max_utterance_duration_s * VAD_SAMPLE_RATE)
             if len(self._speech_buffer) > max_bytes:
                 _dlog(f'add_audio_bytes: utterance exceeded {self.max_utterance_duration_s}s limit, forcing end-of-speech')
@@ -456,7 +464,8 @@ class SileroCohereSTT(BaseSTTProvider):
             self._eager_text = ''
 
         self._is_speaking = True
-        self._speech_start_time = time.time()
+        self._speech_start_time = time.perf_counter()
+        self._last_speech_audio_time = time.perf_counter()
         self._speech_buffer = b''
 
         # Prepend pre-roll buffer to capture audio before VAD trigger
@@ -484,21 +493,26 @@ class SileroCohereSTT(BaseSTTProvider):
             return
 
         self._is_speaking = False
-        speech_duration = time.time() - self._speech_start_time
+        vad_end_time = time.perf_counter()
+        speech_duration = vad_end_time - self._speech_start_time
+        time_since_last_audio = (vad_end_time - self._last_speech_audio_time) * 1000
         speech_bytes = self._speech_buffer
         self._speech_buffer = b''
 
-        _dlog(f'[VAD] Speech END (eager): {speech_duration:.2f}s, {len(speech_bytes)} bytes buffered')
+        _dlog(f'[VAD] Speech END (eager): {speech_duration:.2f}s, {len(speech_bytes)} bytes buffered, '
+              f'time_since_last_speech_audio={time_since_last_audio:.0f}ms')
 
         if len(speech_bytes) < VAD_CHUNK_SAMPLES * 2:
             _dlog('[VAD] Speech segment too short (<512 bytes), skipping transcription')
             return
 
         # Full-buffer normalization
+        t_norm = time.perf_counter()
         speech_bytes = self._normalize_buffer(speech_bytes)
+        norm_ms = (time.perf_counter() - t_norm) * 1000
 
-        t0 = time.time()
-        _dlog(f'[TRANSCRIBE] Starting transcription of {len(speech_bytes)} bytes...')
+        t0 = time.perf_counter()
+        _dlog(f'[TRANSCRIBE] Starting transcription of {len(speech_bytes)} bytes (normalize={norm_ms:.1f}ms)...')
         try:
             text = await asyncio.get_event_loop().run_in_executor(
                 None, self._transcribe_ulaw, speech_bytes
@@ -507,9 +521,14 @@ class SileroCohereSTT(BaseSTTProvider):
             _dlog(f'[TRANSCRIBE] ERROR: {e}\n{traceback.format_exc()}')
             return
 
-        elapsed = time.time() - t0
-        self._transcription_times.append(elapsed)
-        _dlog(f'[TRANSCRIBE] Done in {elapsed*1000:.0f}ms -> "{text}"')
+        elapsed = time.time() - (t0 + (time.time() - time.perf_counter()))  # wall clock approx
+        elapsed_pc = (time.perf_counter() - t0)
+        self._transcription_times.append(elapsed_pc)
+        total_since_vad_end = (time.perf_counter() - vad_end_time) * 1000
+        total_since_last_audio = (time.perf_counter() - self._last_speech_audio_time) * 1000
+        _dlog(f'[TRANSCRIBE] Done in {elapsed_pc*1000:.0f}ms -> "{text}" | '
+              f'total_since_vad_end={total_since_vad_end:.0f}ms | '
+              f'total_since_last_speech_audio={total_since_last_audio:.0f}ms')
 
         if not text or not text.strip():
             _dlog('[TRANSCRIBE] Empty result, skipping emit')
