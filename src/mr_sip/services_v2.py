@@ -188,7 +188,9 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
             logger.info('silero_cohere configuration prepared')
             for env_key, cfg_key in [
                 ('SILERO_VAD_THRESHOLD',    'threshold'),
-                ('SILERO_MIN_SILENCE_MS',   'min_silence_duration_ms'),
+                ('SILERO_EAGER_SILENCE_MS', 'eager_silence_ms'),
+                ('SILERO_FINAL_SILENCE_MS', 'final_silence_ms'),
+                ('SILERO_MIN_SILENCE_MS',   'min_silence_duration_ms'),  # legacy compat
                 ('SILERO_SPEECH_PAD_MS',    'speech_pad_ms'),
                 ('COHERE_TRANSCRIBE_MODEL', 'cohere_model_id'),
                 ('COHERE_TRANSCRIBE_LANGUAGE', 'language'),
