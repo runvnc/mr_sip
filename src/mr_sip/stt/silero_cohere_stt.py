@@ -29,8 +29,11 @@ Key tuning parameters (all configurable via stt_config dict or env vars):
   max_utterance_duration_s - hard cap on utterance length (default 30s)
   agc_target_rms         - AGC target RMS level (default 0.1, 0 to disable)
   preroll_ms             - pre-roll buffer size in ms (default 300ms, 0 to disable)
-  agc_max_gain           - max gain for per-chunk AGC (default 40x)
-  transcribe_target_rms  - full-buffer normalization before transcription (default 0.2, 0 to disable)
+  agc_max_gain           - max gain for per-chunk AGC (default 40x, only if agc_target_rms > 0)
+  transcribe_target_rms  - full-buffer normalization before transcription (default 0.15, 0 to disable)
+
+NOTE on AGC: Per-chunk AGC is DISABLED by default (agc_target_rms=0). Google and Silero
+both recommend against AGC for speech recognition. Full-buffer normalization is gentler.
 """
 import asyncio
 import audioop
@@ -134,17 +137,21 @@ class SileroCohereSTT(BaseSTTProvider):
             os.getenv('COHERE_MAX_UTTERANCE_S', str(max_utterance_duration_s))
         )
 
-        # AGC: normalize each chunk to this RMS level (0 = disabled)
+        # Per-chunk AGC: normalize each chunk to this RMS level (0 = disabled)
+        # DISABLED by default - per-chunk AGC is too aggressive for speech recognition.
+        # It destroys dynamic range, creates pumping artifacts, and amplifies noise.
+        # Google explicitly recommends against AGC for ASR.
         self.agc_target_rms = float(
-            os.getenv('SILERO_AGC_TARGET_RMS', '0.1')
+            os.getenv('SILERO_AGC_TARGET_RMS', '0')
         )
-        # Max gain cap for per-chunk AGC
+        # Max gain cap for per-chunk AGC (only used if agc_target_rms > 0)
         self.agc_max_gain = float(
             os.getenv('SILERO_AGC_MAX_GAIN', '40.0')
         )
-        # Full-buffer normalization target RMS applied before sending to transcription
+        # Full-buffer normalization: gentler than per-chunk AGC, uses whole utterance RMS.
+        # Applied once before transcription. More stable since it sees the full utterance.
         self.transcribe_target_rms = float(
-            os.getenv('SILERO_TRANSCRIBE_TARGET_RMS', '0.2')
+            os.getenv('SILERO_TRANSCRIBE_TARGET_RMS', '0.15')
         )
 
         # Pre-roll: keep a rolling buffer of recent chunks to prepend on speech start
@@ -648,7 +655,8 @@ class SileroCohereSTT(BaseSTTProvider):
         if rms < 1e-6:
             return ulaw_bytes  # Silent buffer, nothing to normalize
         gain = self.transcribe_target_rms / rms
-        gain = min(gain, 50.0)
+        # Cap at 10x - higher gains just amplify noise and hurt ASR accuracy
+        gain = min(gain, 10.0)
         audio_float = np.clip(audio_float * gain, -1.0, 1.0)
         _dlog(f'[AGC] full-buffer normalize: rms={rms:.4f} gain={gain:.1f}x target={self.transcribe_target_rms}')
         norm_int16 = (audio_float * 32767).astype(np.int16)
