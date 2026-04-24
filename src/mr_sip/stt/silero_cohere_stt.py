@@ -123,11 +123,7 @@ class SileroCohereSTT(BaseSTTProvider):
         self._final_silence_ms = int(
             os.getenv('SILERO_FINAL_SILENCE_MS', '700')
         )
-        # Legacy compat: SILERO_MIN_SILENCE_MS overrides eager if set explicitly
-        legacy_min = os.getenv('SILERO_MIN_SILENCE_MS', '')
-        if legacy_min:
-            self._eager_silence_ms = int(legacy_min)
-        # min_silence_duration_ms is set to eager value for VADIterator
+        # VADIterator uses eager silence as its min_silence_duration_ms
         self.min_silence_duration_ms = self._eager_silence_ms
 
         self.speech_pad_ms = int(os.getenv('SILERO_SPEECH_PAD_MS', str(speech_pad_ms)))

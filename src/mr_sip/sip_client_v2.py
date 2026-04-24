@@ -17,9 +17,9 @@ import traceback
 import time
 import audioop
 import os
+from datetime import datetime
 from lib.pipelines.pipe import pipeline_manager
 from lib.providers.hooks import hook_manager
-from datetime import datetime
 from typing import Optional, Callable
 from PySIP.sip_call import SipCall
 from PySIP.filters import CallState
@@ -170,6 +170,19 @@ class MindRootSIPBotV2:
         finally:
             pass
 
+    @staticmethod
+    def _stt_dlog(msg: str):
+        """Write to the STT debug log so eager/final handling is visible in one place."""
+        now = datetime.now()
+        ts = now.strftime('%Y-%m-%d %H:%M:%S') + f'.{now.microsecond // 1000:03d}'
+        line = f'[{ts}] [SIP] {msg}'
+        try:
+            with open('/tmp/silero_cohere_stt.log', 'a') as f:
+                f.write(line + '\n')
+                f.flush()
+        except Exception:
+            pass
+
     def _on_partial_result(self, result: STTResult):
         """Callback for partial transcription results."""
         if result.text != self.last_partial_text:
@@ -179,9 +192,11 @@ class MindRootSIPBotV2:
                 logger.info(f'[EAGER EOT] Starting AI response preparation for: {result.text}')
                 self.draft_response_active = True
                 self.last_eager_eot_text = result.text
+                self._stt_dlog(f'[EAGER EOT] Calling utterance callback (is_eager=True): "{result.text}"')
                 if self.on_utterance_callback:
                     utterance_num = len(self.utterances) + 1
                     self._schedule_coroutine(self._call_utterance_callback(result.text, utterance_num, result.timestamp or time.time(), is_eager=True))
+                    self._stt_dlog(f'[EAGER EOT] Callback scheduled for: "{result.text}"')
                 else:
                     pass
             else:
@@ -196,8 +211,10 @@ class MindRootSIPBotV2:
         logger.info(f"[{utterance_data['time_str']}] Utterance #{utterance_data['number']}: {result.text}")
         if result.text == self.last_eager_eot_text and self.last_eager_eot_text:
             logger.info(f"[FINAL] Skipping duplicate - already sent via EagerEOT: '{result.text}'")
+            self._stt_dlog(f'[FINAL] SKIPPED (already sent via eager): "{result.text}"')
         else:
             logger.info(f"[FINAL] Sending to agent: '{result.text}'")
+            self._stt_dlog(f'[FINAL] Sending to agent (no eager match): "{result.text}"')
             if self.on_utterance_callback:
                 self._schedule_coroutine(self._call_utterance_callback(result.text, utterance_data['number'], utterance_data['timestamp'], is_eager=False))
             else:
