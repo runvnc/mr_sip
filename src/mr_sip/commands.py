@@ -48,7 +48,8 @@ def _get_v2_services():
         try:
             from .services_v2 import dial_service_v2, end_call_service_v2
             _v2_services = (dial_service_v2, end_call_service_v2, True)
-        except ImportError:
+        except Exception:
+            logger.exception('Failed to import V2 SIP services')
             _v2_services = (None, None, False)
         finally:
             pass
@@ -125,6 +126,9 @@ async def call(destination: str, context=None) -> str:
         else:
             dial_service_v2, end_call_service_v2, v2_available = _get_v2_services()
             logger.info(f'Using V2 implementation with STT provider: {stt_provider}')
+            if not v2_available or dial_service_v2 is None or not callable(dial_service_v2):
+                logger.error('V2 SIP services are not available; see earlier traceback for import failure')
+                return 'Error: V2 SIP services are not available; check server logs for the import traceback'
             result = await dial_service_v2(destination=destination, context=context)
         if result['status'] == 'call_established':
             msg = f'Call established to {destination}. Voice conversation is now active. Speak naturally and I will respond through the phone.'
@@ -138,7 +142,7 @@ async def call(destination: str, context=None) -> str:
         else:
             return f"Call initiation error: {result.get('error', 'Unknown error')}"
     except Exception as e:
-        logger.error(f'Error in call command: {e}')
+        logger.exception(f'Error in call command: {e}')
         return f'Error initiating call: {str(e)}'
     finally:
         pass
