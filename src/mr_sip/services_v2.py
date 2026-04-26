@@ -283,6 +283,61 @@ async def end_call_service_v2(context=None) -> Dict[str, Any]:
         pass
 
 @service()
+async def sip_start_audio_response(context=None) -> bool:
+    """Mark the start of one outbound AI/TTS audio response.
+
+    TTS providers that know response boundaries should call this before the
+    first sip_audio_out_chunk() for a response.  mr_sip keeps the implementation
+    detail hidden from providers: currently this creates a fresh PySIP audio
+    stream so PySIP's outgoing prebuffer starts at the beginning of the actual
+    AI response.
+    """
+    if not context or not context.log_id:
+        logger.warning('sip_start_audio_response called without context or log_id')
+        return False
+    try:
+        session_manager = get_session_manager()
+        session = await session_manager.get_session(context.log_id)
+        if session and session.is_active:
+            if hasattr(session, 'start_audio_response'):
+                await session.start_audio_response()
+                logger.debug(f'Started audio response for session {context.log_id}')
+                return True
+            if session.baresip_bot and hasattr(session.baresip_bot, 'start_tts_response'):
+                return await session.baresip_bot.start_tts_response()
+        logger.warning(f'No active SIP session found for audio response start: {context.log_id}')
+        return False
+    except Exception as e:
+        logger.error(f'Error in sip_start_audio_response: {e}')
+        return False
+
+@service()
+async def sip_end_audio_response(context=None) -> bool:
+    """Mark the end of one outbound AI/TTS audio response.
+
+    The end marker is ordered behind already queued audio chunks so PySIP can
+    drain the response tail before returning to ordinary silence.
+    """
+    if not context or not context.log_id:
+        logger.warning('sip_end_audio_response called without context or log_id')
+        return False
+    try:
+        session_manager = get_session_manager()
+        session = await session_manager.get_session(context.log_id)
+        if session and session.is_active:
+            if hasattr(session, 'end_audio_response'):
+                await session.end_audio_response()
+                logger.debug(f'Ended audio response for session {context.log_id}')
+                return True
+            if session.baresip_bot and hasattr(session.baresip_bot, 'end_tts_response'):
+                return await session.baresip_bot.end_tts_response()
+        logger.debug(f'No active SIP session found for audio response end: {context.log_id}')
+        return False
+    except Exception as e:
+        logger.error(f'Error in sip_end_audio_response: {e}')
+        return False
+
+@service()
 async def sip_audio_out_chunk(audio_chunk: bytes, timestamp=None, context=None) -> bool:
     """
     Service to route TTS audio chunks to active SIP call.
@@ -312,6 +367,11 @@ async def sip_audio_out_chunk(audio_chunk: bytes, timestamp=None, context=None) 
                 logger.debug('Audio halted - not outputting chunk')
                 return False
             else:
+                # Backward-compatible S2S safety: existing speech-to-speech
+                # code paths call sip_audio_out_chunk() directly from OpenAI
+                # output_audio.delta callbacks and may not call explicit
+                # sip_start/end_audio_response services.  Do not make explicit
+                # lifecycle mandatory here unless S2S is updated too.
                 await session.send_audio(audio_chunk, timestamp=timestamp)
                 logger.debug(f'Queued audio chunk for session {context.log_id}: {len(audio_chunk)} bytes')
                 return True

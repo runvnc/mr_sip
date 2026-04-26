@@ -37,6 +37,9 @@ class SIPSession:
         self._audio_sender_task = None
         self._audio_sent_count = 0
         self._audio_queued_count = 0
+        # Explicit outbound response lifecycle markers are queued through the
+        # same audio_queue as audio chunks so start/chunk/end ordering is exact.
+        self._audio_response_active = False
         
     async def start_audio_sender(self):
         """Start the audio sender task for TTS output"""
@@ -71,6 +74,22 @@ class SIPSession:
                     item = await asyncio.wait_for(self.audio_queue.get(), timeout=30.0)
                     if item is None:  # Sentinel to stop
                         break
+
+                    if isinstance(item, dict):
+                        command = item.get('command')
+                        if command == 'start_audio_response':
+                            if self.baresip_bot and hasattr(self.baresip_bot, 'start_tts_response'):
+                                await self.baresip_bot.start_tts_response()
+                            self._audio_response_active = True
+                            continue
+                        elif command == 'end_audio_response':
+                            if self.baresip_bot and hasattr(self.baresip_bot, 'end_tts_response'):
+                                await self.baresip_bot.end_tts_response()
+                            self._audio_response_active = False
+                            continue
+                        else:
+                            logger.warning(f"Unknown audio queue command for session {self.log_id}: {command}")
+                            continue
                     
                     send_start = time.perf_counter()
                     
@@ -125,6 +144,29 @@ class SIPSession:
         else:
             logger.warning(f"No audio output method available for session {self.log_id}")
             
+    async def start_audio_response(self):
+        """Queue an explicit outbound audio response start marker.
+
+        This is intentionally ordered through audio_queue rather than calling the
+        bot directly, so any following chunks cannot overtake the stream-start.
+        """
+        if not self.is_active:
+            raise RuntimeError("Failed to start audio response: SIP session is not active")
+        await self.audio_queue.put({'command': 'start_audio_response'})
+        self._audio_response_active = True
+
+    async def end_audio_response(self):
+        """Queue an explicit outbound audio response end marker.
+
+        Keep this ordered through audio_queue so the end sentinel reaches PySIP
+        only after all earlier queued chunks for this response have been sent to
+        the bot.
+        """
+        if not self.is_active:
+            return
+        await self.audio_queue.put({'command': 'end_audio_response'})
+        self._audio_response_active = False
+
     async def send_audio(self, audio_chunk: bytes, timestamp=None):
         """Queue audio chunk for sending to SIP call"""
         if self.is_active:
@@ -170,6 +212,7 @@ class SIPSession:
                 except:
                     break
             logger.info(f"Cleared {cleared_count} chunks from session audio queue")
+            self._audio_response_active = False
             
             # Clear bot's queue if available
             if self.baresip_bot and hasattr(self.baresip_bot, 'clear_audio_queue'):

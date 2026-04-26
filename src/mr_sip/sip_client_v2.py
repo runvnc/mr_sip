@@ -38,7 +38,7 @@ class AudioStreamAdapter:
 
     def __init__(self):
         self.input_q = queue.Queue(maxsize=1000)
-        self.stream_id = 'tts_output'
+        self.stream_id = f'tts_output_{time.time_ns()}'
         self._done = False
         self.pre_encoded = True
 
@@ -93,6 +93,8 @@ class MindRootSIPBotV2:
         self._output_frame_count = 0
         self._dropped_frame_count = 0
         self._frame_remainder = b""  # leftover bytes waiting to complete a 160-byte frame
+        self._tts_response_active = False
+        self._tts_response_seq = 0
         self.call_answered = asyncio.Event()
         self.enable_recording = enable_recording
         self.recording_dir = recording_dir
@@ -326,10 +328,11 @@ class MindRootSIPBotV2:
                         rtp_ts = getattr(frame, 'timestamp', None)
                     else:
                         ulaw_bytes = frame
-                    if not self.audio_stream and self.call and self.call._rtp_session:
-                        self.audio_stream = AudioStreamAdapter()
-                        self.call._rtp_session.set_audio_stream(self.audio_stream)
-                        logger.info('Audio stream set on RTP session')
+                    if not self.call_established and self.call and self.call._rtp_session:
+                        # Do not attach an outbound AudioStreamAdapter here.
+                        # Outbound streams are now created per TTS response by
+                        # start_tts_response(), so PySIP prebuffers at speak()
+                        # boundaries instead of only once at call readiness.
                         self.is_active = True
                         self.call_established = True
                         self.call_start_time = datetime.now()
@@ -466,6 +469,77 @@ class MindRootSIPBotV2:
         finally:
             pass
 
+    async def start_tts_response(self) -> bool:
+        """Start a fresh outbound TTS response stream for PySIP.
+
+        PySIP's outgoing prebuffer is keyed by audio stream identity.  A new
+        AudioStreamAdapter per response lets PySIP prebuffer at the beginning
+        of each AI response instead of only once at call setup.
+        """
+        try:
+            if not self.is_active:
+                logger.warning('Cannot start TTS response - call not active')
+                return False
+            if not self.call or not getattr(self.call, '_rtp_session', None):
+                logger.warning('Cannot start TTS response - RTP session not initialized')
+                return False
+
+            self._tts_response_seq += 1
+            stream = AudioStreamAdapter()
+            stream.stream_id = f'tts_output_{self._tts_response_seq}_{time.time_ns()}'
+
+            # Drop any partial frame from a previous response so every response
+            # begins on a clean 20ms/160-byte ulaw boundary.
+            self._frame_remainder = b""
+
+            self.audio_stream = stream
+            self.call._rtp_session.set_audio_stream(stream)
+            self._tts_response_active = True
+            logger.debug(f'Started TTS response stream {stream.stream_id}')
+            return True
+        except Exception as e:
+            logger.error(f'Error starting TTS response stream: {e}')
+            logger.error(traceback.format_exc())
+            return False
+
+    async def end_tts_response(self) -> bool:
+        """Finish the current outbound TTS response stream.
+
+        We enqueue a None sentinel and let PySIP drain queued frames.  Do not
+        detach the stream immediately here or the RTP sender may drop the tail
+        of the response before it has drained its queue/smoothing buffer.
+        """
+        try:
+            stream = self.audio_stream
+            if not stream:
+                self._tts_response_active = False
+                self._frame_remainder = b""
+                return False
+
+            if self._frame_remainder:
+                # Pad final partial 20ms frame with PCMU silence.  All current
+                # SIP TTS providers feed pre-encoded ulaw_8000 audio.
+                final_frame = self._frame_remainder.ljust(160, b"\xff")[:160]
+                self._frame_remainder = b""
+                try:
+                    stream.input_q.put(final_frame, block=True, timeout=0.5)
+                except queue.Full:
+                    logger.warning('TTS response stream full while flushing final partial frame')
+
+            try:
+                stream.input_q.put(None, block=False)
+            except queue.Full:
+                logger.warning('TTS response stream full while enqueueing end sentinel')
+            stream.stream_done()
+            self._tts_response_active = False
+            logger.debug(f'Ended TTS response stream {stream.stream_id}')
+            return True
+        except Exception as e:
+            logger.error(f'Error ending TTS response stream: {e}')
+            logger.error(traceback.format_exc())
+            self._tts_response_active = False
+            return False
+
     async def send_tts_audio(self, audio_chunk: bytes, timestamp=None):
         """Send TTS audio chunk to the SIP call.
         
@@ -479,6 +553,12 @@ class MindRootSIPBotV2:
             if not self.is_active:
                 logger.warning('Cannot send audio - call not active')
                 return
+            else:
+                pass
+            if not self._tts_response_active:
+                # Backward-compatible fallback for callers that only know about
+                # sip_audio_out_chunk (not explicit response lifecycle).
+                await self.start_tts_response()
             else:
                 pass
             if not self.audio_stream:
@@ -560,6 +640,8 @@ class MindRootSIPBotV2:
     def clear_audio_queue(self):
         """Clear all queued audio frames (for interruption)."""
         try:
+            self._tts_response_active = False
+            self._frame_remainder = b""
             self._interrupting = True
             self.last_activity_time = time.time()
             if self.recorder:
