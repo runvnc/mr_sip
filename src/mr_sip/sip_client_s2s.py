@@ -86,6 +86,9 @@ class MindRootSIPBotS2S:
         self._dropped_frame_count = 0
         self._last_drop_log_time = 0
         self._drop_log_interval = 1.0
+        self._frame_remainder = b""  # leftover bytes waiting to complete a 160-byte frame
+        self._tts_response_active = False
+        self._tts_response_seq = 0
         self.call_answered = asyncio.Event()
         self.enable_recording = enable_recording
         self.recording_dir = recording_dir
@@ -146,10 +149,11 @@ class MindRootSIPBotS2S:
                         rtp_ts = getattr(frame, 'timestamp', None)
                     else:
                         ulaw_bytes = frame
-                    if not self.audio_stream and self.call and self.call._rtp_session:
-                        self.audio_stream = AudioStreamAdapter()
-                        self.call._rtp_session.set_audio_stream(self.audio_stream)
-                        logger.info('Audio stream set on RTP session (triggered by first frame)')
+                    if not self.call_established and self.call and self.call._rtp_session:
+                        # Do not attach an outbound AudioStreamAdapter here.
+                        # Outbound streams are created per audio response by
+                        # start_tts_response(), so PySIP can distinguish normal
+                        # between-response silence from active-response underruns.
                         self.is_active = True
                         self.call_established = True
                         self.call_start_time = datetime.now()
@@ -293,6 +297,65 @@ class MindRootSIPBotS2S:
         finally:
             pass
 
+    async def start_tts_response(self) -> bool:
+        """Start a fresh outbound S2S audio response stream for PySIP."""
+        try:
+            if not self.is_active:
+                logger.warning('Cannot start S2S TTS response - call not active')
+                return False
+            if not self.call or not getattr(self.call, '_rtp_session', None):
+                logger.warning('Cannot start S2S TTS response - RTP session not initialized')
+                return False
+
+            self._tts_response_seq += 1
+            stream = AudioStreamAdapter()
+            stream.stream_id = f's2s_output_{self._tts_response_seq}_{time.time_ns()}'
+
+            # Drop any partial frame from a previous response so each response
+            # starts on a clean 20ms/160-byte ulaw boundary.
+            self._frame_remainder = b""
+
+            self.audio_stream = stream
+            self.call._rtp_session.set_audio_stream(stream)
+            self._tts_response_active = True
+            logger.debug(f'Started S2S TTS response stream {stream.stream_id}')
+            return True
+        except Exception as e:
+            logger.error(f'Error starting S2S TTS response stream: {e}')
+            logger.error(traceback.format_exc())
+            return False
+
+    async def end_tts_response(self) -> bool:
+        """Finish the current outbound S2S audio response stream."""
+        try:
+            stream = self.audio_stream
+            if not stream:
+                self._tts_response_active = False
+                self._frame_remainder = b""
+                return False
+
+            if self._frame_remainder:
+                final_frame = self._frame_remainder.ljust(160, b"\xff")[:160]
+                self._frame_remainder = b""
+                try:
+                    stream.input_q.put(final_frame, block=True, timeout=0.5)
+                except queue.Full:
+                    logger.warning('S2S TTS response stream full while flushing final partial frame')
+
+            try:
+                stream.input_q.put(None, block=False)
+            except queue.Full:
+                logger.warning('S2S TTS response stream full while enqueueing end sentinel')
+            stream.stream_done()
+            self._tts_response_active = False
+            logger.debug(f'Ended S2S TTS response stream {stream.stream_id}')
+            return True
+        except Exception as e:
+            logger.error(f'Error ending S2S TTS response stream: {e}')
+            logger.error(traceback.format_exc())
+            self._tts_response_active = False
+            return False
+
     async def send_tts_audio(self, audio_chunk: bytes, timestamp=None):
         """Send TTS audio chunk to the SIP call - OPTIMIZED NON-BLOCKING VERSION.
         
@@ -317,6 +380,12 @@ class MindRootSIPBotS2S:
                 return
             else:
                 pass
+            if not self._tts_response_active:
+                # Backward-compatible fallback for callers that only know about
+                # sip_audio_out_chunk and do not emit explicit lifecycle markers.
+                await self.start_tts_response()
+            else:
+                pass
             if not self.audio_stream:
                 logger.warning('Cannot send audio - audio stream not initialized')
                 return
@@ -333,6 +402,12 @@ class MindRootSIPBotS2S:
                 return
             else:
                 pass
+            # Keep frame boundaries exact; short final frames are held until
+            # more audio arrives or padded in end_tts_response().
+            audio_chunk = self._frame_remainder + audio_chunk
+            n_complete = (len(audio_chunk) // FRAME_SIZE) * FRAME_SIZE
+            self._frame_remainder = audio_chunk[n_complete:]
+            audio_chunk = audio_chunk[:n_complete]
             frames_to_send = []
             for i in range(0, len(audio_chunk), FRAME_SIZE):
                 frame = audio_chunk[i:i + FRAME_SIZE]
@@ -380,6 +455,8 @@ class MindRootSIPBotS2S:
     def clear_audio_queue(self):
         """Clear all queued audio frames (for interruption)."""
         try:
+            self._tts_response_active = False
+            self._frame_remainder = b""
             self._interrupting = True
             self.last_activity_time = time.time()
             try:

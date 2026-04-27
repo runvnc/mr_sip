@@ -204,6 +204,20 @@ class PySIPProcessProxy:
         # Also tell the subprocess to stop its silence monitor
         self.wrapper.stop_silence_monitor()
     
+    async def start_tts_response(self) -> bool:
+        """Start one outbound audio response in the PySIP subprocess."""
+        if not self.is_active:
+            logger.warning("Proxy: Cannot start audio response - call not active")
+            return False
+        return await self.wrapper.start_tts_response()
+
+    async def end_tts_response(self) -> bool:
+        """End one outbound audio response in the PySIP subprocess."""
+        if not self.is_active:
+            logger.debug("Proxy: Cannot end audio response - call not active")
+            return False
+        return await self.wrapper.end_tts_response()
+
     async def send_tts_audio(self, audio_chunk: bytes, timestamp=None):
         """Send TTS audio to subprocess (from OpenAI to phone).
 

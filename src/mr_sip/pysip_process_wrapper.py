@@ -134,6 +134,30 @@ class PySIPProcessWrapper:
         finally:
             pass
 
+    async def start_tts_response(self) -> bool:
+        """Queue an ordered audio-response start marker to the PySIP subprocess."""
+        if not self._running or not self._call_established:
+            logger.warning('Cannot start audio response - call not active')
+            return False
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, lambda: self.audio_out_queue.put({'command': 'start_audio_response'}, block=True, timeout=0.1))
+            return True
+        except Exception as e:
+            logger.warning(f'Failed to queue audio response start marker: {e}')
+            return False
+
+    async def end_tts_response(self) -> bool:
+        """Queue an ordered audio-response end marker to the PySIP subprocess."""
+        if not self._running or not self._call_established:
+            logger.debug('Cannot end audio response - call not active')
+            return False
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, lambda: self.audio_out_queue.put({'command': 'end_audio_response'}, block=True, timeout=0.1))
+            return True
+        except Exception as e:
+            logger.warning(f'Failed to queue audio response end marker: {e}')
+            return False
+
     async def receive_audio(self) -> Optional[bytes]:
         """Receive audio chunk from PySIP process (from phone to OpenAI).
         
@@ -336,6 +360,15 @@ async def _audio_queue_reader(bot, audio_out_q: mp.Queue):
                     break
                 else:
                     pass
+                if isinstance(audio_item, dict):
+                    command = audio_item.get('command')
+                    if command == 'start_audio_response':
+                        await bot.start_tts_response()
+                    elif command == 'end_audio_response':
+                        await bot.end_tts_response()
+                    else:
+                        logger.warning(f'Unknown audio_out_queue command: {command}')
+                    continue
                 if isinstance(audio_item, tuple):
                     audio_chunk, timestamp = audio_item
                 else:
