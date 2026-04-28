@@ -268,17 +268,11 @@ class SileroCohereSTT(BaseSTTProvider):
                     f'Set COHERE_TRANSCRIBE_URL correctly or start the server. Error: {e}'
                 ) from e
         else:
-            _dlog('SileroCohereSTT.start: no remote URL - loading Cohere model locally...')
-            try:
-                await asyncio.get_event_loop().run_in_executor(None, self._load_cohere_model)
-                _dlog('SileroCohereSTT.start: local Cohere model loaded OK.')
-            except Exception as e:
-                _dlog(f'SileroCohereSTT.start: FATAL - failed to load local Cohere model: {e}')
-                _dlog(traceback.format_exc())
-                raise RuntimeError(
-                    f'SileroCohereSTT: failed to load Cohere Transcribe model locally. '
-                    f'Set COHERE_TRANSCRIBE_URL to use remote server instead. Error: {e}'
-                ) from e
+            raise RuntimeError(
+                'SileroCohereSTT: COHERE_TRANSCRIBE_URL is not set. '
+                'Local Cohere fallback is disabled (too slow). '
+                'Set COHERE_TRANSCRIBE_URL to the remote transcription server URL.'
+            )
 
         self.is_running = True
         _dlog('SileroCohereSTT.start: provider started and ready.')
@@ -304,17 +298,10 @@ class SileroCohereSTT(BaseSTTProvider):
               f'min_silence={self._eager_silence_ms}ms [eager], sr={VAD_SAMPLE_RATE})')
 
     def _load_cohere_model(self):
-        """Load Cohere Transcribe model locally (fallback when no remote URL)."""
-        from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq
-        self.cohere_processor = AutoProcessor.from_pretrained(
-            self.cohere_model_id, trust_remote_code=True)
-        self.cohere_model = AutoModelForSpeechSeq2Seq.from_pretrained(
-            self.cohere_model_id,
-            device_map=self.device,
-            torch_dtype=torch.float16 if self.device == 'cuda' else torch.float32,
-            trust_remote_code=True,
+        """Load Cohere Transcribe model locally. DISABLED - too slow."""
+        raise RuntimeError(
+            'Local Cohere model is disabled. Set COHERE_TRANSCRIBE_URL to use remote transcription server.'
         )
-        self.cohere_model.eval()
 
     async def stop(self) -> None:
         """Stop the provider and release resources."""
@@ -702,49 +689,10 @@ class SileroCohereSTT(BaseSTTProvider):
             return ''
 
     def _transcribe_local(self, ulaw_bytes: bytes) -> str:
-        """Run Cohere Transcribe locally (fallback)."""
-        if self.cohere_model is None:
-            _dlog('_transcribe_local: ERROR - local model not loaded and no remote URL')
-            return ''
-
-        pcm_bytes = audioop.ulaw2lin(ulaw_bytes, 2)
-        audio_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
-        audio_float = audio_int16.astype(np.float32) / 32768.0
-        audio_16k = self._resample_2x(audio_float)
-
-        inputs = self.cohere_processor(
-            audio=audio_16k,
-            sampling_rate=COHERE_SAMPLE_RATE,
-            return_tensors='pt',
-            language=self.language,
+        """Run Cohere Transcribe locally. DISABLED - too slow."""
+        raise RuntimeError(
+            'Local Cohere transcription is disabled. Set COHERE_TRANSCRIBE_URL to use remote transcription server.'
         )
-        audio_chunk_index = inputs.pop('audio_chunk_index', None)
-        inputs_on_device = {
-            k: v.to(self.device) if hasattr(v, 'to') else v
-            for k, v in inputs.items()
-        }
-
-        with torch.no_grad():
-            outputs = self.cohere_model(**inputs_on_device)
-
-        try:
-            text = self.cohere_processor.decode(
-                outputs,
-                skip_special_tokens=True,
-                audio_chunk_index=audio_chunk_index,
-                language=self.language,
-            )
-            if isinstance(text, list):
-                text = text[0] if text else ''
-        except Exception:
-            try:
-                ids = outputs.logits.argmax(dim=-1) if hasattr(outputs, 'logits') else outputs
-                text = self.cohere_processor.batch_decode(ids, skip_special_tokens=True)[0]
-            except Exception as e2:
-                _dlog(f'_transcribe_local: decode fallback failed: {e2}')
-                text = ''
-
-        return text
 
     @staticmethod
     def _resample_2x(audio: np.ndarray) -> np.ndarray:
