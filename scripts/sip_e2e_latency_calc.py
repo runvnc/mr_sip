@@ -100,6 +100,11 @@ def compute_latencies(events):
         # Use pre-computed E2E_LATENCY if available (from PySIP rtp_handler)
         if 'E2E_LATENCY' in evts and 'e2e_ms' in evts['E2E_LATENCY']:
             r['e2e_ms'] = float(evts['E2E_LATENCY']['e2e_ms'])
+        # User-perceived e2e (from last speech audio, not VAD decision)
+        if 'E2E_LATENCY' in evts and 'user_e2e_ms' in evts['E2E_LATENCY']:
+            r['user_e2e_ms'] = float(evts['E2E_LATENCY']['user_e2e_ms'])
+        elif 'VAD_EAGER_END' in evts and 'last_speech_audio_pc' in evts['VAD_EAGER_END'] and 'FIRST_RTP_SENT' in evts:
+            r['user_e2e_ms'] = (evts['FIRST_RTP_SENT']['perf_counter'] - float(evts['VAD_EAGER_END']['last_speech_audio_pc'])) * 1000
 
         results.append(r)
     return results
@@ -111,9 +116,10 @@ def print_results(results, show_all=False):
         return
 
     e2e_values = [r['e2e_ms'] for r in results if r.get('e2e_ms') is not None]
+    user_e2e_values = [r['user_e2e_ms'] for r in results if r.get('user_e2e_ms') is not None]
 
     print(f'{'='*80}')
-    print(f'SIP E2E Latency Report  (VAD_EAGER_END -> FIRST_RTP_SENT)')
+    print(f'SIP E2E Latency Report')
     print(f'{'='*80}')
     print()
 
@@ -127,13 +133,22 @@ def print_results(results, show_all=False):
         print(f'  Max e2e latency:         {mx:.0f} ms')
         print()
 
+    if user_e2e_values:
+        avg_u = sum(user_e2e_values) / len(user_e2e_values)
+        mn_u = min(user_e2e_values)
+        mx_u = max(user_e2e_values)
+        print(f'  User-perceived e2e (last speech audio -> first RTP):')
+        print(f'    Average: {avg_u:.0f} ms  Min: {mn_u:.0f} ms  Max: {mx_u:.0f} ms')
+        print()
+
     # Per-utterance table
-    header = f"{'Utt':>4} {'Wall Time':>20} {'E2E(ms)':>8} {'VAD->X':>7} {'X->CB':>7} {'CB->UT':>7} {'UT->TTS':>8} {'TTS->Q':>7} {'Q->DQ':>7} {'DQ->PS':>7} {'PS->RTP':>8} {'Prebuf':>6}"
+    header = f"{'Utt':>4} {'Wall Time':>20} {'UserE2E':>7} {'E2E(ms)':>8} {'VAD->X':>7} {'X->CB':>7} {'CB->UT':>7} {'UT->TTS':>8} {'TTS->Q':>7} {'Q->DQ':>7} {'DQ->PS':>7} {'PS->RTP':>8} {'Prebuf':>6}"
     print(header)
     print('-' * len(header))
 
     for r in results:
         e2e = f"{r['e2e_ms']:.0f}" if r.get('e2e_ms') is not None else '-'
+        user_e2e = f"{r['user_e2e_ms']:.0f}" if r.get('user_e2e_ms') is not None else '-'
         wall = r.get('wall_ts', '-')
         segs = []
         seg_keys = ['vad_to_transcribe_ms', 'transcribe_to_eager_cb_ms',
@@ -144,7 +159,7 @@ def print_results(results, show_all=False):
             v = r.get(k)
             segs.append(f"{v:.0f}" if v is not None else '-')
         prebuf = r.get('prebuffer_frames', '-')
-        print(f"{r['utterance']:>4} {wall:>20} {e2e:>8} {segs[0]:>7} {segs[1]:>7} {segs[2]:>7} {segs[3]:>8} {segs[4]:>7} {segs[5]:>7} {segs[6]:>7} {segs[7]:>8} {prebuf:>6}")
+        print(f"{r['utterance']:>4} {wall:>20} {user_e2e:>7} {e2e:>8} {segs[0]:>7} {segs[1]:>7} {segs[2]:>7} {segs[3]:>8} {segs[4]:>7} {segs[5]:>7} {segs[6]:>7} {segs[7]:>8} {prebuf:>6}")
 
     print()
     print('Column legend:')
@@ -159,12 +174,11 @@ def print_results(results, show_all=False):
     print('  Prebuf  = PySIP outgoing prebuffer frames (each 20ms)')
 
     # Also print any E2E_LATENCY lines from PySIP (pre-computed)
-    e2e_auto = [(r['utterance'], r['e2e_ms']) for r in results if r.get('e2e_ms') is not None]
+    e2e_auto = [(r['utterance'], r.get('user_e2e_ms', r.get('e2e_ms')), r.get('e2e_ms')) for r in results if r.get('e2e_ms') is not None]
     if e2e_auto:
         print(f'\nAuto-computed E2E_LATENCY events from PySIP:')
-        for utt, ms in e2e_auto:
-            print(f'  Utterance #{utt}: {ms:.0f} ms')
-
+        for utt, user_ms, vad_ms in e2e_auto:
+            print(f'  Utterance #{utt}: user_e2e={user_ms:.0f}ms (vad_e2e={vad_ms:.0f}ms)')
 def main():
     parser = argparse.ArgumentParser(description='SIP E2E Latency Calculator')
     parser.add_argument('--tail', type=int, default=None, help='Show last N utterances')

@@ -525,9 +525,15 @@ class MindRootSIPBotV2:
             # when the first RTP packet is sent
             if self.stt and hasattr(self.stt, '_last_vad_eager_end_pc'):
                 stream._e2e_vad_eager_end_pc = self.stt._last_vad_eager_end_pc
+                # True user-perceived start: last speech audio time (before VAD silence gap)
+                if hasattr(self.stt, '_last_user_speech_end_pc'):
+                    stream._e2e_user_speech_end_pc = self.stt._last_user_speech_end_pc
+                else:
+                    stream._e2e_user_speech_end_pc = self.stt._last_vad_eager_end_pc
                 stream._e2e_vad_utterance_num = self._e2e_current_utterance_num
             else:
                 stream._e2e_vad_eager_end_pc = None
+                stream._e2e_user_speech_end_pc = None
                 stream._e2e_vad_utterance_num = 0
             _e2e_log('TTS_RESPONSE_START', utterance_num=self._e2e_current_utterance_num)
             logger.debug(f'Started TTS response stream {stream.stream_id}')
