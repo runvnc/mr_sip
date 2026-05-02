@@ -536,13 +536,16 @@ class SileroCohereSTT(BaseSTTProvider):
         vad_end_time = time.perf_counter()
         speech_duration = vad_end_time - self._speech_start_time
         self._last_vad_eager_end_pc = vad_end_time
-        # True user-perceived start: when last speech audio was received,
-        # not when VAD decided (which is eager_silence_ms later)
-        self._last_user_speech_end_pc = self._last_speech_audio_time
+        # Approximate true user-perceived end: VAD fires eager_silence_ms after
+        # the last speech audio, so subtract that to get when user actually stopped.
+        # (_last_speech_audio_time is unreliable because it updates for every chunk
+        # including silence chunks while _is_speaking is True)
+        approx_last_speech_pc = vad_end_time - (self._eager_silence_ms / 1000.0)
+        self._last_user_speech_end_pc = approx_last_speech_pc
         _e2e_log('VAD_EAGER_END', utterance_num=self._utterance_count + 1, vad_end_pc=vad_end_time,
-                 last_speech_audio_pc=self._last_speech_audio_time,
+                 last_speech_audio_pc=approx_last_speech_pc,
                  eager_silence_ms=self._eager_silence_ms, speech_duration_s=f'{speech_duration:.2f}')
-        time_since_last_audio = (vad_end_time - self._last_speech_audio_time) * 1000
+        time_since_last_audio = (vad_end_time - approx_last_speech_pc) * 1000
         speech_bytes = self._speech_buffer
         self._speech_buffer = b''
 
