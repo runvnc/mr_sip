@@ -29,6 +29,26 @@ from .simple_recorder import SimpleRecorder
 from .stt import create_stt_provider, BaseSTTProvider, STTResult
 logger = logging.getLogger(__name__)
 
+# End-to-end latency log (shared across mr_sip + PySIP)
+E2E_LATENCY_LOG = '/tmp/sip_e2e_latency.log'
+
+
+def _e2e_log(event: str, utterance_num: int = 0, **kwargs):
+    """Log an end-to-end latency event with perf_counter timestamp."""
+    from datetime import datetime
+    now = datetime.now()
+    ts = now.strftime('%Y-%m-%d %H:%M:%S') + f'.{now.microsecond // 1000:03d}'
+    pc = time.perf_counter()
+    extra = ' '.join(f'{k}={v}' for k, v in kwargs.items())
+    line = f'[{ts}] [E2E] {event} perf_counter={pc:.6f} utterance={utterance_num} {extra}'
+    try:
+        with open(E2E_LATENCY_LOG, 'a') as f:
+            f.write(line + '\n')
+            f.flush()
+    except Exception:
+        pass
+    logger.info(f'[E2E] {event} utterance={utterance_num} {extra}')
+
 class AudioStreamAdapter:
     """Adapter to feed audio to PySIP's RTP session.
     
@@ -195,6 +215,7 @@ class MindRootSIPBotV2:
                 self.draft_response_active = True
                 self.last_eager_eot_text = result.text
                 self._stt_dlog(f'[EAGER EOT] Calling utterance callback (is_eager=True): "{result.text}"')
+                _e2e_log('EAGER_EOT_CALLBACK', utterance_num=len(self.utterances) + 1, text=result.text[:50])
                 if self.on_utterance_callback:
                     utterance_num = len(self.utterances) + 1
                     self._schedule_coroutine(self._call_utterance_callback(result.text, utterance_num, result.timestamp or time.time(), is_eager=True))
@@ -495,6 +516,16 @@ class MindRootSIPBotV2:
             self.audio_stream = stream
             self.call._rtp_session.set_audio_stream(stream)
             self._tts_response_active = True
+            self._tts_response_start_pc = time.perf_counter()
+            # Attach VAD eager end timestamp so PySIP can compute e2e latency
+            # when the first RTP packet is sent
+            if self.stt and hasattr(self.stt, '_last_vad_eager_end_pc'):
+                stream._e2e_vad_eager_end_pc = self.stt._last_vad_eager_end_pc
+                stream._e2e_vad_utterance_num = getattr(self.stt, '_utterance_count', 0)
+            else:
+                stream._e2e_vad_eager_end_pc = None
+                stream._e2e_vad_utterance_num = 0
+            _e2e_log('TTS_RESPONSE_START', utterance_num=0)
             logger.debug(f'Started TTS response stream {stream.stream_id}')
             return True
         except Exception as e:
@@ -589,6 +620,10 @@ class MindRootSIPBotV2:
             for i in range(0, len(ulaw_audio), FRAME_SIZE):
                 if self._interrupting:
                     return
+                if self._output_frame_count == 0:
+                    _e2e_log('FIRST_TTS_CHUNK_PYSIP', utterance_num=0,
+                             since_tts_response_start_ms=f'{(time.perf_counter() - getattr(self, "_tts_response_start_pc", time.perf_counter()))*1000:.0f}',
+                             chunk_len=len(frame))
                 else:
                     pass
                 frame = ulaw_audio[i:i + FRAME_SIZE]

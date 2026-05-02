@@ -69,6 +69,8 @@ COHERE_SAMPLE_RATE = 16000
 # Dedicated debug log file - always written regardless of log level
 DEBUG_LOG = '/tmp/silero_cohere_stt.log'
 
+# End-to-end latency log (shared across mr_sip + PySIP)
+E2E_LATENCY_LOG = '/tmp/sip_e2e_latency.log'
 
 def _dlog(msg: str):
     """Write a timestamped line (with ms resolution) to the debug log file and also to logger.info."""
@@ -82,6 +84,22 @@ def _dlog(msg: str):
     except Exception:
         pass
     logger.info(msg)
+
+
+def _e2e_log(event: str, utterance_num: int = 0, **kwargs):
+    """Log an end-to-end latency event with perf_counter timestamp."""
+    now = datetime.now()
+    ts = now.strftime('%Y-%m-%d %H:%M:%S') + f'.{now.microsecond // 1000:03d}'
+    pc = time.perf_counter()
+    extra = ' '.join(f'{k}={v}' for k, v in kwargs.items())
+    line = f'[{ts}] [E2E] {event} perf_counter={pc:.6f} utterance={utterance_num} {extra}'
+    try:
+        with open(E2E_LATENCY_LOG, 'a') as f:
+            f.write(line + '\n')
+            f.flush()
+    except Exception:
+        pass
+    logger.info(f'[E2E] {event} utterance={utterance_num} {extra}')
 
 
 class SileroCohereSTT(BaseSTTProvider):
@@ -517,6 +535,8 @@ class SileroCohereSTT(BaseSTTProvider):
         self._is_speaking = False
         vad_end_time = time.perf_counter()
         speech_duration = vad_end_time - self._speech_start_time
+        self._last_vad_eager_end_pc = vad_end_time
+        _e2e_log('VAD_EAGER_END', utterance_num=self._utterance_count + 1, vad_end_pc=vad_end_time, speech_duration_s=f'{speech_duration:.2f}')
         time_since_last_audio = (vad_end_time - self._last_speech_audio_time) * 1000
         speech_bytes = self._speech_buffer
         self._speech_buffer = b''
@@ -551,6 +571,8 @@ class SileroCohereSTT(BaseSTTProvider):
         _dlog(f'[TRANSCRIBE] Done in {elapsed_pc*1000:.0f}ms -> "{text}" | '
               f'total_since_vad_end={total_since_vad_end:.0f}ms | '
               f'total_since_last_speech_audio={total_since_last_audio:.0f}ms')
+        _e2e_log('TRANSCRIBE_DONE', utterance_num=self._utterance_count + 1,
+                 transcribe_ms=f'{elapsed_pc*1000:.0f}', since_vad_end_ms=f'{total_since_vad_end:.0f}')
 
         if not text or not text.strip():
             _dlog('[TRANSCRIBE] Empty result, skipping emit')
@@ -612,6 +634,10 @@ class SileroCohereSTT(BaseSTTProvider):
         result.utterance_num = utterance_num
         _dlog(f'[EMIT] Final (confirmed) #{utterance_num}: "{text}"')
         self._emit_final(result)
+
+        final_pc = time.perf_counter()
+        _e2e_log('VAD_FINAL_CONFIRMED', utterance_num=utterance_num,
+                 since_vad_eager_end_ms=f'{(final_pc - getattr(self, "_last_vad_eager_end_pc", final_pc))*1000:.0f}')
 
     # ------------------------------------------------------------------
     # Transcription

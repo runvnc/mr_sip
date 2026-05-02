@@ -16,6 +16,27 @@ import traceback
 
 logger = logging.getLogger(__name__)
 
+# End-to-end latency log (shared across mr_sip + PySIP)
+E2E_LATENCY_LOG = '/tmp/sip_e2e_latency.log'
+
+
+def _e2e_log(event: str, utterance_num: int = 0, **kwargs):
+    """Log an end-to-end latency event with perf_counter timestamp."""
+    from datetime import datetime as _dt
+    now = _dt.now()
+    ts = now.strftime('%Y-%m-%d %H:%M:%S') + f'.{now.microsecond // 1000:03d}'
+    pc = time.perf_counter()
+    extra = ' '.join(f'{k}={v}' for k, v in kwargs.items())
+    line = f'[{ts}] [E2E] {event} perf_counter={pc:.6f} utterance={utterance_num} {extra}'
+    try:
+        with open(E2E_LATENCY_LOG, 'a') as f:
+            f.write(line + '\n')
+            f.flush()
+    except Exception:
+        pass
+    logger.info(f'[E2E] {event} utterance={utterance_num} {extra}')
+
+
 class SIPSession:
     """
     Represents an active SIP call session linked to a MindRoot conversation.
@@ -33,6 +54,8 @@ class SIPSession:
         # Profiling
         self._first_chunk_queued_time: Optional[float] = None
         self._first_chunk_sent_time: Optional[float] = None
+        self._e2e_first_chunk_queued_logged: bool = False
+        self._e2e_first_chunk_dequeued_logged: bool = False
         self.audio_queue = asyncio.Queue(maxsize=35)  # Increased to ~700ms headroom for smoother pacing
         self._audio_sender_task = None
         self._audio_sent_count = 0
@@ -80,6 +103,11 @@ class SIPSession:
                         if command == 'start_audio_response':
                             if self.baresip_bot and hasattr(self.baresip_bot, 'start_tts_response'):
                                 await self.baresip_bot.start_tts_response()
+                            # Reset per-response e2e tracking
+                            self._e2e_first_chunk_queued_logged = False
+                            self._e2e_first_chunk_dequeued_logged = False
+                            self._first_chunk_queued_time = None
+                            self._first_chunk_sent_time = None
                             self._audio_response_active = True
                             continue
                         elif command == 'end_audio_response':
@@ -96,6 +124,9 @@ class SIPSession:
                     if self._first_chunk_sent_time is None:
                         self._first_chunk_sent_time = send_start
                         if self._first_chunk_queued_time:
+                            if not self._e2e_first_chunk_dequeued_logged:
+                                _e2e_log('FIRST_CHUNK_DEQUEUED', since_queued_ms=f'{(send_start - self._first_chunk_queued_time)*1000:.1f}')
+                                self._e2e_first_chunk_dequeued_logged = True
                             queue_latency = (send_start - self._first_chunk_queued_time) * 1000
                             logger.info(f"SIP_SEND: First chunk dequeued, queue_latency={queue_latency:.1f}ms")
                     
@@ -175,6 +206,9 @@ class SIPSession:
             
             if self._first_chunk_queued_time is None:
                 self._first_chunk_queued_time = queue_time
+                if not self._e2e_first_chunk_queued_logged:
+                    _e2e_log('FIRST_CHUNK_QUEUED', chunk_len=len(audio_chunk))
+                    self._e2e_first_chunk_queued_logged = True
                 logger.info(f"SIP_QUEUE: First chunk queued at {queue_time:.3f}")
             
             try:

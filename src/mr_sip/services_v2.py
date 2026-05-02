@@ -7,6 +7,7 @@ Supports Deepgram Flux and other STT providers.
 import os
 import asyncio
 import logging
+import time
 from datetime import datetime
 from typing import Dict, Any
 from lib.providers.services import service, service_manager
@@ -16,6 +17,26 @@ from .sip_client_v2 import MindRootSIPBotV2, setup_sndfile_module
 from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# End-to-end latency log (shared across mr_sip + PySIP)
+E2E_LATENCY_LOG = '/tmp/sip_e2e_latency.log'
+
+
+def _e2e_log(event: str, utterance_num: int = 0, **kwargs):
+    """Log an end-to-end latency event with perf_counter timestamp."""
+    from datetime import datetime as _dt
+    now = _dt.now()
+    ts = now.strftime('%Y-%m-%d %H:%M:%S') + f'.{now.microsecond // 1000:03d}'
+    pc = time.perf_counter()
+    extra = ' '.join(f'{k}={v}' for k, v in kwargs.items())
+    line = f'[{ts}] [E2E] {event} perf_counter={pc:.6f} utterance={utterance_num} {extra}'
+    try:
+        with open(E2E_LATENCY_LOG, 'a') as f:
+            f.write(line + '\n')
+            f.flush()
+    except Exception:
+        pass
+    logger.info(f'[E2E] {event} utterance={utterance_num} {extra}')
 
 def _is_emergency_number(number: str) -> bool:
     """
@@ -136,6 +157,8 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
         async def on_utterance_callback(text: str, utterance_num: int, timestamp: float, ctx, is_eager: bool=False):
             """Callback for when complete utterances are transcribed"""
             try:
+                _e2e_log('UTTERANCE_CALLBACK', utterance_num=utterance_num,
+                         is_eager=is_eager, text=text[:50] if text else '')
                 logger.info(f'SIP_DEBUG Transcribed utterance #{utterance_num}: {text}')
                 res = await service_manager.cancel_and_wait(ctx.log_id, ctx.username)
                 logger.info(f'SIP_DEBUG cancel result: {res}')
