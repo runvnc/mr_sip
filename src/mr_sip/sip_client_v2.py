@@ -517,15 +517,19 @@ class MindRootSIPBotV2:
             self.call._rtp_session.set_audio_stream(stream)
             self._tts_response_active = True
             self._tts_response_start_pc = time.perf_counter()
+            # Reset per-response frame counter for FIRST_TTS_CHUNK_PYSIP logging
+            self._response_output_frame_count = 0
+            # Store current utterance num for downstream e2e logging
+            self._e2e_current_utterance_num = getattr(self.stt, '_utterance_count', 0) if self.stt else 0
             # Attach VAD eager end timestamp so PySIP can compute e2e latency
             # when the first RTP packet is sent
             if self.stt and hasattr(self.stt, '_last_vad_eager_end_pc'):
                 stream._e2e_vad_eager_end_pc = self.stt._last_vad_eager_end_pc
-                stream._e2e_vad_utterance_num = getattr(self.stt, '_utterance_count', 0)
+                stream._e2e_vad_utterance_num = self._e2e_current_utterance_num
             else:
                 stream._e2e_vad_eager_end_pc = None
                 stream._e2e_vad_utterance_num = 0
-            _e2e_log('TTS_RESPONSE_START', utterance_num=0)
+            _e2e_log('TTS_RESPONSE_START', utterance_num=self._e2e_current_utterance_num)
             logger.debug(f'Started TTS response stream {stream.stream_id}')
             return True
         except Exception as e:
@@ -620,12 +624,13 @@ class MindRootSIPBotV2:
             for i in range(0, len(ulaw_audio), FRAME_SIZE):
                 if self._interrupting:
                     return
-                if self._output_frame_count == 0:
-                    _e2e_log('FIRST_TTS_CHUNK_PYSIP', utterance_num=0,
+                if not hasattr(self, '_response_output_frame_count'):
+                    self._response_output_frame_count = 0
+                if self._response_output_frame_count == 0:
+                    _e2e_log('FIRST_TTS_CHUNK_PYSIP', utterance_num=getattr(self, '_e2e_current_utterance_num', 0),
                              since_tts_response_start_ms=f'{(time.perf_counter() - getattr(self, "_tts_response_start_pc", time.perf_counter()))*1000:.0f}',
                              chunk_len=len(frame))
-                else:
-                    pass
+                self._response_output_frame_count += 1
                 frame = ulaw_audio[i:i + FRAME_SIZE]
                 frame_timestamp = timestamp + i / 8000.0 if timestamp else None
                 try:

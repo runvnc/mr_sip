@@ -56,6 +56,7 @@ class SIPSession:
         self._first_chunk_sent_time: Optional[float] = None
         self._e2e_first_chunk_queued_logged: bool = False
         self._e2e_first_chunk_dequeued_logged: bool = False
+        self._e2e_current_utterance_num: int = 0
         self.audio_queue = asyncio.Queue(maxsize=35)  # Increased to ~700ms headroom for smoother pacing
         self._audio_sender_task = None
         self._audio_sent_count = 0
@@ -103,6 +104,8 @@ class SIPSession:
                         if command == 'start_audio_response':
                             if self.baresip_bot and hasattr(self.baresip_bot, 'start_tts_response'):
                                 await self.baresip_bot.start_tts_response()
+                            if hasattr(self.baresip_bot, '_e2e_current_utterance_num'):
+                                self._e2e_current_utterance_num = self.baresip_bot._e2e_current_utterance_num
                             # Reset per-response e2e tracking
                             self._e2e_first_chunk_queued_logged = False
                             self._e2e_first_chunk_dequeued_logged = False
@@ -125,7 +128,7 @@ class SIPSession:
                         self._first_chunk_sent_time = send_start
                         if self._first_chunk_queued_time:
                             if not self._e2e_first_chunk_dequeued_logged:
-                                _e2e_log('FIRST_CHUNK_DEQUEUED', since_queued_ms=f'{(send_start - self._first_chunk_queued_time)*1000:.1f}')
+                                _e2e_log('FIRST_CHUNK_DEQUEUED', utterance_num=self._e2e_current_utterance_num, since_queued_ms=f'{(send_start - self._first_chunk_queued_time)*1000:.1f}')
                                 self._e2e_first_chunk_dequeued_logged = True
                             queue_latency = (send_start - self._first_chunk_queued_time) * 1000
                             logger.info(f"SIP_SEND: First chunk dequeued, queue_latency={queue_latency:.1f}ms")
@@ -207,7 +210,7 @@ class SIPSession:
             if self._first_chunk_queued_time is None:
                 self._first_chunk_queued_time = queue_time
                 if not self._e2e_first_chunk_queued_logged:
-                    _e2e_log('FIRST_CHUNK_QUEUED', chunk_len=len(audio_chunk))
+                    _e2e_log('FIRST_CHUNK_QUEUED', utterance_num=self._e2e_current_utterance_num, chunk_len=len(audio_chunk))
                     self._e2e_first_chunk_queued_logged = True
                 logger.info(f"SIP_QUEUE: First chunk queued at {queue_time:.3f}")
             
