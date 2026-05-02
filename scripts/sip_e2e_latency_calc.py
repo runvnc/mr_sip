@@ -24,8 +24,8 @@ LOG_FILE = '/tmp/sip_e2e_latency.log'
 LINE_RE = re.compile(
     r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\] '
     r'\[E2E\] (\w+) '
-    r'perf_counter=([\d.]+) '
-    r'utterance=(\d+)'
+    r'perf_counter=([\d.]+)'
+    r'(?: utterance=(\d+))?'  # utterance is optional (PySIP may omit or use utterance_num)
     r'(.*)'
 )
 KV_RE = re.compile(r'(\w+)=([^\s]+)')
@@ -40,6 +40,9 @@ def parse_log(lines):
             continue
         wall_ts, event, perf_counter, utterance, rest = m.groups()
         kv = dict(KV_RE.findall(rest))
+        # Handle utterance_num= from PySIP as fallback for utterance=
+        if utterance is None:
+            utterance = kv.pop('utterance_num', '0')
         events.append({
             'wall_ts': wall_ts,
             'event': event,
