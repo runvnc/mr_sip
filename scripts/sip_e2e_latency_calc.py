@@ -57,7 +57,9 @@ def compute_latencies(events):
     """Group events by utterance number and compute latencies."""
     by_utterance = defaultdict(dict)
     for e in events:
-        by_utterance[e['utterance']][e['event']] = e
+        # Keep FIRST occurrence of each event type per utterance
+        if e['event'] not in by_utterance[e['utterance']]:
+            by_utterance[e['utterance']][e['event']] = e
 
     results = []
     for utt_num in sorted(by_utterance.keys()):
