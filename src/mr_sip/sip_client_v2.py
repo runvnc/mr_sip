@@ -629,7 +629,7 @@ class MindRootSIPBotV2:
                 if self._response_output_frame_count == 0:
                     _e2e_log('FIRST_TTS_CHUNK_PYSIP', utterance_num=getattr(self, '_e2e_current_utterance_num', 0),
                              since_tts_response_start_ms=f'{(time.perf_counter() - getattr(self, "_tts_response_start_pc", time.perf_counter()))*1000:.0f}',
-                             chunk_len=len(frame))
+                             chunk_len=len(ulaw_audio[i:i + FRAME_SIZE]))
                 self._response_output_frame_count += 1
                 frame = ulaw_audio[i:i + FRAME_SIZE]
                 frame_timestamp = timestamp + i / 8000.0 if timestamp else None
