@@ -61,6 +61,17 @@ def compute_latencies(events):
         if e['event'] not in by_utterance[e['utterance']]:
             by_utterance[e['utterance']][e['event']] = e
 
+    # E2E_LATENCY events contain rtp_sent_pc which is equivalent to FIRST_RTP_SENT.
+    # Use it as a synthetic FIRST_RTP_SENT when the real one is missing (it lacks utterance= field).
+    for utt_num, evts in by_utterance.items():
+        if 'E2E_LATENCY' in evts and 'FIRST_RTP_SENT' not in evts:
+            e2e = evts['E2E_LATENCY']
+            if 'rtp_sent_pc' in e2e:
+                evts['FIRST_RTP_SENT'] = {
+                    'perf_counter': float(e2e['rtp_sent_pc']),
+                    'wall_ts': e2e.get('wall_ts', ''),
+                }
+
     results = []
     for utt_num in sorted(by_utterance.keys()):
         evts = by_utterance[utt_num]
