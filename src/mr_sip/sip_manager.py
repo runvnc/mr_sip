@@ -179,14 +179,26 @@ class SIPSession:
             logger.warning(f"No audio output method available for session {self.log_id}")
             
     async def start_audio_response(self):
-        """Queue an explicit outbound audio response start marker.
+        """Start an explicit outbound audio response.
 
-        This is intentionally ordered through audio_queue rather than calling the
-        bot directly, so any following chunks cannot overtake the stream-start.
+        Calls start_tts_response() directly on the bot instead of queueing
+        through audio_queue. This eliminates ~25-30ms of asyncio scheduling
+        delay that would occur waiting for the audio_sender_loop to pick up
+        the queued command. Ordering is preserved because sip_start_audio_response
+        is always called BEFORE any audio chunks are queued.
         """
         if not self.is_active:
             raise RuntimeError("Failed to start audio response: SIP session is not active")
-        await self.audio_queue.put({'command': 'start_audio_response'})
+        # Call directly instead of queueing - eliminates asyncio scheduling delay
+        if self.baresip_bot and hasattr(self.baresip_bot, 'start_tts_response'):
+            await self.baresip_bot.start_tts_response()
+        if hasattr(self.baresip_bot, '_e2e_current_utterance_num'):
+            self._e2e_current_utterance_num = self.baresip_bot._e2e_current_utterance_num
+        # Reset per-response e2e tracking
+        self._e2e_first_chunk_queued_logged = False
+        self._e2e_first_chunk_dequeued_logged = False
+        self._first_chunk_queued_time = None
+        self._first_chunk_sent_time = None
         self._audio_response_active = True
 
     async def end_audio_response(self):

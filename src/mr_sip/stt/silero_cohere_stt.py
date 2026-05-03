@@ -132,6 +132,10 @@ class SileroCohereSTT(BaseSTTProvider):
 
         self.threshold = float(os.getenv('SILERO_VAD_THRESHOLD', str(threshold)))
 
+        # Dual-threshold VAD: higher threshold for speech start, lower for speech end
+        # This makes the silence timer start sooner after the user stops talking
+        self.end_threshold = float(os.getenv('SILERO_END_THRESHOLD', '0.3'))
+
         # Two-stage silence detection
         # eager_silence_ms: VAD fires here, we transcribe and emit eager EOT
         # final_silence_ms: confirmation timer expires, we emit final EOT
@@ -141,8 +145,6 @@ class SileroCohereSTT(BaseSTTProvider):
         self._final_silence_ms = int(
             os.getenv('SILERO_FINAL_SILENCE_MS', '700')
         )
-        # VADIterator uses eager silence as its min_silence_duration_ms
-        self.min_silence_duration_ms = self._eager_silence_ms
 
         self.speech_pad_ms = int(os.getenv('SILERO_SPEECH_PAD_MS', str(speech_pad_ms)))
         self.language = os.getenv('COHERE_TRANSCRIBE_LANGUAGE', language)
@@ -195,9 +197,13 @@ class SileroCohereSTT(BaseSTTProvider):
 
         # Models (only used for local fallback)
         self.vad_model = None
-        self.vad_iterator = None
         self.cohere_model = None
         self.cohere_processor = None
+
+        # Dual-threshold VAD state (replaces VADIterator)
+        self._vad_speech_active = False
+        self._vad_silence_chunks = 0  # consecutive chunks below end_threshold
+        self._vad_silence_chunks_needed = 0  # computed from eager_silence_ms
 
         # Audio state
         self._vad_buffer: bytes = b''
@@ -231,6 +237,7 @@ class SileroCohereSTT(BaseSTTProvider):
 
         _dlog(
             f'SileroCohereSTT.__init__: threshold={self.threshold}, '
+            f'end_threshold={self.end_threshold}, '
             f'eager_silence={self._eager_silence_ms}ms, '
             f'final_silence={self._final_silence_ms}ms, '
             f'speech_pad={self.speech_pad_ms}ms, '
@@ -298,22 +305,18 @@ class SileroCohereSTT(BaseSTTProvider):
     def _load_vad_model(self):
         """Load Silero VAD (blocking, run in executor)."""
         try:
-            from silero_vad import load_silero_vad, VADIterator
+            from silero_vad import load_silero_vad
         except ImportError:
             raise ImportError(
                 'silero-vad package not installed. Run: pip install silero-vad'
             )
         self.vad_model = load_silero_vad(onnx=False)
-        # VAD fires at eager_silence_ms; final confirmation is handled by our timer
-        self.vad_iterator = VADIterator(
-            model=self.vad_model,
-            threshold=self.threshold,
-            sampling_rate=VAD_SAMPLE_RATE,
-            min_silence_duration_ms=self._eager_silence_ms,
-            speech_pad_ms=self.speech_pad_ms,
-        )
-        _dlog(f'_load_vad_model: VADIterator created (threshold={self.threshold}, '
-              f'min_silence={self._eager_silence_ms}ms [eager], sr={VAD_SAMPLE_RATE})')
+        # Compute how many 32ms silence chunks needed for eager EOT
+        self._vad_silence_chunks_needed = self._eager_silence_ms // 32
+        _dlog(f'_load_vad_model: direct model calls (start_threshold={self.threshold}, '
+              f'end_threshold={self.end_threshold}, '
+              f'silence_chunks_needed={self._vad_silence_chunks_needed} [{self._eager_silence_ms}ms], '
+              f'speech_pad={self.speech_pad_ms}ms)')
 
     def _load_cohere_model(self):
         """Load Cohere Transcribe model locally. DISABLED - too slow."""
@@ -340,11 +343,6 @@ class SileroCohereSTT(BaseSTTProvider):
         if self._http_session is not None:
             try:
                 self._http_session.close()
-            except Exception:
-                pass
-        if self.vad_iterator is not None:
-            try:
-                self.vad_iterator.reset_states()
             except Exception:
                 pass
         _dlog(f'SileroCohereSTT stopped. Stats: frames={self._frames_received}, '
@@ -411,7 +409,7 @@ class SileroCohereSTT(BaseSTTProvider):
     # ------------------------------------------------------------------
 
     async def _process_vad_chunk(self, chunk_bytes: bytes) -> None:
-        """Run one 256-byte (32ms) ulaw chunk through Silero VAD."""
+        """Run one 256-byte (32ms) ulaw chunk through Silero VAD with dual thresholds."""
         t_chunk_start = time.perf_counter()
         try:
             self._vad_chunks_processed += 1
@@ -442,10 +440,30 @@ class SileroCohereSTT(BaseSTTProvider):
 
             preprocess_us = (time.perf_counter() - t_preprocess) * 1e6
 
-            # VADIterator returns {'start': N} or {'end': N} or None
             t_vad = time.perf_counter()
-            result = self.vad_iterator(chunk_tensor, return_seconds=False)
+            # Direct model call returns speech probability
+            prob = self.vad_model(chunk_tensor, VAD_SAMPLE_RATE).item()
             vad_us = (time.perf_counter() - t_vad) * 1e6
+
+            # Dual-threshold logic
+            result = None
+            if not self._vad_speech_active:
+                # Not in speech: check start threshold
+                if prob >= self.threshold:
+                    self._vad_speech_active = True
+                    self._vad_silence_chunks = 0
+                    result = {'start': 0}
+            else:
+                # In speech: check end threshold (lower = detects silence sooner)
+                if prob < self.end_threshold:
+                    self._vad_silence_chunks += 1
+                    if self._vad_silence_chunks >= self._vad_silence_chunks_needed:
+                        self._vad_speech_active = False
+                        self._vad_silence_chunks = 0
+                        result = {'end': 0}
+                else:
+                    # Speech continues, reset silence counter
+                    self._vad_silence_chunks = 0
 
             chunk_total_us = (time.perf_counter() - t_chunk_start) * 1e6
 
@@ -461,6 +479,7 @@ class SileroCohereSTT(BaseSTTProvider):
             self._vad_total_times.append(chunk_total_us)
 
             _dlog(f'_process_vad_chunk: VAD event: {result} | '
+                  f'prob={prob:.3f} | '
                   f'preprocess={preprocess_us:.0f}us vad={vad_us:.0f}us total={chunk_total_us:.0f}us')
 
             # Log rolling averages every 50 events
