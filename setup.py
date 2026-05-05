@@ -25,6 +25,8 @@ setup(
         "numpy>=1.21.0",
         "scipy>=1.7.0",
         "pydub>=0.25.0",
+        "onnxruntime-gpu>=1.18.0",
+        "huggingface_hub>=0.20.0",
         "PySIPio @ git+https://github.com/runvnc/PySIP.git"
     ],
     python_requires=">=3.8",

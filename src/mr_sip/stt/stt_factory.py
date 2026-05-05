@@ -58,7 +58,12 @@ def create_stt_provider(provider_name: Optional[str]=None, **kwargs) -> BaseSTTP
         kwargs.pop('api_key', None)
         kwargs.pop('encoding', None)
         return SileroCohereSTT(**kwargs)
+    if provider_name == 'smart_turn_v3':
+        from .smart_turn_v3_stt import SmartTurnV3STT
+        kwargs.pop('api_key', None)
+        kwargs.pop('encoding', None)
+        return SmartTurnV3STT(**kwargs)
     raise ValueError(
         f'Unknown STT provider: {provider_name}. '
-        f'Available: deepgram, deepgram_flux, silero_cohere'
+        f'Available: deepgram, deepgram_flux, silero_cohere, smart_turn_v3'
     )
