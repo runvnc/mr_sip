@@ -16,6 +16,7 @@ Key env vars:
   SMART_TURN_POLL_MS - polling interval (default 80)
   SMART_TURN_THRESHOLD - probability threshold (default 0.5)
   SMART_TURN_MAX_SILENCE_POLL_MS - fallback silence timeout (default 2000)
+  SMART_TURN_MIN_SPEECH_MS - minimum speech before accepting turn detection (default 500)
   SMART_TURN_DEVICE - 'cuda' or 'cpu' (default 'cuda')
 """
 import asyncio
@@ -114,6 +115,7 @@ class SmartTurnV3STT(BaseSTTProvider):
         self._poll_ms = int(os.getenv('SMART_TURN_POLL_MS', '80'))
         self._turn_threshold = float(os.getenv('SMART_TURN_THRESHOLD', '0.5'))
         self._max_silence_poll_ms = int(os.getenv('SMART_TURN_MAX_SILENCE_POLL_MS', '2000'))
+        self._min_speech_ms = int(os.getenv('SMART_TURN_MIN_SPEECH_MS', '500'))
         self._model_path = os.getenv('SMART_TURN_MODEL_PATH', '')
         self._smart_turn_device = os.getenv('SMART_TURN_DEVICE', 'cuda')
 
@@ -194,6 +196,7 @@ class SmartTurnV3STT(BaseSTTProvider):
             f'SmartTurnV3STT.__init__: threshold={self.threshold}, '
             f'poll_ms={self._poll_ms}, turn_threshold={self._turn_threshold}, '
             f'max_silence_poll_ms={self._max_silence_poll_ms}, '
+            f'min_speech_ms={self._min_speech_ms}, '
             f'model_path="{self._model_path or "(auto-download)"}", '
             f'smart_turn_device={self._smart_turn_device}, '
             f'remote_url="{self.cohere_transcribe_url or "(none)"}", '
@@ -473,7 +476,16 @@ class SmartTurnV3STT(BaseSTTProvider):
                 if not self._is_speaking or self._turn_detected:
                     continue
 
-                if len(self._speech_buffer) < VAD_CHUNK_SAMPLES * 4:
+                # Minimum speech buffer check (basic sanity)
+                min_bytes_basic = VAD_CHUNK_SAMPLES * 4  # 1024 bytes
+                if len(self._speech_buffer) < min_bytes_basic:
+                    continue
+
+                # Minimum speech duration before accepting turn detection
+                speech_elapsed_ms = (time.perf_counter() - self._speech_start_time) * 1000
+                if speech_elapsed_ms < self._min_speech_ms:
+                    if self._frames_received % 50 == 0:
+                        _dlog(f'[SMART_TURN] Waiting for min speech: {speech_elapsed_ms:.0f}ms < {self._min_speech_ms}ms')
                     continue
 
                 self._last_poll_time = time.perf_counter()
