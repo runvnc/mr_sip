@@ -293,7 +293,7 @@ class SmartTurnV3STT(BaseSTTProvider):
         _dlog(f'_download_smart_turn_model: downloading from pipecat-ai/smart-turn-v3 to {model_dir}...')
         model_path = hf_hub_download(
             repo_id='pipecat-ai/smart-turn-v3',
-            filename='smart-turn-v3.1.onnx',
+            filename='smart-turn-v3.1-gpu.onnx',
             local_dir=model_dir,
             local_dir_use_symlinks=False,
         )
