@@ -116,7 +116,7 @@ class SmartTurnV3STT(BaseSTTProvider):
         self._turn_threshold = float(os.getenv('SMART_TURN_THRESHOLD', '0.5'))
         self._max_silence_poll_ms = int(os.getenv('SMART_TURN_MAX_SILENCE_POLL_MS', '2000'))
         self._min_speech_ms = int(os.getenv('SMART_TURN_MIN_SPEECH_MS', '500'))
-        self._min_end_silence_ms = int(os.getenv('SMART_TURN_MIN_END_SILENCE_MS', '200'))
+        self._min_end_silence_ms = int(os.getenv('SMART_TURN_MIN_END_SILENCE_MS', '125'))
         self._model_path = os.getenv('SMART_TURN_MODEL_PATH', '')
         self._smart_turn_device = os.getenv('SMART_TURN_DEVICE', 'cuda')
 
