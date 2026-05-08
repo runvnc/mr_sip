@@ -460,11 +460,14 @@ class SmartTurnV3STT(BaseSTTProvider):
         _dlog(f'[SMART_TURN] Polling started (every {self._poll_ms}ms)')
 
     def _stop_polling(self):
-        """Stop the Smart Turn polling loop."""
+        """Stop the Smart Turn polling loop.
+
+        Only sets _poll_active=False so the loop exits naturally.
+        Do NOT cancel _poll_task here - _on_turn_complete is called
+        from inside the poll loop, so cancelling would kill the
+        in-progress transcription.
+        """
         self._poll_active = False
-        if self._poll_task and not self._poll_task.done():
-            self._poll_task.cancel()
-            self._poll_task = None
         _dlog('[SMART_TURN] Polling stopped')
 
     async def _poll_loop(self):
@@ -525,6 +528,8 @@ class SmartTurnV3STT(BaseSTTProvider):
             _dlog('[SMART_TURN] Poll loop cancelled')
         except Exception as e:
             _dlog(f'[SMART_TURN] Poll loop error: {e}\n{traceback.format_exc()}')
+        finally:
+            self._poll_task = None
 
     def _run_smart_turn_inference(self) -> dict:
         """Run Smart Turn v3 ONNX inference on current speech buffer.
