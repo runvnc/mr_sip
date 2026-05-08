@@ -116,6 +116,7 @@ class SmartTurnV3STT(BaseSTTProvider):
         self._turn_threshold = float(os.getenv('SMART_TURN_THRESHOLD', '0.5'))
         self._max_silence_poll_ms = int(os.getenv('SMART_TURN_MAX_SILENCE_POLL_MS', '2000'))
         self._min_speech_ms = int(os.getenv('SMART_TURN_MIN_SPEECH_MS', '500'))
+        self._min_end_silence_ms = int(os.getenv('SMART_TURN_MIN_END_SILENCE_MS', '200'))
         self._model_path = os.getenv('SMART_TURN_MODEL_PATH', '')
         self._smart_turn_device = os.getenv('SMART_TURN_DEVICE', 'cuda')
 
@@ -197,6 +198,7 @@ class SmartTurnV3STT(BaseSTTProvider):
             f'poll_ms={self._poll_ms}, turn_threshold={self._turn_threshold}, '
             f'max_silence_poll_ms={self._max_silence_poll_ms}, '
             f'min_speech_ms={self._min_speech_ms}, '
+            f'min_end_silence_ms={self._min_end_silence_ms}, '
             f'model_path="{self._model_path or "(auto-download)"}", '
             f'smart_turn_device={self._smart_turn_device}, '
             f'remote_url="{self.cohere_transcribe_url or "(none)"}", '
@@ -516,13 +518,23 @@ class SmartTurnV3STT(BaseSTTProvider):
                 if self._utterance_count < 3 or self._frames_received % 50 == 0:
                     _dlog(f'[SMART_TURN] Poll: prob={prob:.3f}, prediction={prediction}, '
                           f'speech_buf={len(self._speech_buffer)}B, '
-                          f'silence={silence_duration:.0f}ms')
+                          f'silence={silence_duration:.0f}ms, '
+                          f'vad_silence_chunks={self._vad_silence_chunks}')
 
                 if prediction == 1 and prob >= self._turn_threshold:
-                    _dlog(f'[SMART_TURN] Turn DETECTED: prob={prob:.3f}')
-                    self._turn_detected = True
-                    self._total_turns_detected += 1
-                    await self._on_turn_complete()
+                    # Require minimum silence before accepting turn completion.
+                    # This prevents mid-sentence splits where the speaker just
+                    # pauses briefly between words.
+                    silence_at_end_ms = self._vad_silence_chunks * 32
+                    if silence_at_end_ms >= self._min_end_silence_ms:
+                        _dlog(f'[SMART_TURN] Turn DETECTED: prob={prob:.3f}, '
+                              f'end_silence={silence_at_end_ms}ms >= {self._min_end_silence_ms}ms')
+                        self._turn_detected = True
+                        self._total_turns_detected += 1
+                        await self._on_turn_complete()
+                    else:
+                        _dlog(f'[SMART_TURN] Turn predicted (prob={prob:.3f}) but '
+                              f'insufficient silence: {silence_at_end_ms}ms < {self._min_end_silence_ms}ms, waiting...')
 
         except asyncio.CancelledError:
             _dlog('[SMART_TURN] Poll loop cancelled')
