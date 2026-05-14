@@ -89,6 +89,7 @@ class MindRootSIPAccount:
         self._started = False
         self._account: Optional[SipAccount] = None
         self._active_bots: dict = {}
+        self._seen_invite_call_ids: set = set()
 
         logger.info(f'MindRootSIPAccount initialized for {user} on {gateway}, agent={agent_name}')
 
@@ -180,6 +181,15 @@ class MindRootSIPAccount:
         """
         caller_number = getattr(call, 'caller_id', 'unknown') or 'unknown'
         logger.info(f'=== INCOMING CALL from {caller_number} ===')
+
+        # Get the Call-ID from the SipCall to detect retransmissions
+        call_id = getattr(call, 'dialogue', None)
+        call_id_str = call_id.call_id if call_id and hasattr(call_id, 'call_id') else None
+        if call_id_str and call_id_str in self._seen_invite_call_ids:
+            logger.info(f'[INCOMING] Ignoring INVITE retransmission for Call-ID {call_id_str}')
+            return
+        if call_id_str:
+            self._seen_invite_call_ids.add(call_id_str)
 
         try:
             # Accept immediately so PySIP can send 200 OK and start RTP
