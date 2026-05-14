@@ -694,10 +694,12 @@ async def get_incoming_listener_status(context=None):
     }
 
 @hook()
-async def init(context=None):
+async def startup(app=None, context=None):
     """Auto-start incoming call listener on plugin load if configured."""
     agent = os.getenv('SIP_INCOMING_AGENT')
     auto_start = os.getenv('SIP_INCOMING_AUTO_START', 'true').lower() in ('true', '1', 'yes', 'on')
+    
+    logger.info(f'[INCOMING] startup hook called. agent={agent}, auto_start={auto_start}')
     
     if agent and auto_start:
         logger.info(f'[INCOMING] Auto-starting incoming call listener (agent={agent})...')
