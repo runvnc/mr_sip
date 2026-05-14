@@ -679,3 +679,100 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str, jo
         return f'Error delegating call job: {str(e)}\n\n{trace}'
     finally:
         pass
+
+
+@command()
+async def start_incoming_calls(agent: str = None, context=None) -> str:
+    """
+    Start listening for incoming SIP calls.
+    
+    DEBUG: This command was invoked.
+    
+    Registers the SIP account with the provider and sets up a listener
+    that creates MindRoot chat sessions for each incoming call.
+    
+    Args:
+        agent: Which MindRoot agent answers incoming calls.
+               Defaults to SIP_INCOMING_AGENT env var.
+        context: MindRoot context (automatically provided)
+    
+    Returns:
+        str: Status message
+    
+    Example:
+        { "start_incoming_calls": { "agent": "Receptionist" } }
+    
+    Environment Variables:
+        SIP_INCOMING_AGENT: Default agent for incoming calls
+        SIP_GATEWAY: SIP gateway server
+        SIP_USER: SIP username
+        SIP_PASSWORD: SIP password
+    """
+    try:
+        logger.info(f'[INCOMING-CMD] start_incoming_calls invoked with agent={agent}')
+        result = await service_manager.start_incoming_listener_service(agent_name=agent, context=context)
+        if result['status'] == 'started':
+            logger.info(f'[INCOMING-CMD] Listener started: {result}')
+            return f"Incoming call listener started. Agent: {result['agent']}, Gateway: {result['gateway']}, Caller ID: {result['caller_id']}"
+        elif result['status'] == 'already_running':
+            return "Incoming call listener is already running."
+        else:
+            return f"Failed to start incoming call listener: {result.get('error', 'Unknown error')}"
+    except Exception as e:
+        logger.error(f'Error in start_incoming_calls: {e}')
+        return f'Error starting incoming call listener: {str(e)}'
+
+@command()
+async def stop_incoming_calls(context=None) -> str:
+    """
+    Stop listening for incoming SIP calls.
+    
+    DEBUG: This command was invoked.
+    
+    Unregisters from the SIP provider and stops the incoming call listener.
+    Active calls are NOT terminated.
+    
+    Args:
+        context: MindRoot context (automatically provided)
+    
+    Returns:
+        str: Status message
+    
+    Example:
+        { "stop_incoming_calls": {} }
+    """
+    try:
+        result = await service_manager.stop_incoming_listener_service(context=context)
+        if result['status'] == 'stopped':
+            return "Incoming call listener stopped."
+        elif result['status'] == 'not_running':
+            return "Incoming call listener is not running."
+        else:
+            return f"Failed to stop incoming call listener: {result.get('error', 'Unknown error')}"
+    except Exception as e:
+        logger.error(f'Error in stop_incoming_calls: {e}')
+        return f'Error stopping incoming call listener: {str(e)}'
+
+@command()
+async def incoming_call_status(context=None) -> str:
+    """
+    Get the status of the incoming call listener.
+    
+    Args:
+        context: MindRoot context (automatically provided)
+    
+    Returns:
+        str: Status message
+    
+    Example:
+        { "incoming_call_status": {} }
+    """
+    try:
+        result = await service_manager.get_incoming_listener_status(context=context)
+        if result['is_active']:
+            return f"Incoming call listener is ACTIVE. Agent: {result['agent']}, Gateway: {result['gateway']}, User: {result['user']}"
+        else:
+            return "Incoming call listener is NOT running."
+    except Exception as e:
+        logger.error(f'Error in incoming_call_status: {e}')
+        return f'Error getting incoming call status: {str(e)}'

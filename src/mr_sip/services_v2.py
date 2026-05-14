@@ -14,6 +14,7 @@ from lib.providers.services import service, service_manager
 from lib.providers.hooks import hook
 from .sip_manager import get_session_manager
 from .sip_client_v2 import MindRootSIPBotV2, setup_sndfile_module
+from .sip_account_wrapper import MindRootSIPAccount
 from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -536,6 +537,161 @@ async def sip_is_audio_halted(context=None) -> bool:
         return False
     finally:
         pass
+
+
+
+# Global incoming call listener instance
+_incoming_listener = None
+
+@service()
+async def start_incoming_listener_service(agent_name: str = None, context=None):
+    """
+    Start the SIP incoming call listener.
+    
+    DEBUG: This service was called.
+    
+    Registers the SIP account with the provider and listens for
+    incoming INVITEs. When a call arrives, creates a MindRoot
+    chat session with the specified agent and wires audio/STT/TTS.
+    
+    Args:
+        agent_name: Which MindRoot agent answers incoming calls.
+                    Defaults to SIP_INCOMING_AGENT env var.
+        context: MindRoot context (optional)
+    
+    Returns:
+        dict: Status information
+    
+    Environment Variables:
+        SIP_INCOMING_AGENT: Default agent for incoming calls
+        SIP_INCOMING_DEFAULT_USER: User context for incoming sessions (default: system)
+        SIP_GATEWAY: SIP gateway server
+        SIP_USER: SIP username
+        SIP_PASSWORD: SIP password
+        SIP_CALLER_ID: Caller ID for registration
+        STT_PROVIDER: STT provider to use
+    """
+    global _incoming_listener
+    
+    if _incoming_listener is not None:
+        return {
+            'status': 'already_running',
+            'message': 'Incoming call listener is already active'
+        }
+    
+    sip_gateway = os.getenv('SIP_GATEWAY', 'no sip gateway')
+    sip_user = os.getenv('SIP_USER', 'nouser')
+    sip_password = os.getenv('SIP_PASSWORD', 'no sip password')
+    caller_id = os.getenv('SIP_CALLER_ID', sip_user)
+    agent = agent_name or os.getenv('SIP_INCOMING_AGENT', 'default')
+    stt_provider = os.getenv('STT_PROVIDER', 'deepgram_flux')
+    enable_recording = os.getenv('SIP_ENABLE_RECORDING', 'false').lower() == 'true'
+    recording_dir = os.getenv('SIP_RECORDING_DIR', 'data/calls')
+    record_separate = os.getenv('SIP_RECORD_SEPARATE', 'false').lower() == 'true'
+    
+    logger.info(f'[INCOMING-SVC] Starting incoming call listener for {sip_user}@{sip_gateway}')
+    logger.info(f'[INCOMING-SVC] Agent: {agent}, STT: {stt_provider}')
+    logger.info(f'[INCOMING-SVC] Caller ID: {caller_id}, Recording: {enable_recording}')
+    
+    try:
+        _incoming_listener = MindRootSIPAccount(
+            user=sip_user,
+            password=sip_password,
+            gateway=sip_gateway,
+            agent_name=agent,
+            caller_id=caller_id,
+            stt_provider=stt_provider,
+            enable_recording=enable_recording,
+            recording_dir=recording_dir,
+            record_separate=record_separate,
+        )
+        
+        is_registered = await _incoming_listener.start()
+        
+        if is_registered:
+            logger.info('[INCOMING-SVC] Incoming call listener started successfully')
+            return {
+                'status': 'started',
+                'agent': agent,
+                'gateway': sip_gateway,
+                'user': sip_user,
+                'caller_id': caller_id,
+            }
+        else:
+            _incoming_listener = None
+            logger.error('[INCOMING-SVC] SIP registration failed!')
+            return {
+                'status': 'failed',
+                'error': 'SIP registration failed'
+            }
+            
+    except Exception as e:
+        logger.error(f'Error starting incoming call listener: {e}')
+        _incoming_listener = None
+        return {
+            'status': 'error',
+            'error': str(e)
+        }
+
+@service()
+async def stop_incoming_listener_service(context=None):
+    """
+    Stop the SIP incoming call listener.
+    
+    DEBUG: This service was called.
+    
+    Unregisters from the SIP provider and stops listening for
+    incoming calls. Active calls are NOT terminated.
+    
+    Returns:
+        dict: Status information
+    """
+    global _incoming_listener
+    
+    if _incoming_listener is None:
+        return {
+            'status': 'not_running',
+            'message': 'Incoming call listener is not active'
+        }
+    
+    try:
+        await _incoming_listener.stop()
+        _incoming_listener = None
+        logger.info('Incoming call listener stopped')
+        return {
+            'status': 'stopped',
+            'message': 'Incoming call listener stopped'
+        }
+    except Exception as e:
+        logger.error(f'Error stopping incoming call listener: {e}')
+        return {
+            'status': 'error',
+            'error': str(e)
+        }
+
+@service()
+async def get_incoming_listener_status(context=None):
+    """
+    Get the status of the incoming call listener.
+    
+    Returns:
+        dict: Status information including whether listener is active
+    """
+    global _incoming_listener
+    
+    if _incoming_listener is None:
+        return {
+            'status': 'not_running',
+            'is_active': False
+        }
+    
+    return {
+        'status': 'running',
+        'is_active': True,
+        'agent': _incoming_listener.agent_name,
+        'gateway': _incoming_listener.sip_server,
+        'user': _incoming_listener.sip_username,
+    }
 
 @hook()
 async def quit(context=None):

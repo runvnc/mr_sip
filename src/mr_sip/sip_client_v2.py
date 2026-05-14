@@ -69,8 +69,6 @@ class AudioStreamAdapter:
 class MindRootSIPBotV2:
     """SIP phone bot for Deepgram STT mode using PySIP.
     
-    OUTBOUND CALLS ONLY - Does not handle incoming calls.
-    
     Handles bidirectional audio:
     - Input: Phone audio (ulaw 8kHz) -> Deepgram STT -> utterance callback
     - Output: TTS audio -> convert to ulaw 8kHz -> Phone
@@ -430,8 +428,88 @@ class MindRootSIPBotV2:
             logger.error(f'Error in make_call: {e}')
             logger.error(traceback.format_exc())
             raise
-        finally:
-            pass
+    async def attach_to_incoming_call(self, call):
+        """Attach this bot to an already-accepted incoming SipCall.
+        
+        This is used for incoming calls where PySIP has already handled
+        the INVITE/100/180/200 handshake. We just need to wire up the
+        audio callbacks and STT.
+        """
+        logger.info(f'=== ATTACHING TO INCOMING CALL (PySIP V2) ===')
+        self.call = call
+        
+        @call.on_call_state_changed
+        async def on_state(state):
+            try:
+                logger.info(f'Incoming call state changed: {state}')
+                if state in [CallState.ENDED, CallState.FAILED, CallState.BUSY]:
+                    await self._on_call_ended(state)
+            except Exception as e:
+                logger.error(f'Error in incoming call state callback: {e}')
+                logger.error(traceback.format_exc())
+        
+        @call.on_frame_received
+        async def on_frame(frame):
+            try:
+                rtp_ts = None
+                if hasattr(frame, 'data'):
+                    ulaw_bytes = frame.data
+                    rtp_ts = getattr(frame, 'timestamp', None)
+                else:
+                    ulaw_bytes = frame
+                
+                if not self.call_established and call and call._rtp_session:
+                    self.is_active = True
+                    self.call_established = True
+                    self.call_start_time = datetime.now()
+                    await self._setup_stt()
+                    self.last_activity_time = time.time()
+                    self._silence_monitor_task = asyncio.create_task(self._monitor_silence())
+                    self.call_answered.set()
+                    logger.info('Incoming call fully established and ready for audio')
+                    if self.enable_recording:
+                        self.recorder = SimpleRecorder(self.context.log_id, self.recording_dir, record_separate=self.record_separate, record_combined=True)
+                        await self.recorder.start_recording()
+                
+                self._input_frame_count += 1
+                try:
+                    pcm_data = audioop.ulaw2lin(ulaw_bytes, 2)
+                    rms = audioop.rms(pcm_data, 2)
+                    if rms > self.silence_threshold:
+                        self.last_activity_time = time.time()
+                        if self.silence_reported:
+                            self.silence_reported = False
+                except Exception:
+                    self.last_activity_time = time.time()
+                
+                if self._input_frame_count % 50 == 0:
+                    logger.debug(f'Received frame #{self._input_frame_count}, size: {len(ulaw_bytes)} bytes')
+                
+                if self.recorder:
+                    if rtp_ts is not None:
+                        self.recorder.record_incoming_with_timestamp(ulaw_bytes, rtp_ts)
+                    else:
+                        self.recorder.record_incoming(ulaw_bytes)
+                
+                if os.environ.get('MR_SIP_AUDIO_IN_PIPELINE', '').lower() in ('1', 'true', 'yes'):
+                    try:
+                        await pipeline_manager.execute_pipeline('sip_audio_in', {'audio_bytes': ulaw_bytes, 'timestamp': time.time()}, context=self.context)
+                    except Exception:
+                        pass
+                
+                if self.stt and self.stt.is_running:
+                    if hasattr(self.stt, 'add_audio_bytes'):
+                        await self.stt.add_audio_bytes(ulaw_bytes)
+                    else:
+                        pcm_data = audioop.ulaw2lin(ulaw_bytes, 2)
+                        audio_array = np.frombuffer(pcm_data, dtype=np.int16)
+                        audio_float = audio_array.astype(np.float32) / 32768.0
+                        await self.stt.add_audio(audio_float)
+            except Exception as e:
+                logger.error(f'Error in incoming call frame callback: {e}')
+                logger.error(traceback.format_exc())
+        
+        logger.info('Incoming call callbacks registered')
 
     async def _on_call_ended(self, state: CallState):
         """Called when call ends."""
