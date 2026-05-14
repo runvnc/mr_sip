@@ -209,8 +209,18 @@ class MindRootSIPAccount:
 
             logger.info(f'[INCOMING] Creating MindRoot session {log_id} for incoming call from {caller_number}')
             logger.info(f'[INCOMING] User context: {user}, Agent: {self.agent_name}')
-            await service_manager.init_chat_session(user, self.agent_name, log_id)
-            context = await get_context(log_id, user)
+
+            # Pre-create context with agent data before init_chat_session
+            # to avoid ChatContext.agent AttributeError in MindRoot
+            from lib.chatcontext import ChatContext
+            from lib.providers.commands import command_manager
+            context = ChatContext(command_manager, service_manager, user)
+            context.agent_name = self.agent_name
+            context.name = self.agent_name
+            context.log_id = log_id
+            context.agent = await service_manager.get_agent_data(self.agent_name)
+
+            await service_manager.init_chat_session(user, self.agent_name, log_id, context=context)
 
             # 2. Build STT config (same as outbound)
             stt_config = self._build_stt_config()
