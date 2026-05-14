@@ -86,6 +86,7 @@ class MindRootSIPAccount:
         self.connection_type = connection_type
         self.register_duration = register_duration
 
+        self._started = False
         self._account: Optional[SipAccount] = None
         self._active_bots: dict = {}
 
@@ -93,6 +94,11 @@ class MindRootSIPAccount:
 
     async def start(self):
         """Register the SIP account and start listening for incoming calls."""
+        if self._started:
+            logger.warning(f'[INCOMING] start() called on already-started MindRootSIPAccount for {self.sip_username} - ignoring')
+            return True
+
+        self._started = True
         logger.info(f'=== STARTING INCOMING CALL LISTENER for {self.sip_username} ===')
         logger.info(f'[INCOMING] Gateway: {self.sip_server}, User: {self.sip_username}, Agent: {self.agent_name}')
         logger.info(f'[INCOMING] Caller ID: {self.caller_id}, Connection: {self.connection_type}')

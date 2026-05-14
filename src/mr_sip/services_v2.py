@@ -693,9 +693,13 @@ async def get_incoming_listener_status(context=None):
         'user': _incoming_listener.sip_username,
     }
 
+# Lock to prevent concurrent startup hook execution
+_startup_lock = asyncio.Lock()
+
 @hook()
 async def startup(app=None, context=None):
     """Auto-start incoming call listener on plugin load if configured."""
+    global _incoming_listener
     agent = os.getenv('SIP_INCOMING_AGENT')
     auto_start = os.getenv('SIP_INCOMING_AUTO_START', 'true').lower() in ('true', '1', 'yes', 'on')
     
@@ -703,16 +707,21 @@ async def startup(app=None, context=None):
     
     if agent and auto_start:
         logger.info(f'[INCOMING] Auto-starting incoming call listener (agent={agent})...')
-        try:
-            result = await start_incoming_listener_service(agent_name=agent)
-            if result.get('status') == 'started':
-                logger.info(f'[INCOMING] Auto-start successful: {result}')
-            elif result.get('status') == 'already_running':
-                logger.info(f'[INCOMING] Auto-start: listener already running')
-            else:
-                logger.error(f'[INCOMING] Auto-start failed: {result}')
-        except Exception as e:
-            logger.error(f'[INCOMING] Auto-start error: {e}')
+        async with _startup_lock:
+            # Double-check under lock in case concurrent call already started it
+            if _incoming_listener is not None:
+                logger.info('[INCOMING] Auto-start: listener already running (checked under lock)')
+                return
+            try:
+                result = await start_incoming_listener_service(agent_name=agent)
+                if result.get('status') == 'started':
+                    logger.info(f'[INCOMING] Auto-start successful: {result}')
+                elif result.get('status') == 'already_running':
+                    logger.info(f'[INCOMING] Auto-start: listener already running')
+                else:
+                    logger.error(f'[INCOMING] Auto-start failed: {result}')
+            except Exception as e:
+                logger.error(f'[INCOMING] Auto-start error: {e}')
     else:
         if not agent:
             logger.info('[INCOMING] Auto-start skipped: SIP_INCOMING_AGENT not set')
