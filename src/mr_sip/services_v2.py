@@ -694,6 +694,30 @@ async def get_incoming_listener_status(context=None):
     }
 
 @hook()
+async def init(context=None):
+    """Auto-start incoming call listener on plugin load if configured."""
+    agent = os.getenv('SIP_INCOMING_AGENT')
+    auto_start = os.getenv('SIP_INCOMING_AUTO_START', 'true').lower() in ('true', '1', 'yes', 'on')
+    
+    if agent and auto_start:
+        logger.info(f'[INCOMING] Auto-starting incoming call listener (agent={agent})...')
+        try:
+            result = await start_incoming_listener_service(agent_name=agent)
+            if result.get('status') == 'started':
+                logger.info(f'[INCOMING] Auto-start successful: {result}')
+            elif result.get('status') == 'already_running':
+                logger.info(f'[INCOMING] Auto-start: listener already running')
+            else:
+                logger.error(f'[INCOMING] Auto-start failed: {result}')
+        except Exception as e:
+            logger.error(f'[INCOMING] Auto-start error: {e}')
+    else:
+        if not agent:
+            logger.info('[INCOMING] Auto-start skipped: SIP_INCOMING_AGENT not set')
+        else:
+            logger.info('[INCOMING] Auto-start disabled (set SIP_INCOMING_AUTO_START=true to enable)')
+
+@hook()
 async def quit(context=None):
     """Cleanup hook called when MindRoot is shutting down"""
     logger.info('MindRoot SIP plugin (V2) shutting down...')
