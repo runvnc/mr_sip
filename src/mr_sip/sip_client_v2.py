@@ -438,6 +438,20 @@ class MindRootSIPBotV2:
         logger.info(f'=== ATTACHING TO INCOMING CALL (PySIP V2) ===')
         self.call = call
         
+        # Mark call as active and set up STT immediately so TTS and
+        # transcription work from the very start of the call.
+        self.is_active = True
+        self.call_established = True
+        self.call_start_time = datetime.now()
+        self.last_activity_time = time.time()
+        await self._setup_stt()
+        self._silence_monitor_task = asyncio.create_task(self._monitor_silence())
+        self.call_answered.set()
+        logger.info('Incoming call marked active, STT started')
+        if self.enable_recording:
+            self.recorder = SimpleRecorder(self.context.log_id, self.recording_dir, record_separate=self.record_separate, record_combined=True)
+            await self.recorder.start_recording()
+        
         @call.on_call_state_changed
         async def on_state(state):
             try:
@@ -458,18 +472,7 @@ class MindRootSIPBotV2:
                 else:
                     ulaw_bytes = frame
                 
-                if not self.call_established and call and call._rtp_session:
-                    self.is_active = True
-                    self.call_established = True
-                    self.call_start_time = datetime.now()
-                    await self._setup_stt()
-                    self.last_activity_time = time.time()
-                    self._silence_monitor_task = asyncio.create_task(self._monitor_silence())
-                    self.call_answered.set()
-                    logger.info('Incoming call fully established and ready for audio')
-                    if self.enable_recording:
-                        self.recorder = SimpleRecorder(self.context.log_id, self.recording_dir, record_separate=self.record_separate, record_combined=True)
-                        await self.recorder.start_recording()
+                # Call is already active from attach_to_incoming_call setup
                 
                 self._input_frame_count += 1
                 try:
