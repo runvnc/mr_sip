@@ -226,6 +226,7 @@ class MindRootSIPAccount:
             # to avoid ChatContext.agent AttributeError in MindRoot
             from lib.chatcontext import ChatContext
             from lib.providers.commands import command_manager
+            from lib.chatlog import ChatLog
             context = ChatContext(command_manager, service_manager, user)
             context.agent_name = self.agent_name
             context.name = self.agent_name
@@ -233,6 +234,11 @@ class MindRootSIPAccount:
             context.agent = await service_manager.get_agent_data(self.agent_name)
 
             await service_manager.init_chat_session(user, self.agent_name, log_id, context=context)
+
+            # init_chat_session skips chat_log setup when context is provided, so create it
+            if not hasattr(context, 'chat_log') or context.chat_log is None:
+                context.chat_log = ChatLog(log_id=log_id, agent=self.agent_name, user=user)
+                await context.save_context()
 
             # 2. Build STT config (same as outbound)
             stt_config = self._build_stt_config()
