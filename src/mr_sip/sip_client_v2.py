@@ -501,6 +501,8 @@ class MindRootSIPBotV2:
                         pass
                 
                 if self.stt and self.stt.is_running:
+                    if self._input_frame_count <= 3:
+                        logger.warning(f'INCOMING STT: Sending frame #{self._input_frame_count}, {len(ulaw_bytes)} bytes, stt_running={self.stt.is_running}, stt_conn={getattr(self.stt, connection, None) is not None}')
                     if hasattr(self.stt, 'add_audio_bytes'):
                         await self.stt.add_audio_bytes(ulaw_bytes)
                     else:
@@ -508,6 +510,8 @@ class MindRootSIPBotV2:
                         audio_array = np.frombuffer(pcm_data, dtype=np.int16)
                         audio_float = audio_array.astype(np.float32) / 32768.0
                         await self.stt.add_audio(audio_float)
+                elif self._input_frame_count <= 3:
+                    logger.warning(f'INCOMING STT: Frame #{self._input_frame_count} but stt={self.stt}, is_running={getattr(self.stt, is_running, None)}')
             except Exception as e:
                 logger.error(f'Error in incoming call frame callback: {e}')
                 logger.error(traceback.format_exc())
