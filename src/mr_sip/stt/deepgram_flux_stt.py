@@ -127,8 +127,8 @@ class DeepgramFluxSTT(BaseSTTProvider):
             if self.eot_timeout_ms is not None:
                 connection_params['eot_timeout_ms'] = str(self.eot_timeout_ms)
             if self.keyterm is not None:
-                # keyterm should be comma-separated string if list
-                connection_params['keyterm'] = ','.join(self.keyterm) if isinstance(self.keyterm, list) else str(self.keyterm)
+                # SDK v7 accepts list directly; v6 needs comma-separated string
+                connection_params['keyterm'] = self.keyterm
             self.is_running = True
             self.connection_start_time = time.time()
             self.connection_task = asyncio.create_task(self._run_connection(**connection_params))
@@ -203,6 +203,12 @@ class DeepgramFluxSTT(BaseSTTProvider):
             if self.connection:
                 try:
                     logger.info('Closing Deepgram connection...')
+                    # SDK v7: send_close_stream; v6: finish/close
+                    if hasattr(self.connection, 'send_close_stream'):
+                        try:
+                            self.connection.send_close_stream()
+                        except Exception:
+                            pass
                     if hasattr(self.connection, 'finish'):
                         self.connection.finish()
                     elif hasattr(self.connection, 'close'):
@@ -336,25 +342,35 @@ class DeepgramFluxSTT(BaseSTTProvider):
 
     def _on_message(self, message) -> None:
         """Handle incoming message from Deepgram Flux."""
-        msg_attrs = {}
-        for attr in dir(message):
-            if not attr.startswith('_'):
-                try:
-                    value = getattr(message, attr)
-                    if not callable(value):
-                        msg_attrs[attr] = value
-                except:
-                    pass
+        # SDK v7 returns dicts, v6 returns Pydantic models
+        if isinstance(message, dict):
+            msg_attrs = message
+        else:
+            msg_attrs = {}
+            for attr in dir(message):
+                if not attr.startswith('_'):
+                    try:
+                        value = getattr(message, attr)
+                        if not callable(value):
+                            msg_attrs[attr] = value
+                    except:
+                        pass
         print_deepgram_event('MessageReceived', msg_attrs)
-        msg_type = getattr(message, 'type', 'unknown')
-        logger.info(f'DEEPGRAM DEBUG Received message from Deepgram Flux: {msg_type}')
+        # Get type from either dict or object
+        msg_type = message.get('type', 'unknown') if isinstance(message, dict) else getattr(message, 'type', 'unknown')
+        logger.debug(f'DEEPGRAM DEBUG Received message from Deepgram Flux: {msg_type}')
         self.last_message_time = time.time()
         try:
-            if not hasattr(message, 'type') or message.type != 'TurnInfo':
-                logger.debug(f"Received non-TurnInfo message: {getattr(message, 'type', 'unknown')}")
+            if msg_type != 'TurnInfo':
+                logger.debug(f"Received non-TurnInfo message: {msg_type}")
                 return
-            event = getattr(message, 'event', None)
-            transcript = getattr(message, 'transcript', '').strip()
+            # Extract event and transcript from dict or object
+            if isinstance(message, dict):
+                event = message.get('event')
+                transcript = str(message.get('transcript', '')).strip()
+            else:
+                event = getattr(message, 'event', None)
+                transcript = getattr(message, 'transcript', '').strip()
             if not transcript:
                 logger.debug(f'Received TurnInfo message with empty transcript, event: {event}')
                 return
