@@ -841,8 +841,27 @@ class MindRootSIPBotV2:
     async def _monitor_silence(self):
         """Monitor for silence on both channels."""
         try:
+            no_frame_count = 0
+            last_frame_count = 0
             while self.is_active:
                 await asyncio.sleep(0.5)
+                
+                # Check if frames are still arriving (detect remote hangup)
+                current_frames = self._input_frame_count
+                if current_frames == last_frame_count and self.call_established:
+                    no_frame_count += 1
+                    if no_frame_count >= 12:  # 6 seconds of no frames
+                        logger.warning('No RTP frames received for 6s - assuming call ended')
+                        await self._on_call_ended(CallState.ENDED)
+                        try:
+                            await self._show_disconnected()
+                        except Exception:
+                            pass
+                        return
+                else:
+                    no_frame_count = 0
+                last_frame_count = current_frames
+                
                 duration = time.time() - self.last_activity_time
                 if duration > 10.0 and (not self.silence_reported):
                     self.silence_reported = True
