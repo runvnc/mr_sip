@@ -270,10 +270,14 @@ class MindRootSIPAccount:
             logger.info(f'[INCOMING] Audio sender started: True')
 
             # 6. Send initial message to agent so it knows to greet the caller
-            greeting_msg = f'SYSTEM: Incoming call connected from {caller_number}'
-            await service_manager.backend_user_message(message=greeting_msg, context=context)
-            await service_manager.send_message_to_agent(session_id=log_id, message=greeting_msg, context=context)
-            logger.info(f'[INCOMING] Sent initial message to agent for session {log_id}')
+            try:
+                greeting_msg = f'SYSTEM: Incoming call connected from {caller_number}'
+                await service_manager.backend_user_message(message=greeting_msg, context=context)
+                await service_manager.send_message_to_agent(session_id=log_id, message=greeting_msg, context=context)
+                logger.info(f'[INCOMING] Sent initial message to agent for session {log_id}')
+            except Exception as e:
+                logger.warning(f'[INCOMING] Could not send initial greeting message: {e}')
+                logger.info(f'[INCOMING] Agent will be triggered when caller speaks instead')
 
         except Exception as e:
             logger.error(f'Error setting up incoming call from {caller_number}: {e}')
