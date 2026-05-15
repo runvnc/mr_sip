@@ -462,6 +462,18 @@ class MindRootSIPBotV2:
                 logger.error(f'Error in incoming call state callback: {e}')
                 logger.error(traceback.format_exc())
         
+        # Manually start frame_monitor if it was not started during call.accept()
+        # (it only starts if callbacks exist at accept() time)
+        if hasattr(call, '_rtp_session') and call._rtp_session:
+            if 'frame_monitor' not in call._rtp_session._output_queues:
+                import asyncio as _aio
+                _aio.create_task(call._rtp_session.frame_monitor())
+                logger.info('Started frame_monitor task for incoming call')
+            else:
+                logger.info('frame_monitor task already running')
+        else:
+            logger.warning('No _rtp_session on incoming call - cannot start frame_monitor')
+        
         @call.on_frame_received
         async def on_frame(frame):
             try:
