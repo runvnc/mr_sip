@@ -135,8 +135,26 @@ class MindRootSIPBotV2:
         self._s2s_active = True
         self._silence_monitor_task = None
         self._aborted = False
+        self._ending = False
+        self._ended = False
+        self._rtp_timeout_end_call = os.getenv('MR_SIP_RTP_TIMEOUT_END_CALL', 'true').lower() in ('1', 'true', 'yes', 'on')
+        try:
+            self._rtp_timeout_seconds = max(0.0, float(os.getenv('MR_SIP_RTP_TIMEOUT_SECONDS', '120')))
+        except (TypeError, ValueError):
+            self._rtp_timeout_seconds = 120.0
+        try:
+            self._rtp_watchdog_warn_interval = max(1.0, float(os.getenv('MR_SIP_RTP_WATCHDOG_WARN_INTERVAL', '10')))
+        except (TypeError, ValueError):
+            self._rtp_watchdog_warn_interval = 10.0
+        self._last_rtp_watchdog_warn = 0.0
         logger.info(f'PySIP V2 Bot initialized for user {user} on gateway {gateway}')
         logger.info(f'STT provider: {self.stt_provider_name}')
+        logger.info(
+            'RTP watchdog config: end_call=%s timeout_seconds=%.1f warn_interval=%.1f',
+            self._rtp_timeout_end_call,
+            self._rtp_timeout_seconds,
+            self._rtp_watchdog_warn_interval,
+        )
 
     def wait_until_ready(self):
         """Compatibility method - PySIP doesn't need explicit ready wait."""
@@ -514,7 +532,7 @@ class MindRootSIPBotV2:
                 
                 if self.stt and self.stt.is_running:
                     if self._input_frame_count <= 3:
-                        logger.warning(f'INCOMING STT: Sending frame #{self._input_frame_count}, {len(ulaw_bytes)} bytes, stt_running={self.stt.is_running}, stt_conn={getattr(self.stt, connection, None) is not None}')
+                        logger.warning(f'INCOMING STT: Sending frame #{self._input_frame_count}, {len(ulaw_bytes)} bytes, stt_running={self.stt.is_running}, stt_conn={getattr(self.stt, "connection", None) is not None}')
                     if hasattr(self.stt, 'add_audio_bytes'):
                         await self.stt.add_audio_bytes(ulaw_bytes)
                     else:
@@ -523,7 +541,7 @@ class MindRootSIPBotV2:
                         audio_float = audio_array.astype(np.float32) / 32768.0
                         await self.stt.add_audio(audio_float)
                 elif self._input_frame_count <= 3:
-                    logger.warning(f'INCOMING STT: Frame #{self._input_frame_count} but stt={self.stt}, is_running={getattr(self.stt, is_running, None)}')
+                    logger.warning(f'INCOMING STT: Frame #{self._input_frame_count} but stt={self.stt}, is_running={getattr(self.stt, "is_running", None)}')
             except Exception as e:
                 logger.error(f'Error in incoming call frame callback: {e}')
                 logger.error(traceback.format_exc())
@@ -532,60 +550,104 @@ class MindRootSIPBotV2:
 
     async def _on_call_ended(self, state: CallState):
         """Called when call ends."""
+        if self._ended:
+            logger.debug(f'_on_call_ended ignored because cleanup already completed: {state}')
+            return
+        if self._ending:
+            logger.debug(f'_on_call_ended ignored because cleanup is already in progress: {state}')
+            return
+
+        self._ending = True
         try:
             logger.info(f'=== CALL ENDED: {state} (PySIP V2) ===')
+            if self.call:
+                dialogue = getattr(self.call, 'dialogue', None)
+                logger.info(
+                    'Call ending details: call_state=%s dialogue_state=%s input_frames=%s output_frames=%s dropped_frames=%s',
+                    getattr(self.call, 'call_state', None),
+                    getattr(dialogue, 'state', None),
+                    self._input_frame_count,
+                    self._output_frame_count,
+                    self._dropped_frame_count,
+                )
             self.is_active = False
             self.call_established = False
-            if self._silence_monitor_task:
+            current_task = asyncio.current_task()
+            if self._silence_monitor_task and self._silence_monitor_task is not current_task:
                 self._silence_monitor_task.cancel()
                 try:
                     await self._silence_monitor_task
                 except asyncio.CancelledError:
                     pass
-                finally:
-                    pass
                 self._silence_monitor_task = None
-            else:
-                pass
+            elif self._silence_monitor_task is current_task:
+                logger.debug('Skipping cancellation/await of current silence monitor task during call cleanup')
+                self._silence_monitor_task = None
+
             if self.stt:
+                try:
+                    stats = self.stt.get_stats()
+                    logger.info(f'STT Stats: {stats}')
+                except Exception:
+                    pass
                 await self.stt.stop()
                 self.stt = None
-            else:
-                pass
+
             if self.audio_stream:
                 try:
                     self.audio_stream.input_q.put(None, block=False)
                     self.audio_stream.stream_done()
                 except Exception as e:
                     logger.warning(f'Error stopping audio stream: {e}')
-                finally:
-                    pass
-            else:
-                pass
+
             if self.recorder:
                 try:
                     self.recorder.interrupt_outgoing()
                     self.recorder.interrupt_incoming()
                 except Exception:
                     pass
-                finally:
-                    pass
                 await self.recorder.stop_recording()
                 self.recorder = None
-            else:
-                pass
+
             await self._show_disconnected()
             logger.info(f'Call statistics - Input frames: {self._input_frame_count}, Output frames: {self._output_frame_count}, Dropped frames: {self._dropped_frame_count}')
-            if self.stt:
-                stats = self.stt.get_stats()
-                logger.info(f'STT Stats: {stats}')
-            else:
-                pass
         except Exception as e:
             logger.error(f'Error in _on_call_ended: {e}')
             logger.error(traceback.format_exc())
         finally:
-            pass
+            self._ended = True
+            self._ending = False
+
+    async def _terminate_call(self, reason: str, state: CallState=CallState.ENDED):
+        """Terminate the SIP dialog first, then run local cleanup.
+
+        Local cleanup alone is not enough: Telnyx/remote SIP peers need an
+        explicit CANCEL/BYE for early/confirmed dialogs.  This helper is for
+        local abort paths such as agent hangup, setup failure, or the emergency
+        RTP watchdog.
+        """
+        logger.warning(f'Terminating SIP call: {reason}')
+        self.is_active = False
+        try:
+            if self.call:
+                dialogue = getattr(self.call, 'dialogue', None)
+                logger.info(
+                    'Calling PySIP stop: reason=%s call_state=%s dialogue_state=%s already_stopped=%s',
+                    reason,
+                    getattr(self.call, 'call_state', None),
+                    getattr(dialogue, 'state', None),
+                    getattr(self.call, '_is_call_stopped', None),
+                )
+                await self.call.stop(reason)
+                logger.info('PySIP stop completed for reason: %s', reason)
+            else:
+                logger.warning('No SipCall object available while terminating call')
+        except Exception as e:
+            logger.error(f'Error while stopping SIP call for reason {reason}: {e}')
+            logger.error(traceback.format_exc())
+        finally:
+            if not self._ended:
+                await self._on_call_ended(state)
 
     async def start_tts_response(self) -> bool:
         """Start a fresh outbound TTS response stream for PySIP.
@@ -826,17 +888,11 @@ class MindRootSIPBotV2:
     async def hangup_call(self):
         """Initiate call hangup and cleanup."""
         try:
-            logger.info('Hangup requested. Performing cleanup...')
-            if self.call:
-                await self.call.stop('Agent hangup')
-                logger.info('Call stop requested')
-            else:
-                logger.warning('No active call to hang up')
+            logger.info('Hangup requested. Sending SIP termination if needed...')
+            await self._terminate_call('Agent hangup', CallState.ENDED)
         except Exception as e:
             logger.error(f'Error in hangup_call: {e}')
             logger.error(traceback.format_exc())
-        finally:
-            pass
 
     async def _monitor_silence(self):
         """Monitor for silence on both channels."""
@@ -846,20 +902,38 @@ class MindRootSIPBotV2:
             while self.is_active:
                 await asyncio.sleep(0.5)
                 
-                # Check if frames are still arriving (detect remote hangup)
+                # Watch incoming RTP for diagnostics and an emergency local
+                # abort.  Short RTP gaps are not call termination signals; SIP
+                # BYE/CANCEL/dialog state owns normal call lifetime.
                 current_frames = self._input_frame_count
                 if current_frames == last_frame_count and self.call_established:
                     no_frame_count += 1
-                    if no_frame_count >= 12:  # 6 seconds of no frames
-                        logger.warning('No RTP frames received for 6s - assuming call ended')
-                        await self._on_call_ended(CallState.ENDED)
-                        try:
-                            await self._show_disconnected()
-                        except Exception:
-                            pass
+                    no_frame_seconds = no_frame_count * 0.5
+                    now = time.time()
+                    if now - self._last_rtp_watchdog_warn >= self._rtp_watchdog_warn_interval:
+                        self._last_rtp_watchdog_warn = now
+                        dialogue = getattr(self.call, 'dialogue', None) if self.call else None
+                        logger.warning(
+                            'No incoming RTP frames for %.1fs; call remains active pending SIP signaling%s. call_state=%s dialogue_state=%s input_frames=%s output_frames=%s',
+                            no_frame_seconds,
+                            ' / emergency watchdog' if self._rtp_timeout_end_call else '',
+                            getattr(self.call, 'call_state', None) if self.call else None,
+                            getattr(dialogue, 'state', None),
+                            self._input_frame_count,
+                            self._output_frame_count,
+                        )
+                    if (
+                        self._rtp_timeout_end_call
+                        and self._rtp_timeout_seconds > 0
+                        and no_frame_seconds >= self._rtp_timeout_seconds
+                    ):
+                        reason = f'Emergency RTP watchdog timeout: no incoming RTP for {no_frame_seconds:.1f}s'
+                        logger.error('%s; sending SIP termination now', reason)
+                        await self._terminate_call(reason, CallState.ENDED)
                         return
                 else:
                     no_frame_count = 0
+                    self._last_rtp_watchdog_warn = 0.0
                 last_frame_count = current_frames
                 
                 duration = time.time() - self.last_activity_time

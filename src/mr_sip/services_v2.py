@@ -13,6 +13,7 @@ from typing import Dict, Any
 from lib.providers.services import service, service_manager
 from lib.providers.hooks import hook
 from .sip_manager import get_session_manager
+from PySIP.filters import CallState
 from .sip_client_v2 import MindRootSIPBotV2, setup_sndfile_module
 from .sip_account_wrapper import MindRootSIPAccount
 from dotenv import load_dotenv
@@ -242,9 +243,16 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
             logger.info(f'Call established to {destination}')
             return {'status': 'call_established', 'log_id': context.log_id, 'destination': destination, 'stt_provider': stt_provider, 'mode': 'pysip_v2', 'session_created_at': session.created_at.isoformat(), 'recording_enabled': enable_recording}
         except asyncio.TimeoutError:
-            bot._aborted = True
-            await session_manager.end_session(context.log_id)
             logger.error(f'Call to {destination} not answered within {call_establish_timeout}s')
+            bot._aborted = True
+            try:
+                await bot._terminate_call(
+                    f'Call setup timeout: not answered within {call_establish_timeout}s',
+                    state=CallState.FAILED,
+                )
+            except Exception as e:
+                logger.warning(f'Error terminating timed-out call to {destination}: {e}')
+            await session_manager.end_session(context.log_id)
             if not call_task.done():
                 call_task.cancel()
                 try:

@@ -172,11 +172,11 @@ async def hangup(context=None) -> str:
         logger.info(f'Hangup command initiated for session {context.log_id}')
         sip_provider, require_deepgram, stt_provider = _get_sip_config(context)
         dial_service_s2s, end_call_service_s2s, s2s_available = _get_s2s_services()
-        dial_service_v2, end_call_service_v2, v2_available = _get_v2_services()
         if sip_provider == 's2s' and s2s_available:
             result = await end_call_service_s2s(context=context)
         else:
-            result = await end_call_service(context=context)
+            dial_service_v2, end_call_service_v2, v2_available = _get_v2_services()
+            result = await end_call_service_v2(context=context)
         if result['status'] == 'call_ended':
             duration = result.get('call_duration_seconds')
             transcript = result.get('transcript', '')
