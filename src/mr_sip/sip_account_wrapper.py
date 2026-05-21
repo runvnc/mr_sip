@@ -243,6 +243,9 @@ class MindRootSIPAccount:
             # 2. Build STT config (same as outbound)
             stt_config = self._build_stt_config()
 
+            async def _cleanup_finished_incoming_call(bot_obj, state):
+                await self._cleanup_finished_call(log_id, call, bot_obj, state)
+
             # 3. Create the bot
             bot = MindRootSIPBotV2(
                 user=self.sip_username,
@@ -255,6 +258,7 @@ class MindRootSIPAccount:
                 enable_recording=self.enable_recording,
                 recording_dir=self.recording_dir,
                 record_separate=self.record_separate,
+                on_call_ended_callback=_cleanup_finished_incoming_call,
             )
 
             # 4. Attach bot to the call (registers audio callbacks)
@@ -293,6 +297,36 @@ class MindRootSIPAccount:
                 await call.stop('MindRoot setup failed')
             except Exception:
                 pass
+
+
+    async def _cleanup_finished_call(self, log_id: str, call: SipCall, bot: MindRootSIPBotV2, state):
+        """Remove completed incoming-call state so later calls can be accepted."""
+        logger.info(f'[INCOMING] Cleaning up finished call log_id={log_id}, state={state}')
+        try:
+            session_manager = get_session_manager()
+            await session_manager.end_session(log_id)
+        except Exception as e:
+            logger.warning(f'[INCOMING] Error ending SIP session {log_id}: {e}')
+
+        try:
+            self._active_bots.pop(log_id, None)
+        except Exception:
+            pass
+
+        try:
+            if self._account and hasattr(self._account, 'remove_call'):
+                self._account.remove_call(call)
+        except Exception as e:
+            logger.debug(f'[INCOMING] Error removing call from SipAccount: {e}')
+
+        try:
+            call_id = getattr(call, 'call_id', None)
+            if call_id:
+                self._seen_invite_call_ids.discard(call_id)
+        except Exception:
+            pass
+
+        logger.info(f'[INCOMING] Finished call cleanup complete for log_id={log_id}; active_bots={len(self._active_bots)}')
 
     def _build_stt_config(self) -> dict:
         """Build STT configuration (same logic as dial_service_v2)."""

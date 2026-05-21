@@ -304,7 +304,12 @@ class SIPSession:
         await self.stop_audio_sender()
         
         # Hangup the call if still active
-        if self.baresip_bot and hasattr(self.baresip_bot, 'hang'):
+        if (
+            self.baresip_bot
+            and hasattr(self.baresip_bot, 'hang')
+            and not getattr(self.baresip_bot, '_ended', False)
+            and not getattr(self.baresip_bot, '_ending', False)
+        ):
             try:
                 self.baresip_bot.hang()
             except Exception as e:

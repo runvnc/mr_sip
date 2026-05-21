@@ -74,7 +74,7 @@ class MindRootSIPBotV2:
     - Output: TTS audio -> convert to ulaw 8kHz -> Phone
     """
 
-    def __init__(self, user: str, password: str, gateway: str, audio_dir: str='.', on_utterance_callback: Callable=None, stt_provider: str=None, stt_config: dict=None, context=None, enable_recording: bool=False, recording_dir: str='recordings', record_separate: bool=False):
+    def __init__(self, user: str, password: str, gateway: str, audio_dir: str='.', on_utterance_callback: Callable=None, stt_provider: str=None, stt_config: dict=None, context=None, enable_recording: bool=False, recording_dir: str='recordings', record_separate: bool=False, on_call_ended_callback: Callable=None):
         """
         Args:
             user: SIP username
@@ -99,6 +99,7 @@ class MindRootSIPBotV2:
             logger.info(f'No port specified in gateway, using default: {self.sip_server}')
         self.context = context
         self.on_utterance_callback = on_utterance_callback
+        self.on_call_ended_callback = on_call_ended_callback
         self.stt_provider_name = stt_provider or os.getenv('STT_PROVIDER', 'deepgram_flux')
         self.stt_config = stt_config or {}
         self.stt: Optional[BaseSTTProvider] = None
@@ -617,6 +618,12 @@ class MindRootSIPBotV2:
         finally:
             self._ended = True
             self._ending = False
+            if self.on_call_ended_callback:
+                try:
+                    await self.on_call_ended_callback(self, state)
+                except Exception as e:
+                    logger.error(f'Error in call-ended cleanup callback: {e}')
+                    logger.error(traceback.format_exc())
 
     async def _terminate_call(self, reason: str, state: CallState=CallState.ENDED):
         """Terminate the SIP dialog first, then run local cleanup.
