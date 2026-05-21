@@ -908,6 +908,29 @@ class MindRootSIPBotV2:
             last_frame_count = 0
             while self.is_active:
                 await asyncio.sleep(0.5)
+
+                # If PySIP has already observed SIP termination but the normal
+                # state callback did not run (or was interrupted), stop this
+                # watchdog immediately and perform one final idempotent cleanup.
+                call_state = getattr(self.call, 'call_state', None) if self.call else None
+                dialogue = getattr(self.call, 'dialogue', None) if self.call else None
+                dialogue_state = getattr(dialogue, 'state', None)
+                if (
+                    call_state in [CallState.ENDED, CallState.FAILED, CallState.BUSY]
+                    or str(dialogue_state).endswith('TERMINATED')
+                ):
+                    logger.info(
+                        'Silence/RTP monitor exiting because SIP call is already ended: '
+                        'call_state=%s dialogue_state=%s input_frames=%s output_frames=%s',
+                        call_state,
+                        dialogue_state,
+                        self._input_frame_count,
+                        self._output_frame_count,
+                    )
+                    self.is_active = False
+                    if not self._ended and not self._ending:
+                        await self._on_call_ended(call_state or CallState.ENDED)
+                    return
                 
                 # Watch incoming RTP for diagnostics and an emergency local
                 # abort.  Short RTP gaps are not call termination signals; SIP
