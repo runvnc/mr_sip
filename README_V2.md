@@ -30,7 +30,30 @@
 
 ```bash
 cd /xfiles/update_plugins/mr_sip
-pip install -r requirements.txt
+pip install -e .
+```
+
+The default install is intended for Deepgram (`STT_PROVIDER=deepgram` or
+`deepgram_flux`) and does **not** install the heavy local STT stack.  Do not
+install the extras below unless you explicitly need those providers; they can
+pull large Torch/ONNX/CUDA/NVIDIA wheels.
+
+For `STT_PROVIDER=silero_cohere`:
+
+```bash
+pip install -e ".[silero-cohere]"
+```
+
+For `STT_PROVIDER=smart_turn_v3`:
+
+```bash
+pip install -e ".[smart-turn-v3]"
+```
+
+For all optional local STT providers:
+
+```bash
+pip install -e ".[local-stt]"
 ```
 
 ### 2. Configure STT Provider

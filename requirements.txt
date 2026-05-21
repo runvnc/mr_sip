@@ -16,6 +16,17 @@ deepgram-sdk>=3.0.0
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
 
-# Smart Turn v3 STT provider dependencies
-onnxruntime-gpu>=1.18.0
-huggingface_hub>=0.20.0
+# Optional local STT provider dependencies
+#
+# The default Deepgram providers do NOT need these packages.  Do not install
+# them on lightweight/incoming-only Deepgram deployments; onnxruntime-gpu and
+# the Silero/Torch stack can pull large CUDA/NVIDIA wheels.
+#
+# Install only when using STT_PROVIDER=silero_cohere:
+#   pip install -e ".[silero-cohere]"
+#
+# Install only when using STT_PROVIDER=smart_turn_v3:
+#   pip install -e ".[smart-turn-v3]"
+#
+# Convenience extra for all local STT providers:
+#   pip install -e ".[local-stt]"

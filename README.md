@@ -50,6 +50,32 @@ cd /xfiles/update_plugins/mr_sip
 pip install -e .
 ```
 
+By default this installs only the lightweight/base dependencies needed for the
+Deepgram STT providers (`STT_PROVIDER=deepgram` or `deepgram_flux`).  The local
+Silero/Smart Turn providers intentionally use optional extras because they pull
+large Torch/ONNX/CUDA/NVIDIA wheels and can add 10+ GB and many minutes to an
+install.
+
+Install the Silero + remote Cohere variation only when using
+`STT_PROVIDER=silero_cohere`:
+
+```bash
+pip install -e ".[silero-cohere]"
+```
+
+Install the Smart Turn v3 variation only when using
+`STT_PROVIDER=smart_turn_v3`:
+
+```bash
+pip install -e ".[smart-turn-v3]"
+```
+
+Install all optional local STT dependencies with:
+
+```bash
+pip install -e ".[local-stt]"
+```
+
 #### 3. JACK Setup
 
 ```bash

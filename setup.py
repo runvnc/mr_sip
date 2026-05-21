@@ -25,10 +25,25 @@ setup(
         "numpy>=1.21.0",
         "scipy>=1.7.0",
         "pydub>=0.25.0",
-        "onnxruntime-gpu>=1.18.0",
-        "huggingface_hub>=0.20.0",
         "PySIPio @ git+https://github.com/runvnc/PySIP.git"
     ],
+    extras_require={
+        "silero-cohere": [
+            "silero-vad",
+        ],
+        "smart-turn-v3": [
+            "silero-vad",
+            "onnxruntime-gpu>=1.18.0",
+            "huggingface_hub>=0.20.0",
+            "transformers",
+        ],
+        "local-stt": [
+            "silero-vad",
+            "onnxruntime-gpu>=1.18.0",
+            "huggingface_hub>=0.20.0",
+            "transformers",
+        ],
+    },
     python_requires=">=3.8",
     classifiers=[
         "Development Status :: 4 - Beta",
