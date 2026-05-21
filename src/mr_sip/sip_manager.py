@@ -93,9 +93,33 @@ class SIPSession:
         logger.info(f"S2S_DEBUG: About to enter while loop")
         try:
             while self.is_active:
+                if self._bot_call_has_ended():
+                    logger.info(
+                        "SIP audio sender exiting because bot/PySIP call has ended: "
+                        "session=%s bot_ended=%s bot_ending=%s call_state=%s dialogue_state=%s",
+                        self.log_id,
+                        getattr(self.baresip_bot, '_ended', None),
+                        getattr(self.baresip_bot, '_ending', None),
+                        self._bot_call_state(),
+                        self._bot_dialogue_state(),
+                    )
+                    self.is_active = False
+                    break
                 logger.debug(f"S2S_DEBUG: In while loop, waiting for audio...")
                 try:
                     item = await asyncio.wait_for(self.audio_queue.get(), timeout=30.0)
+                    if self._bot_call_has_ended():
+                        logger.info(
+                            "SIP audio sender exiting after queue wake because bot/PySIP call has ended: "
+                            "session=%s bot_ended=%s bot_ending=%s call_state=%s dialogue_state=%s",
+                            self.log_id,
+                            getattr(self.baresip_bot, '_ended', None),
+                            getattr(self.baresip_bot, '_ending', None),
+                            self._bot_call_state(),
+                            self._bot_dialogue_state(),
+                        )
+                        self.is_active = False
+                        break
                     if item is None:  # Sentinel to stop
                         break
 
@@ -147,7 +171,13 @@ class SIPSession:
                     send_end = time.perf_counter()
                     logger.debug(f"SIP_SEND: _send_audio_to_sip took {(send_end - send_start)*1000:.1f}ms")
                 except asyncio.TimeoutError:
-                    continue
+                    if self._bot_call_has_ended():
+                        logger.info(
+                            "SIP audio sender timeout wake found ended bot/PySIP call; exiting session=%s",
+                            self.log_id,
+                        )
+                        self.is_active = False
+                        break
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -159,6 +189,43 @@ class SIPSession:
         finally:
             logger.info(f"S2S_DEBUG: Audio sender loop exiting for session {self.log_id}")
             
+    def _bot_call_state(self):
+        try:
+            call = getattr(self.baresip_bot, 'call', None) if self.baresip_bot else None
+            return getattr(call, 'call_state', None)
+        except Exception:
+            return None
+
+    def _bot_dialogue_state(self):
+        try:
+            call = getattr(self.baresip_bot, 'call', None) if self.baresip_bot else None
+            dialogue = getattr(call, 'dialogue', None) if call else None
+            return getattr(dialogue, 'state', None)
+        except Exception:
+            return None
+
+    def _bot_call_has_ended(self) -> bool:
+        """Return True if the underlying SIP bot/call is already over.
+
+        This is a defensive backstop for incoming-call cleanup.  If the call-ended
+        callback is interrupted or an external hangup path leaves the session
+        marked active, the audio sender should not keep logging forever.
+        """
+        bot = self.baresip_bot
+        if not bot:
+            return False
+        if getattr(bot, '_ended', False):
+            return True
+        call_state = self._bot_call_state()
+        dialogue_state = self._bot_dialogue_state()
+        if str(call_state) in ('CallState.ENDED', 'CallState.FAILED', 'CallState.BUSY'):
+            return True
+        if str(dialogue_state).endswith('TERMINATED'):
+            return True
+        if getattr(bot, 'is_active', True) is False and getattr(bot, 'call_established', False) is False:
+            return True
+        return False
+
     async def _send_audio_to_sip(self, audio_chunk: bytes, timestamp=None):
         """Send audio chunk to the SIP call.
 
