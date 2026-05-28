@@ -105,6 +105,7 @@ class MindRootSIPAccount:
         logger.info(f'[INCOMING] Caller ID: {self.caller_id}, Connection: {self.connection_type}')
         logger.info(f'[INCOMING] STT Provider: {self.stt_provider_name}')
 
+        max_ongoing_calls = int(os.getenv('SIP_MAX_ONGOING_CALLS', '40'))
         self._account = SipAccount(
             username=self.sip_username,
             password=self.sip_password,
@@ -112,6 +113,7 @@ class MindRootSIPAccount:
             caller_id=self.caller_id,
             connection_type=self.connection_type,
             register_duration=self.register_duration,
+            max_ongoing_calls=max_ongoing_calls,
         )
 
         # Register the incoming call handler
