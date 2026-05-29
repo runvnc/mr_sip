@@ -582,10 +582,26 @@ async def start_incoming_listener_service(agent_name: str = None, context=None):
     global _incoming_listener
     
     if _incoming_listener is not None:
-        return {
-            'status': 'already_running',
-            'message': 'Incoming call listener is already active'
-        }
+        health = None
+        try:
+            if hasattr(_incoming_listener, 'health_info'):
+                health = _incoming_listener.health_info()
+        except Exception as e:
+            health = {'healthy': False, 'error': str(e)}
+
+        if health and health.get('healthy'):
+            return {
+                'status': 'already_running',
+                'message': 'Incoming call listener is already active',
+                'health': health,
+            }
+
+        logger.warning('[INCOMING-SVC] Existing incoming listener is stale/unhealthy; restarting it. health=%s', health)
+        try:
+            await _incoming_listener.stop()
+        except Exception as e:
+            logger.error('[INCOMING-SVC] Error stopping stale incoming listener before restart: %s', e)
+        _incoming_listener = None
     
     sip_gateway = os.getenv('SIP_GATEWAY', 'no sip gateway')
     sip_user = os.getenv('SIP_USER', 'nouser')
@@ -693,12 +709,20 @@ async def get_incoming_listener_status(context=None):
             'is_active': False
         }
     
+    health = None
+    try:
+        if hasattr(_incoming_listener, 'health_info'):
+            health = _incoming_listener.health_info()
+    except Exception as e:
+        health = {'healthy': False, 'error': str(e)}
+
     return {
-        'status': 'running',
-        'is_active': True,
+        'status': 'running' if (health is None or health.get('healthy')) else 'stale',
+        'is_active': bool(health is None or health.get('healthy')),
         'agent': _incoming_listener.agent_name,
         'gateway': _incoming_listener.sip_server,
         'user': _incoming_listener.sip_username,
+        'health': health,
     }
 
 # Lock to prevent concurrent startup hook execution
@@ -716,10 +740,18 @@ async def startup(app=None, context=None):
     if agent and auto_start:
         logger.info(f'[INCOMING] Auto-starting incoming call listener (agent={agent})...')
         async with _startup_lock:
-            # Double-check under lock in case concurrent call already started it
+            # Double-check under lock in case concurrent call already started it.
+            # If the object exists but the underlying PySIP receive/register
+            # loop is stale, start_incoming_listener_service() will restart it.
             if _incoming_listener is not None:
-                logger.info('[INCOMING] Auto-start: listener already running (checked under lock)')
-                return
+                try:
+                    health = _incoming_listener.health_info() if hasattr(_incoming_listener, 'health_info') else None
+                except Exception as e:
+                    health = {'healthy': False, 'error': str(e)}
+                if health and health.get('healthy'):
+                    logger.info('[INCOMING] Auto-start: listener already running and healthy (checked under lock)')
+                    return
+                logger.warning('[INCOMING] Auto-start found stale listener; restarting. health=%s', health)
             try:
                 result = await start_incoming_listener_service(agent_name=agent)
                 if result.get('status') == 'started':

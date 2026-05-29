@@ -151,6 +151,24 @@ class MindRootSIPAccount:
 
         return is_registered
 
+    def health_info(self) -> dict:
+        """Return best-effort health details for the underlying PySIP listener."""
+        account_health = None
+        try:
+            if self._account and hasattr(self._account, 'health_info'):
+                account_health = self._account.health_info()
+        except Exception as e:
+            account_health = {'healthy': False, 'error': str(e)}
+
+        healthy = bool(self._started and self._account and account_health and account_health.get('healthy'))
+        return {
+            'healthy': healthy,
+            'started': self._started,
+            'has_account': self._account is not None,
+            'active_bots': len(self._active_bots),
+            'account': account_health,
+        }
+
     async def stop(self):
         """Unregister and stop listening for incoming calls."""
         logger.info(f'=== STOPPING INCOMING CALL LISTENER for {self.sip_username} ===')
@@ -159,6 +177,7 @@ class MindRootSIPAccount:
         if self._account:
             await self._account.unregister()
             self._account = None
+        self._started = False
 
         # Clean up any active bots
         for log_id, bot in list(self._active_bots.items()):
