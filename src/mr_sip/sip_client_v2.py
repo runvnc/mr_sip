@@ -967,7 +967,7 @@ class MindRootSIPBotV2:
                 last_frame_count = current_frames
                 
                 duration = time.time() - self.last_activity_time
-                if duration > 10.0 and (not self.silence_reported):
+                if duration > 40.0 and (not self.silence_reported):
                     self.silence_reported = True
                     msg = f'[SYSTEM: No audio detected for {duration:.1f} seconds.]'
                     logger.info(f'Silence detected: {msg}')
