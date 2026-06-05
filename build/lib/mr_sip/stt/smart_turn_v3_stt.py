@@ -188,6 +188,7 @@ class SmartTurnV3STT(BaseSTTProvider):
         # Stats
         self._utterance_count: int = 0
         self._total_audio_bytes: int = 0
+        self._last_turn_was_eager: bool = False
         self._transcription_times: list = []
         self._smart_turn_inference_times: list = []
         self._total_turns_detected: int = 0
@@ -502,6 +503,7 @@ class SmartTurnV3STT(BaseSTTProvider):
                 if silence_duration > self._max_silence_poll_ms:
                     _dlog(f'[SMART_TURN] Fallback: silence for {silence_duration:.0f}ms > {self._max_silence_poll_ms}ms, forcing turn complete')
                     self._total_fallback_transcriptions += 1
+                    self._last_turn_was_eager = False
                     await self._on_turn_complete()
                     continue
 
@@ -531,6 +533,7 @@ class SmartTurnV3STT(BaseSTTProvider):
                     if silence_at_end_ms >= self._min_end_silence_ms:
                         _dlog(f'[SMART_TURN] Turn DETECTED: prob={prob:.3f}, '
                               f'end_silence={silence_at_end_ms}ms >= {self._min_end_silence_ms}ms')
+                        self._last_turn_was_eager = True
                         self._turn_detected = True
                         self._total_turns_detected += 1
                         await self._on_turn_complete()
@@ -658,7 +661,7 @@ class SmartTurnV3STT(BaseSTTProvider):
         result = STTResult(
             text=text,
             is_final=True,
-            is_eager_eot=False,
+            is_eager_eot=self._last_turn_was_eager,
             confidence=0.9,
             timestamp=time.time(),
         )
