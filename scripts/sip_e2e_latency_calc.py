@@ -96,6 +96,14 @@ def compute_latencies(events):
             ('chunk_dequeued_to_pysip_ms', 'FIRST_CHUNK_DEQUEUED', 'FIRST_TTS_CHUNK_PYSIP'),
             ('pysip_to_rtp_sent_ms', 'FIRST_TTS_CHUNK_PYSIP', 'FIRST_RTP_SENT'),
         ]
+        # Kyutai streaming path segments (added for streaming TTS profiling)
+        kyutai_segments = [
+            ('utterance_cb_to_first_partial_ms', 'UTTERANCE_CALLBACK', 'LLM_FIRST_PARTIAL_SPEAK'),
+            ('first_partial_to_first_text_delta_ms', 'LLM_FIRST_PARTIAL_SPEAK', 'KYUTAI_FIRST_TEXT_DELTA'),
+            ('first_text_delta_to_first_audio_ms', 'KYUTAI_FIRST_TEXT_DELTA', 'KYUTAI_FIRST_AUDIO_FRAME'),
+            ('first_audio_to_chunk_queued_ms', 'KYUTAI_FIRST_AUDIO_FRAME', 'FIRST_CHUNK_QUEUED'),
+        ]
+        segments.extend(kyutai_segments)
         for seg_name, start_event, end_event in segments:
             if start_event in evts and end_event in evts:
                 r[seg_name] = (evts[end_event]['perf_counter'] - evts[start_event]['perf_counter']) * 1000
@@ -103,6 +111,10 @@ def compute_latencies(events):
                 r[seg_name] = None
 
         # Extra context
+        if 'VAD_SPEECH_START' in evts:
+            r['speech_start_ts'] = evts['VAD_SPEECH_START']['wall_ts']
+        if 'VAD_SPEECH_START' in evts and 'VAD_EAGER_END' in evts:
+            r['utterance_duration_ms'] = (evts['VAD_EAGER_END']['perf_counter'] - evts['VAD_SPEECH_START']['perf_counter']) * 1000
         if 'VAD_EAGER_END' in evts:
             r['wall_ts'] = evts['VAD_EAGER_END']['wall_ts']
         if 'TRANSCRIBE_DONE' in evts and 'transcribe_ms' in evts['TRANSCRIBE_DONE']:
@@ -120,6 +132,10 @@ def compute_latencies(events):
             r['user_e2e_ms'] = (evts['FIRST_RTP_SENT']['perf_counter'] - float(evts['VAD_EAGER_END']['last_speech_audio_pc'])) * 1000
 
         results.append(r)
+        # Also compute LLM-to-speech latency (from first partial speak to first audio chunk)
+        if 'LLM_FIRST_PARTIAL_SPEAK' in evts and 'KYUTAI_FIRST_AUDIO_FRAME' in evts:
+            r['llm_to_first_audio_ms'] = (evts['KYUTAI_FIRST_AUDIO_FRAME']['perf_counter'] - evts['LLM_FIRST_PARTIAL_SPEAK']['perf_counter']) * 1000
+
     return results
 
 
@@ -146,6 +162,14 @@ def print_results(results, show_all=False):
         print(f'  Max e2e latency:         {mx:.0f} ms')
         print()
 
+    # Kyutai streaming metrics
+    llm_to_audio_values = [r['llm_to_first_audio_ms'] for r in results if r.get('llm_to_first_audio_ms') is not None]
+    if llm_to_audio_values:
+        avg_la = sum(llm_to_audio_values) / len(llm_to_audio_values)
+        print(f'  Kyutai streaming: LLM first partial -> first audio frame:')
+        print(f'    Average: {avg_la:.0f} ms  Min: {min(llm_to_audio_values):.0f} ms  Max: {max(llm_to_audio_values):.0f} ms')
+        print()
+
     if user_e2e_values:
         avg_u = sum(user_e2e_values) / len(user_e2e_values)
         mn_u = min(user_e2e_values)
@@ -157,7 +181,7 @@ def print_results(results, show_all=False):
     # Per-utterance table
     header = f"{'Utt':>4} {'Wall Time':>20} {'UserE2E':>7} {'E2E(ms)':>8} {'VAD->X':>7} {'X->CB':>7} {'CB->UT':>7} {'UT->TTS':>8} {'TTS->Q':>7} {'Q->DQ':>7} {'DQ->PS':>7} {'PS->RTP':>8} {'Prebuf':>6}"
     print(header)
-    print('-' * len(header))
+    print('-' * 120)
 
     for r in results:
         e2e = f"{r['e2e_ms']:.0f}" if r.get('e2e_ms') is not None else '-'
@@ -173,6 +197,21 @@ def print_results(results, show_all=False):
             segs.append(f"{v:.0f}" if v is not None else '-')
         prebuf = r.get('prebuffer_frames', '-')
         print(f"{r['utterance']:>4} {wall:>20} {user_e2e:>7} {e2e:>8} {segs[0]:>7} {segs[1]:>7} {segs[2]:>7} {segs[3]:>8} {segs[4]:>7} {segs[5]:>7} {segs[6]:>7} {segs[7]:>8} {prebuf:>6}")
+
+    # Kyutai streaming breakdown table
+    kyutai_results = [r for r in results if r.get('utterance_cb_to_first_partial_ms') is not None]
+    if kyutai_results:
+        print(f'\nKyutai Streaming Breakdown:')
+        header_k = f"{'Utt':>4} {'CB->LLM':>8} {'LLM->TXT':>8} {'TXT->AUD':>8} {'AUD->Q':>8} {'LLM->AUD':>8}"
+        print(header_k)
+        print('-' * len(header_k))
+        for r in kyutai_results:
+            print(f"{r['utterance']:>4} {r.get('utterance_cb_to_first_partial_ms', 0):>8.0f} {r.get('first_partial_to_first_text_delta_ms', 0):>8.0f} {r.get('first_text_delta_to_first_audio_ms', 0):>8.0f} {r.get('first_audio_to_chunk_queued_ms', 0):>8.0f} {r.get('llm_to_first_audio_ms', 0):>8.0f}")
+        print('  CB->LLM = Utterance callback -> First partial speak (LLM TTFS)')
+        print('  LLM->TXT = First partial -> Kyutai text delta (routing)')
+        print('  TXT->AUD = Kyutai text delta -> First audio frame (TTS TTFA)')
+        print('  AUD->Q = First audio frame -> Chunk queued (audio routing)')
+        print('  LLM->AUD = First partial -> First audio frame (total TTS pipeline)')
 
     print()
     print('Column legend:')

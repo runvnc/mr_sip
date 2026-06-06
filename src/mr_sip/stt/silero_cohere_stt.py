@@ -533,6 +533,10 @@ class SileroCohereSTT(BaseSTTProvider):
             self._speech_buffer = preroll_bytes
             _dlog(f'[VAD] Pre-roll: prepended {len(preroll_bytes)} bytes ({len(self._preroll_buffer)} chunks)')
 
+        # Log speech start for e2e profiling
+        _e2e_log('VAD_SPEECH_START', utterance_num=self._utterance_count + 1,
+                 threshold=self.threshold)
+
         _dlog(f'[VAD] Speech START (utterance #{self._utterance_count + 1})')
 
         if self._turn_resumed_callback is not None:

@@ -703,6 +703,10 @@ class MindRootSIPBotV2:
                 stream._e2e_vad_utterance_num = 0
             _e2e_log('TTS_RESPONSE_START', utterance_num=self._e2e_current_utterance_num)
             logger.debug(f'Started TTS response stream {stream.stream_id}')
+            # Reset per-response chunk tracking for FIRST_CHUNK_QUEUED
+            self._e2e_first_chunk_queued_logged = False
+            self._e2e_first_chunk_dequeued_logged = False
+            self._e2e_first_chunk_queued_time = None
             return True
         except Exception as e:
             logger.error(f'Error starting TTS response stream: {e}')
@@ -791,6 +795,13 @@ class MindRootSIPBotV2:
             if self._interrupting:
                 return
             else:
+                # Log FIRST_CHUNK_QUEUED when first chunk enters the AudioStream
+                if not getattr(self, '_e2e_first_chunk_queued_logged', False):
+                    self._e2e_first_chunk_queued_logged = True
+                    self._e2e_first_chunk_queued_time = time.perf_counter()
+                    _e2e_log('FIRST_CHUNK_QUEUED', utterance_num=getattr(self, '_e2e_current_utterance_num', 0),
+                             chunk_len=len(ulaw_audio),
+                             since_tts_start_ms=f'{(time.perf_counter() - getattr(self, "_tts_response_start_pc", time.perf_counter()))*1000:.0f}')
                 pass
             FRAME_SIZE = 160
             for i in range(0, len(ulaw_audio), FRAME_SIZE):

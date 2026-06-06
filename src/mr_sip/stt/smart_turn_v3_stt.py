@@ -432,6 +432,10 @@ class SmartTurnV3STT(BaseSTTProvider):
         self._turn_detected = False
         self._silence_start_time = None
 
+        # Log speech start for e2e profiling
+        _e2e_log('VAD_SPEECH_START', utterance_num=self._utterance_count + 1,
+                 threshold=self.threshold)
+
         # Prepend pre-roll buffer
         if self._preroll_buffer:
             preroll_bytes = b''.join(self._preroll_buffer)
@@ -615,6 +619,10 @@ class SmartTurnV3STT(BaseSTTProvider):
         self._is_speaking = False
         self._vad_speech_active = False
         self._stop_polling()
+
+        # Store VAD end timestamp for PySIP e2e latency computation
+        self._last_vad_eager_end_pc = time.perf_counter()
+        self._last_user_speech_end_pc = self._last_vad_eager_end_pc
 
         turn_end_time = time.perf_counter()
         speech_duration = turn_end_time - self._speech_start_time
