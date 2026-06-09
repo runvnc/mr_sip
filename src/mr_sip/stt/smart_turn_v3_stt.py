@@ -16,7 +16,7 @@ Key env vars:
   SMART_TURN_POLL_MS - polling interval (default 80)
   SMART_TURN_THRESHOLD - probability threshold (default 0.5)
   SMART_TURN_MAX_SILENCE_POLL_MS - fallback silence timeout (default 2000)
-  SMART_TURN_MIN_SPEECH_MS - minimum speech before accepting turn detection (default 500)
+  SMART_TURN_MIN_SPEECH_MS - minimum speech before accepting turn detection (default 250)
   SMART_TURN_DEVICE - 'cuda' or 'cpu' (default 'cuda')
 """
 import asyncio
@@ -95,7 +95,7 @@ class SmartTurnV3STT(BaseSTTProvider):
     def __init__(
         self,
         sample_rate: int = 8000,
-        threshold: float = 0.5,
+        threshold: float = 0.3,
         min_silence_duration_ms: int = 600,
         speech_pad_ms: int = 30,
         language: str = 'en',
@@ -115,8 +115,8 @@ class SmartTurnV3STT(BaseSTTProvider):
         self._poll_ms = int(os.getenv('SMART_TURN_POLL_MS', '80'))
         self._turn_threshold = float(os.getenv('SMART_TURN_THRESHOLD', '0.5'))
         self._max_silence_poll_ms = int(os.getenv('SMART_TURN_MAX_SILENCE_POLL_MS', '2000'))
-        self._min_speech_ms = int(os.getenv('SMART_TURN_MIN_SPEECH_MS', '500'))
-        self._min_end_silence_ms = int(os.getenv('SMART_TURN_MIN_END_SILENCE_MS', '125'))
+        self._min_speech_ms = int(os.getenv('SMART_TURN_MIN_SPEECH_MS', '250'))
+        self._min_end_silence_ms = int(os.getenv('SMART_TURN_MIN_END_SILENCE_MS', '96'))
         self._model_path = os.getenv('SMART_TURN_MODEL_PATH', '')
         self._smart_turn_device = os.getenv('SMART_TURN_DEVICE', 'cuda')
 
@@ -137,7 +137,7 @@ class SmartTurnV3STT(BaseSTTProvider):
         )
 
         # Pre-roll buffer
-        preroll_ms = int(os.getenv('SILERO_PREROLL_MS', '300'))
+        preroll_ms = int(os.getenv('SILERO_PREROLL_MS', '500'))
         self._preroll_chunks = max(0, preroll_ms // 32)
         self._preroll_buffer: deque = deque(maxlen=self._preroll_chunks) if self._preroll_chunks > 0 else deque(maxlen=0)
 
