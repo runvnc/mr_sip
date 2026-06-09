@@ -351,7 +351,6 @@ class SmartTurnV3STT(BaseSTTProvider):
         # Buffer audio during speech for transcription
         if self._is_speaking:
             self._speech_buffer += audio_bytes
-            self._last_speech_audio_time = time.perf_counter()
             max_bytes = int(self.max_utterance_duration_s * VAD_SAMPLE_RATE)
             if len(self._speech_buffer) > max_bytes:
                 _dlog(f'add_audio_bytes: utterance exceeded {self.max_utterance_duration_s}s limit, forcing end')
@@ -403,15 +402,32 @@ class SmartTurnV3STT(BaseSTTProvider):
             # Speech start detection only
             if not self._vad_speech_active:
                 if prob >= self.threshold:
+                    now_pc = time.perf_counter()
                     self._vad_speech_active = True
                     self._vad_silence_chunks = 0
+                    self._last_speech_audio_time = now_pc
                     await self._on_speech_start()
+                    # Include the VAD-triggering chunk itself.  add_audio_bytes()
+                    # only appends new RTP audio while _is_speaking was already
+                    # true at function entry, so without this the first voiced
+                    # 32ms chunk is dropped from the transcription buffer.  That
+                    # matters most for very short responses like "Blue".
+                    if self._is_speaking:
+                        self._speech_buffer += chunk_bytes
             else:
-                # Track silence for fallback, but don't trigger speech end
+                # Track voiced/silent VAD chunks for SmartTurn gating and
+                # fallback turn completion.  Do NOT use raw RTP arrival time for
+                # _last_speech_audio_time: RTP packets keep arriving during
+                # silence, which made the fallback silence timer effectively
+                # useless.  Update it only when Silero says this chunk is voiced.
                 if prob < self.threshold:
                     self._vad_silence_chunks += 1
                 else:
                     self._vad_silence_chunks = 0
+                    if self._is_speaking:
+                        self._last_speech_audio_time = time.perf_counter()
+                    else:
+                        pass
 
             # Always update pre-roll buffer
             if not self._is_speaking:
