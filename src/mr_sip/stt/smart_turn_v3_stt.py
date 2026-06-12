@@ -327,6 +327,28 @@ class SmartTurnV3STT(BaseSTTProvider):
                 f'SMART_TURN_DEVICE=cuda requested but ONNX Runtime active providers are {self._ort_session.get_providers()}; refusing silent CPU fallback'
             )
 
+    def _smart_turn_runtime_label(self) -> str:
+        """Return a short runtime label for the active Smart Turn ONNX provider.
+
+        This is logged at the start of each user turn so runtime GPU/CPU status is
+        visible near the actual endpointing events, not just during startup.
+        """
+        if self._ort_session is None:
+            return f'requested={self._smart_turn_device}, active=not_loaded, providers=[]'
+
+        try:
+            providers = list(self._ort_session.get_providers())
+        except Exception as e:
+            return f'requested={self._smart_turn_device}, active=unknown, providers_error={e!r}'
+
+        if 'CUDAExecutionProvider' in providers:
+            active = 'cuda'
+        elif 'CPUExecutionProvider' in providers:
+            active = 'cpu'
+        else:
+            active = 'unknown'
+        return f'requested={self._smart_turn_device}, active={active}, providers={providers}'
+
     def _download_smart_turn_model(self) -> str:
         """Download Smart Turn v3 ONNX model from HuggingFace."""
         from huggingface_hub import hf_hub_download
@@ -513,7 +535,8 @@ class SmartTurnV3STT(BaseSTTProvider):
             self._speech_buffer = preroll_bytes
             _dlog(f'[VAD] Pre-roll: prepended {len(preroll_bytes)} bytes')
 
-        _dlog(f'[VAD] Speech START (utterance #{self._utterance_count + 1})')
+        _dlog(f'[VAD] Speech START (utterance #{self._utterance_count + 1}) - '
+              f'Smart Turn runtime: {self._smart_turn_runtime_label()}')
 
         # Fire barge-in callback
         if self._turn_resumed_callback is not None:
