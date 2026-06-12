@@ -117,7 +117,11 @@ class SmartTurnV3STT(BaseSTTProvider):
         self._turn_threshold = float(os.getenv('SMART_TURN_THRESHOLD', '0.5'))
         self._max_silence_poll_ms = int(os.getenv('SMART_TURN_MAX_SILENCE_POLL_MS', '2000'))
         self._min_speech_ms = int(os.getenv('SMART_TURN_MIN_SPEECH_MS', '250'))
-        self._min_end_silence_ms = int(os.getenv('SMART_TURN_MIN_END_SILENCE_MS', '96'))
+        self._semantic_check_silence_ms = int(os.getenv(
+            'SMART_TURN_SEMANTIC_CHECK_SILENCE_MS', os.getenv('SMART_TURN_MIN_END_SILENCE_MS', '384')
+        ))
+        self._final_confirm_silence_ms = int(os.getenv('SMART_TURN_FINAL_CONFIRM_SILENCE_MS', '640'))
+        self._eager_enabled = os.getenv('SMART_TURN_EAGER_ENABLED', '1').lower() not in ('0', 'false', 'no')
         self._model_path = os.getenv('SMART_TURN_MODEL_PATH', '')
         self._smart_turn_device = os.getenv('SMART_TURN_DEVICE', 'cuda')
 
@@ -160,7 +164,6 @@ class SmartTurnV3STT(BaseSTTProvider):
         # Models
         self.vad_model = None
         self._ort_session = None
-        self._feature_extractor = None
 
         # VAD state (Silero for speech start only)
         self._vad_speech_active = False
@@ -186,6 +189,13 @@ class SmartTurnV3STT(BaseSTTProvider):
         # Callbacks
         self._turn_resumed_callback: Optional[Callable] = None
 
+        # Eager EOT state. Smart Turn can emit a cancellable eager EOT after
+        # semantic completion, then confirm final after longer silence.
+        self._eager_pending: bool = False
+        self._eager_text: str = ''
+        self._eager_utterance_num: int = 0
+        self._eager_audio_len: int = 0
+
         # Stats
         self._utterance_count: int = 0
         self._total_audio_bytes: int = 0
@@ -193,13 +203,18 @@ class SmartTurnV3STT(BaseSTTProvider):
         self._smart_turn_inference_times: list = []
         self._total_turns_detected: int = 0
         self._total_fallback_transcriptions: int = 0
+        self._total_eager_eots: int = 0
+        self._total_eager_confirmed: int = 0
+        self._total_eager_cancelled: int = 0
 
         _dlog(
             f'SmartTurnV3STT.__init__: threshold={self.threshold}, '
             f'poll_ms={self._poll_ms}, turn_threshold={self._turn_threshold}, '
             f'max_silence_poll_ms={self._max_silence_poll_ms}, '
             f'min_speech_ms={self._min_speech_ms}, '
-            f'min_end_silence_ms={self._min_end_silence_ms}, '
+            f'semantic_check_silence_ms={self._semantic_check_silence_ms}, '
+            f'final_confirm_silence_ms={self._final_confirm_silence_ms}, '
+            f'eager_enabled={self._eager_enabled}, '
             f'model_path="{self._model_path or "(auto-download)"}", '
             f'smart_turn_device={self._smart_turn_device}, '
             f'remote_url="{self.cohere_transcribe_url or "(none)"}", '
@@ -343,6 +358,10 @@ class SmartTurnV3STT(BaseSTTProvider):
         self._vad_buffer = b''
         self._speech_buffer = b''
         self._preroll_buffer.clear()
+        self._eager_pending = False
+        self._eager_text = ''
+        self._eager_utterance_num = 0
+        self._eager_audio_len = 0
         if self._http_session is not None:
             try:
                 self._http_session.close()
@@ -452,6 +471,19 @@ class SmartTurnV3STT(BaseSTTProvider):
                     else:
                         pass
 
+                # If an eager EOT has been emitted and speech resumes before
+                # final confirmation, cancel the pending eager state and let the
+                # normal barge-in callback stop any draft/early response.
+                if prob >= self.threshold and self._eager_pending:
+                    self._total_eager_cancelled += 1
+                    _dlog(f'[EAGER] Cancelled Smart Turn eager EOT #{self._eager_utterance_num} - user resumed speaking')
+                    self._eager_pending = False
+                    self._eager_text = ''
+                    self._eager_utterance_num = 0
+                    self._eager_audio_len = 0
+                    if self._turn_resumed_callback is not None:
+                        self._turn_resumed_callback()
+
             # Always update pre-roll buffer
             if not self._is_speaking:
                 self._preroll_buffer.append(chunk_bytes)
@@ -518,7 +550,13 @@ class SmartTurnV3STT(BaseSTTProvider):
         _dlog('[SMART_TURN] Polling stopped')
 
     async def _poll_loop(self):
-        """Poll Smart Turn v3 every poll_ms during speech."""
+        """Poll Smart Turn v3 after VAD has observed silence.
+
+        This follows the intended Smart Turn usage more closely than continuous
+        polling during active speech: wait for a short VAD silence, run semantic
+        endpointing on the full current turn, optionally emit a cancellable eager
+        EOT, then confirm final after a longer silence window.
+        """
         try:
             while self._poll_active and self.is_running:
                 await asyncio.sleep(self._poll_ms / 1000.0)
@@ -526,12 +564,10 @@ class SmartTurnV3STT(BaseSTTProvider):
                 if not self._is_speaking or self._turn_detected:
                     continue
 
-                # Minimum speech buffer check (basic sanity)
                 min_bytes_basic = VAD_CHUNK_SAMPLES * 4  # 1024 bytes
                 if len(self._speech_buffer) < min_bytes_basic:
                     continue
 
-                # Minimum speech duration before accepting turn detection
                 speech_elapsed_ms = (time.perf_counter() - self._speech_start_time) * 1000
                 if speech_elapsed_ms < self._min_speech_ms:
                     if self._frames_received % 50 == 0:
@@ -540,15 +576,34 @@ class SmartTurnV3STT(BaseSTTProvider):
 
                 self._last_poll_time = time.perf_counter()
 
-                # Check if we've been silent too long (fallback)
                 silence_duration = (time.perf_counter() - self._last_speech_audio_time) * 1000
+                silence_at_end_ms = self._vad_silence_chunks * 32
+
                 if silence_duration > self._max_silence_poll_ms:
                     _dlog(f'[SMART_TURN] Fallback: silence for {silence_duration:.0f}ms > {self._max_silence_poll_ms}ms, forcing turn complete')
                     self._total_fallback_transcriptions += 1
-                    await self._on_turn_complete()
+                    await self._on_turn_complete(reason='max_silence_fallback')
                     continue
 
-                # Run Smart Turn inference
+                # If eager was already emitted, final-confirm once the longer
+                # silence window has elapsed. No second ASR is needed; final uses
+                # the eager text and sip_client_v2 can skip duplicate agent send.
+                if self._eager_pending:
+                    if silence_at_end_ms >= self._final_confirm_silence_ms:
+                        _dlog(f'[SMART_TURN] Final confirming eager #{self._eager_utterance_num}: silence={silence_at_end_ms}ms >= {self._final_confirm_silence_ms}ms')
+                        self._turn_detected = True
+                        self._total_turns_detected += 1
+                        await self._on_turn_complete(reason='eager_final_confirmed')
+                    continue
+
+                # Do not run semantic endpointing until VAD has actually seen a
+                # pause. This avoids the old behavior where Smart Turn was asked
+                # mid-word/mid-speech and often returned high completion scores.
+                if silence_at_end_ms < self._semantic_check_silence_ms:
+                    if self._utterance_count < 3 or self._frames_received % 50 == 0:
+                        _dlog(f'[SMART_TURN] Waiting for semantic silence: {silence_at_end_ms}ms < {self._semantic_check_silence_ms}ms')
+                    continue
+
                 try:
                     result = await asyncio.get_event_loop().run_in_executor(
                         None, self._run_smart_turn_inference
@@ -560,26 +615,25 @@ class SmartTurnV3STT(BaseSTTProvider):
                 prob = result['probability']
                 prediction = result['prediction']
 
-                if self._utterance_count < 3 or self._frames_received % 50 == 0:
-                    _dlog(f'[SMART_TURN] Poll: prob={prob:.3f}, prediction={prediction}, '
-                          f'speech_buf={len(self._speech_buffer)}B, '
-                          f'silence={silence_duration:.0f}ms, '
-                          f'vad_silence_chunks={self._vad_silence_chunks}')
+                _dlog(f'[SMART_TURN] Poll: prob={prob:.3f}, prediction={prediction}, '
+                      f'speech_buf={len(self._speech_buffer)}B, '
+                      f'silence={silence_duration:.0f}ms, '
+                      f'end_silence={silence_at_end_ms}ms, '
+                      f'semantic_ms={self._semantic_check_silence_ms}, '
+                      f'final_ms={self._final_confirm_silence_ms}')
 
                 if prediction == 1 and prob >= self._turn_threshold:
-                    # Require minimum silence before accepting turn completion.
-                    # This prevents mid-sentence splits where the speaker just
-                    # pauses briefly between words.
-                    silence_at_end_ms = self._vad_silence_chunks * 32
-                    if silence_at_end_ms >= self._min_end_silence_ms:
-                        _dlog(f'[SMART_TURN] Turn DETECTED: prob={prob:.3f}, '
-                              f'end_silence={silence_at_end_ms}ms >= {self._min_end_silence_ms}ms')
+                    if silence_at_end_ms >= self._final_confirm_silence_ms or not self._eager_enabled:
+                        _dlog(f'[SMART_TURN] Turn DETECTED final: prob={prob:.3f}, end_silence={silence_at_end_ms}ms')
                         self._turn_detected = True
                         self._total_turns_detected += 1
-                        await self._on_turn_complete()
+                        await self._on_turn_complete(reason='semantic_final')
                     else:
-                        _dlog(f'[SMART_TURN] Turn predicted (prob={prob:.3f}) but '
-                              f'insufficient silence: {silence_at_end_ms}ms < {self._min_end_silence_ms}ms, waiting...')
+                        _dlog(f'[SMART_TURN] Eager candidate: prob={prob:.3f}, '
+                              f'end_silence={silence_at_end_ms}ms < final {self._final_confirm_silence_ms}ms')
+                        await self._emit_eager_eot(prob=prob, silence_at_end_ms=silence_at_end_ms)
+                else:
+                    _dlog(f'[SMART_TURN] Semantic incomplete: prob={prob:.3f}, prediction={prediction}, waiting...')
 
         except asyncio.CancelledError:
             _dlog('[SMART_TURN] Poll loop cancelled')
@@ -637,20 +691,87 @@ class SmartTurnV3STT(BaseSTTProvider):
         ])
         return out
 
+
+    async def _emit_eager_eot(self, prob: float, silence_at_end_ms: int) -> None:
+        """Transcribe current buffer and emit a cancellable eager EOT partial."""
+        if self._eager_pending or not self._is_speaking:
+            return
+
+        speech_bytes = bytes(self._speech_buffer)
+        if len(speech_bytes) < VAD_CHUNK_SAMPLES * 2:
+            _dlog('[EAGER] Speech segment too short, skipping eager EOT')
+            return
+
+        speech_bytes = self._normalize_buffer(speech_bytes)
+        eager_pc = time.perf_counter()
+        self._last_vad_eager_end_pc = eager_pc
+        self._last_user_speech_end_pc = eager_pc - (silence_at_end_ms / 1000.0)
+        _e2e_log('SMART_TURN_EAGER_END', utterance_num=self._utterance_count + 1,
+                 prob=f'{prob:.3f}', silence_ms=silence_at_end_ms)
+
+        t0 = time.perf_counter()
+        _dlog(f'[EAGER] Starting transcription of {len(speech_bytes)} bytes (prob={prob:.3f}, silence={silence_at_end_ms}ms)...')
+        try:
+            text = await asyncio.get_event_loop().run_in_executor(
+                None, self._transcribe_ulaw, speech_bytes
+            )
+        except Exception as e:
+            _dlog(f'[EAGER] TRANSCRIBE ERROR: {e}\n{traceback.format_exc()}')
+            return
+
+        elapsed_pc = time.perf_counter() - t0
+        self._transcription_times.append(elapsed_pc)
+        _dlog(f'[EAGER] Transcribe done in {elapsed_pc*1000:.0f}ms -> "{text}"')
+        _e2e_log('TRANSCRIBE_DONE', utterance_num=self._utterance_count + 1,
+                 transcribe_ms=f'{elapsed_pc*1000:.0f}', eager=True)
+
+        if not text or not text.strip():
+            _dlog('[EAGER] Empty transcription, skipping eager emit')
+            return
+
+        # ASR takes time. If the user resumed while transcription was in flight,
+        # do not emit a stale eager EOT after barge-in has already happened.
+        current_silence_at_end_ms = self._vad_silence_chunks * 32
+        if current_silence_at_end_ms < silence_at_end_ms:
+            self._total_eager_cancelled += 1
+            _dlog(f'[EAGER] Skipping stale eager EOT: speech resumed during ASR '
+                  f'(current_silence={current_silence_at_end_ms}ms < eager_silence={silence_at_end_ms}ms)')
+            return
+
+        text = text.strip()
+        self._utterance_count += 1
+        self._total_eager_eots += 1
+
+        result = STTResult(
+            text=text,
+            is_final=False,
+            is_eager_eot=True,
+            confidence=0.8,
+            timestamp=time.time(),
+        )
+        result.utterance_num = self._utterance_count
+        _dlog(f'[EMIT] Eager EOT #{self._utterance_count}: "{text}"')
+        self._emit_partial(result)
+
+        self._eager_pending = True
+        self._eager_text = text
+        self._eager_utterance_num = self._utterance_count
+        self._eager_audio_len = len(speech_bytes)
+
     # ------------------------------------------------------------------
     # Turn completion -> transcribe
     # ------------------------------------------------------------------
 
-    async def _on_turn_complete(self) -> None:
-        """Smart Turn says turn complete (or fallback). Transcribe and emit final."""
-        if not self._is_speaking:
+    async def _on_turn_complete(self, reason: str = 'semantic_final') -> None:
+        """Turn complete. Emit final, reusing eager text if available."""
+        if not self._is_speaking and not self._eager_pending:
             return
 
+        was_eager_pending = self._eager_pending
         self._is_speaking = False
         self._vad_speech_active = False
         self._stop_polling()
 
-        # Store VAD end timestamp for PySIP e2e latency computation
         self._last_vad_eager_end_pc = time.perf_counter()
         self._last_user_speech_end_pc = self._last_vad_eager_end_pc
 
@@ -659,15 +780,40 @@ class SmartTurnV3STT(BaseSTTProvider):
         speech_bytes = self._speech_buffer
         self._speech_buffer = b''
 
-        _dlog(f'[TURN_COMPLETE] Speech duration: {speech_duration:.2f}s, {len(speech_bytes)} bytes')
-        _e2e_log('TURN_COMPLETE', utterance_num=self._utterance_count + 1,
-                 speech_duration_s=f'{speech_duration:.2f}', bytes=len(speech_bytes))
+        _dlog(f'[TURN_COMPLETE] reason={reason} speech_duration={speech_duration:.2f}s, {len(speech_bytes)} bytes')
+        _e2e_log('TURN_COMPLETE', utterance_num=(self._eager_utterance_num or self._utterance_count + 1),
+                 speech_duration_s=f'{speech_duration:.2f}', bytes=len(speech_bytes), reason=reason)
+
+        if was_eager_pending:
+            text = self._eager_text
+            utterance_num = self._eager_utterance_num
+            self._eager_pending = False
+            self._eager_text = ''
+            self._eager_utterance_num = 0
+            self._eager_audio_len = 0
+            self._total_eager_confirmed += 1
+
+            if not text:
+                _dlog('[TURN_COMPLETE] Eager pending but eager text empty, skipping final')
+                return
+
+            result = STTResult(
+                text=text,
+                is_final=True,
+                is_eager_eot=False,
+                confidence=0.95,
+                timestamp=time.time(),
+            )
+            result.utterance_num = utterance_num
+            _dlog(f'[EMIT] Final (confirmed eager) #{utterance_num}: "{text}"')
+            self._emit_final(result)
+            _e2e_log('VAD_FINAL_CONFIRMED', utterance_num=utterance_num, reason=reason)
+            return
 
         if len(speech_bytes) < VAD_CHUNK_SAMPLES * 2:
             _dlog('[TURN_COMPLETE] Speech segment too short, skipping transcription')
             return
 
-        # Full-buffer normalization
         speech_bytes = self._normalize_buffer(speech_bytes)
 
         t0 = time.perf_counter()
@@ -792,8 +938,14 @@ class SmartTurnV3STT(BaseSTTProvider):
             'poll_ms': self._poll_ms,
             'turn_threshold': self._turn_threshold,
             'max_silence_poll_ms': self._max_silence_poll_ms,
+            'semantic_check_silence_ms': self._semantic_check_silence_ms,
+            'final_confirm_silence_ms': self._final_confirm_silence_ms,
+            'eager_enabled': self._eager_enabled,
             'total_turns_detected': self._total_turns_detected,
             'total_fallback_transcriptions': self._total_fallback_transcriptions,
+            'total_eager_eots': self._total_eager_eots,
+            'total_eager_confirmed': self._total_eager_confirmed,
+            'total_eager_cancelled': self._total_eager_cancelled,
             'device': self.device,
             'smart_turn_device': self._smart_turn_device,
             'remote_url': self.cohere_transcribe_url,
