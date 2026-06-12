@@ -42,6 +42,7 @@ except ImportError:
 import urllib.request
 
 from .base_stt import BaseSTTProvider, STTResult
+from .whisper_features import compute_whisper_log_mel_features
 
 logger = logging.getLogger(__name__)
 
@@ -268,12 +269,10 @@ class SmartTurnV3STT(BaseSTTProvider):
         """Load Smart Turn v3 ONNX model. Download if needed."""
         print("loading smart turn v3")
         import onnxruntime as ort
-        from transformers import WhisperFeatureExtractor
 
         # ORT CUDA EP can silently fail to locate CUDA/cuDNN libs from inside
         # MindRoot's venv, then fall back to CPU.  Preload first when available
-        # (ORT >= 1.21), and also import torch if present so PyTorch's CUDA/cuDNN
-        # libraries are already loaded before the ONNX session is created.
+        # (ORT >= 1.21) before the ONNX session is created.
         try:
             if hasattr(ort, 'preload_dlls'):
                 ort.preload_dlls()
@@ -306,7 +305,6 @@ class SmartTurnV3STT(BaseSTTProvider):
         so.intra_op_num_threads = 1
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         self._ort_session = ort.InferenceSession(model_path, sess_options=so, providers=providers)
-        self._feature_extractor = WhisperFeatureExtractor(chunk_length=SMART_TURN_MAX_DURATION_S)
         _dlog(f'_load_smart_turn_model: loaded, providers={self._ort_session.get_providers()}')
 
         if self._smart_turn_device == 'cuda' and 'CUDAExecutionProvider' not in self._ort_session.get_providers():
@@ -613,17 +611,8 @@ class SmartTurnV3STT(BaseSTTProvider):
             padding = max_samples - len(audio_16k)
             audio_16k = np.pad(audio_16k, (padding, 0), mode='constant', constant_values=0)
 
-        # Extract features using WhisperFeatureExtractor
-        inputs = self._feature_extractor(
-            audio_16k,
-            sampling_rate=SMART_TURN_SAMPLE_RATE,
-            return_tensors='np',
-            padding='max_length',
-            max_length=max_samples,
-            truncation=True,
-            do_normalize=True,
-        )
-        input_features = inputs.input_features.squeeze(0).astype(np.float32)
+        # Extract features using the Pipecat-style numpy Whisper log-mel path.
+        input_features = compute_whisper_log_mel_features(audio_16k, do_normalize=True)
         input_features = np.expand_dims(input_features, axis=0)
 
         # Run ONNX inference
