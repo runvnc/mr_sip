@@ -270,6 +270,17 @@ class SmartTurnV3STT(BaseSTTProvider):
         import onnxruntime as ort
         from transformers import WhisperFeatureExtractor
 
+        # ORT CUDA EP can silently fail to locate CUDA/cuDNN libs from inside
+        # MindRoot's venv, then fall back to CPU.  Preload first when available
+        # (ORT >= 1.21), and also import torch if present so PyTorch's CUDA/cuDNN
+        # libraries are already loaded before the ONNX session is created.
+        try:
+            if hasattr(ort, 'preload_dlls'):
+                ort.preload_dlls()
+                _dlog('_load_smart_turn_model: ort.preload_dlls() OK')
+        except Exception as e:
+            _dlog(f'_load_smart_turn_model: ort.preload_dlls() failed/nonfatal: {e}')
+
         model_path = self._model_path
         if not model_path or not os.path.exists(model_path):
             model_path = self._download_smart_turn_model()
@@ -279,16 +290,29 @@ class SmartTurnV3STT(BaseSTTProvider):
 
         providers = ['CPUExecutionProvider']
         if self._smart_turn_device == 'cuda':
-            try:
-                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-            except Exception:
-                _dlog('_load_smart_turn_model: CUDA not available, falling back to CPU')
+            providers = [
+                ('CUDAExecutionProvider', {
+                    'device_id': 0,
+                    'cudnn_conv_algo_search': 'DEFAULT',
+                    'do_copy_in_default_stream': '1',
+                    'use_tf32': '1',
+                }),
+                'CPUExecutionProvider',
+            ]
 
         so = ort.SessionOptions()
+        so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        so.inter_op_num_threads = 1
+        so.intra_op_num_threads = 1
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         self._ort_session = ort.InferenceSession(model_path, sess_options=so, providers=providers)
         self._feature_extractor = WhisperFeatureExtractor(chunk_length=SMART_TURN_MAX_DURATION_S)
         _dlog(f'_load_smart_turn_model: loaded, providers={self._ort_session.get_providers()}')
+
+        if self._smart_turn_device == 'cuda' and 'CUDAExecutionProvider' not in self._ort_session.get_providers():
+            raise RuntimeError(
+                f'SMART_TURN_DEVICE=cuda requested but ONNX Runtime active providers are {self._ort_session.get_providers()}; refusing silent CPU fallback'
+            )
 
     def _download_smart_turn_model(self) -> str:
         """Download Smart Turn v3 ONNX model from HuggingFace."""
@@ -297,10 +321,11 @@ class SmartTurnV3STT(BaseSTTProvider):
         model_dir = os.path.join(os.path.dirname(__file__), '..', 'models')
         os.makedirs(model_dir, exist_ok=True)
 
-        _dlog(f'_download_smart_turn_model: downloading from pipecat-ai/smart-turn-v3 to {model_dir}...')
+        filename = os.getenv('SMART_TURN_MODEL_FILENAME', 'smart-turn-v3.2-gpu.onnx')
+        _dlog(f'_download_smart_turn_model: downloading {filename} from pipecat-ai/smart-turn-v3 to {model_dir}...')
         model_path = hf_hub_download(
             repo_id='pipecat-ai/smart-turn-v3',
-            filename='smart-turn-v3.1-gpu.onnx',
+            filename=filename,
             local_dir=model_dir,
             local_dir_use_symlinks=False,
         )
