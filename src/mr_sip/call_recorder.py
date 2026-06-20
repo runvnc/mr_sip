@@ -436,30 +436,39 @@ class S2SBufferedRecorder:
 
         Args:
             audio_data: ulaw 8kHz audio bytes (typically 160-byte frames)
-            timestamp:  Timestamp kept for reference/logging; outgoing audio is
-                        placed sequentially to avoid gaps from timing jitter.
-                        (timestamp-based placement was causing recording artifacts)
-            timestamp:  Absolute playback start time for this frame (seconds),
-                        as provided by the AudioPacer -> MindRootSIPBotS2S.
+            timestamp:  Absolute playback start time for this frame (perf_counter
+                        seconds), as provided by the AudioPacer. Used to place
+                        audio at the correct position on the call timeline so
+                        that silence gaps between response turns are preserved.
         """
         if not self._is_recording:
             return
 
-        # On first outgoing frame, anchor position to the call timeline so the
-        # outgoing channel starts at the right place relative to incoming.
-        # After that, place sequentially to avoid gaps from timing jitter.
+        # If we have a timestamp and a call reference time, place this frame
+        # at its actual position on the call timeline. This preserves real
+        # silence gaps between AI response turns, making latency measurable.
+        if timestamp is not None and self._call_reference_time is not None:
+            rel_s = timestamp - self._call_reference_time
+            start_sample = max(0, int(rel_s * self.sample_rate))
+            self._out_segments.append((start_sample, audio_data))
+            # Track the end so sequential fallback continues correctly
+            self._out_pos_samples = start_sample + len(audio_data)
+            return
+
+        # Fallback: sequential placement (no timestamp or no reference time yet)
         if self._out_pos_samples is None:
             if self._call_reference_time is not None:
                 import time as time_module
                 rel_s = time_module.perf_counter() - self._call_reference_time
                 self._out_pos_samples = int(rel_s * self.sample_rate)
-                logger.debug(f"Outgoing anchor: {rel_s:.3f}s into call = sample {self._out_pos_samples}")
+                logger.debug(f"Outgoing anchor (fallback): {rel_s:.3f}s into call = sample {self._out_pos_samples}")
             else:
                 self._out_pos_samples = 0
 
         start_sample = self._out_pos_samples
         self._out_pos_samples += len(audio_data)
         self._out_segments.append((start_sample, audio_data))
+        return
 
     def interrupt_outgoing(self) -> None:  # compatibility no-op
         """Compatibility hook; no special handling needed for buffered mode."""
