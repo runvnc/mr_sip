@@ -366,11 +366,18 @@ class MindRootSIPBotV2:
                         rtp_ts = getattr(frame, 'timestamp', None)
                     else:
                         ulaw_bytes = frame
-                    if not self.call_established and self.call and self.call._rtp_session:
+                    if (not self.call_established and not self._ended and not self._ending
+                            and self.call and self.call._rtp_session):
                         # Do not attach an outbound AudioStreamAdapter here.
                         # Outbound streams are now created per TTS response by
                         # start_tts_response(), so PySIP prebuffers at speak()
                         # boundaries instead of only once at call readiness.
+                        # NOTE: the _ended/_ending guards are essential: when a
+                        # call is torn down, _on_call_ended resets call_established
+                        # to False while RTP frames may still be in flight. Without
+                        # these guards a late frame re-runs _setup_stt() and
+                        # "re-establishes" the just-ended call, re-creating the STT
+                        # provider and leaving the call stuck/looping after hangup.
                         self.is_active = True
                         self.call_established = True
                         self.call_start_time = datetime.now()
