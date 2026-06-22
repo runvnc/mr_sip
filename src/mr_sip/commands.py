@@ -384,8 +384,8 @@ async def await_call_result(log_id: str, agent: str, idle_timeout_seconds: int=1
             commands = log.parsed_commands()
             logger.debug(f'AWAIT_CALL_RESULT Call session {log_id} checking for task_result in commands: {str(commands)}')
             for cmd in commands:
-                if 'task_result' in cmd:
-                    logger.info(f'AWAIT_CALL_RESULT Call session {log_id} received task_result')
+                if 'task_result' in cmd or 'hangup' in cmd:
+                    logger.info(f'AWAIT_CALL_RESULT Call session {log_id} received {"task_result" if "task_result" in cmd else "hangup"}')
                     log = ChatLog(log_id, agent=agent, user=context.username)
                     log_dump = json.dumps(log.messages)
                     return log_dump
@@ -449,12 +449,24 @@ async def delegate_call_task(agent: str, phone_number: str, instructions: str, i
         try:
             session_manager = get_session_manager()
             session = await session_manager.get_session(log_id)
-            if session and session.baresip_bot and hasattr(session.baresip_bot, 'stop_silence_monitor'):
-                session.baresip_bot.stop_silence_monitor()
+            if session and session.baresip_bot:
+                if hasattr(session.baresip_bot, 'stop_silence_monitor'):
+                    session.baresip_bot.stop_silence_monitor()
+                # Always hang up the call on exit so the recorder (write-at-end)
+                # is flushed to disk and the SIP session is torn down cleanly,
+                # regardless of why the wait loop ended (idle timeout, task_result, etc.).
+                try:
+                    await session.baresip_bot.hangup_call()
+                except Exception as he:
+                    logger.warning(f'Error hanging up call during cleanup: {he}')
+                try:
+                    await session_manager.end_session(log_id)
+                except Exception as ee:
+                    logger.warning(f'Error ending session during cleanup: {ee}')
             else:
                 pass
         except Exception as e:
-            logger.debug(f'Could not stop silence monitor: {e}')
+            logger.debug(f'Could not stop silence monitor / hang up call: {e}')
         finally:
             pass
         try:
@@ -617,8 +629,8 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str, jo
                 pass
             commands = log.parsed_commands()
             for cmd in commands:
-                if 'task_result' in cmd:
-                    logger.info(f'Call job {queued_job_id} received task_result')
+                if 'task_result' in cmd or 'hangup' in cmd:
+                    logger.info(f'Call job {queued_job_id} received {"task_result" if "task_result" in cmd else "hangup"}')
                     finished = True
                     break
                 else:
@@ -651,12 +663,24 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str, jo
         try:
             session_manager = get_session_manager()
             session = await session_manager.get_session(queued_job_id)
-            if session and session.baresip_bot and hasattr(session.baresip_bot, 'stop_silence_monitor'):
-                session.baresip_bot.stop_silence_monitor()
+            if session and session.baresip_bot:
+                if hasattr(session.baresip_bot, 'stop_silence_monitor'):
+                    session.baresip_bot.stop_silence_monitor()
+                # Always hang up the call on exit so the recorder (write-at-end)
+                # is flushed to disk and the SIP session is torn down cleanly,
+                # regardless of why the wait loop ended (idle timeout, task_result, etc.).
+                try:
+                    await session.baresip_bot.hangup_call()
+                except Exception as he:
+                    logger.warning(f'Error hanging up call during cleanup: {he}')
+                try:
+                    await session_manager.end_session(queued_job_id)
+                except Exception as ee:
+                    logger.warning(f'Error ending session during cleanup: {ee}')
             else:
                 pass
         except Exception as e:
-            logger.debug(f'Could not stop silence monitor: {e}')
+            logger.debug(f'Could not stop silence monitor / hang up call: {e}')
         finally:
             pass
         try:

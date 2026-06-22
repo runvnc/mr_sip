@@ -647,6 +647,11 @@ class MindRootSIPBotV2:
                 )
                 await self.call.stop(reason)
                 logger.info('PySIP stop completed for reason: %s', reason)
+                # NOTE: stop() returns even when the BYE was rejected by the
+                # carrier (e.g. Telnyx 403 Forbidden on a mis-tagged UAS BYE) or
+                # suppressed by the already-stopped guard. "stop completed" is
+                # therefore NOT proof of a real on-wire teardown. Verify the
+                # dialog actually reached TERMINATED and surface it loudly.
             else:
                 logger.warning('No SipCall object available while terminating call')
         except Exception as e:
