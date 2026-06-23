@@ -162,8 +162,25 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
                 _e2e_log('UTTERANCE_CALLBACK', utterance_num=utterance_num,
                          is_eager=is_eager, text=text[:50] if text else '')
                 logger.info(f'SIP_DEBUG Transcribed utterance #{utterance_num}: {text}')
+                # Capture how much of the in-flight TTS response actually played
+                # BEFORE we cancel it, so we can truncate the persisted assistant
+                # 'speak' text to roughly what the caller really heard (barge-in).
+                spoken_seconds = 0.0
+                try:
+                    spoken_seconds = await service_manager.sip_response_spoken_seconds(context=ctx)
+                except Exception as _e:
+                    logger.debug(f'SIP_DEBUG could not read spoken_seconds: {_e}')
                 res = await service_manager.cancel_and_wait(ctx.log_id, ctx.username)
                 logger.info(f'SIP_DEBUG cancel result: {res}')
+                # Rewrite the last assistant message to reflect only the speech
+                # that was actually voiced before this barge-in.
+                try:
+                    if spoken_seconds and spoken_seconds > 0:
+                        tr = await service_manager.truncate_last_assistant_speech(
+                            spoken_seconds=spoken_seconds, context=ctx)
+                        logger.info(f'SIP_DEBUG truncate_last_assistant_speech: {tr} (spoken={spoken_seconds:.2f}s)')
+                except Exception as _e:
+                    logger.warning(f'SIP_DEBUG truncate_last_assistant_speech failed: {_e}')
                 session_manager = get_session_manager()
                 session = await session_manager.get_session(ctx.log_id)
                 if session:
@@ -545,6 +562,31 @@ async def sip_is_audio_halted(context=None) -> bool:
         return False
     finally:
         pass
+
+@service()
+async def sip_response_spoken_seconds(context=None) -> float:
+    """Return approximate seconds of the current/last outbound TTS response that
+    were actually sent to the call before now.
+
+    Because TTS plugins (mr_kyutai, mr_eleven_stream, ...) pace audio to real
+    time before handing chunks to sip_audio_out_chunk, the volume of audio that
+    has actually been dequeued+sent for this response is a good proxy for how
+    much of it the caller actually heard. On a barge-in, mindroot uses this to
+    truncate the persisted assistant 'speak' text to roughly what was voiced.
+
+    Returns 0.0 if there is no active session.
+    """
+    if not context or not context.log_id:
+        return 0.0
+    try:
+        session_manager = get_session_manager()
+        session = await session_manager.get_session(context.log_id)
+        if session and hasattr(session, 'played_seconds'):
+            return session.played_seconds()
+        return 0.0
+    except Exception as e:
+        logger.error(f'Error in sip_response_spoken_seconds: {e}')
+        return 0.0
 
 
 

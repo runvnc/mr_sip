@@ -61,6 +61,12 @@ class SIPSession:
         self._audio_sender_task = None
         self._audio_sent_count = 0
         self._audio_queued_count = 0
+        # Bytes of u-law actually dequeued+sent for the CURRENT outbound response.
+        # Reset at each start_audio_response. Because TTS plugins pace audio to
+        # real time before it reaches us, this is a good proxy for how much of
+        # the response the caller actually heard before a barge-in. u-law @ 8kHz
+        # is 1 byte/sample, so played_seconds = _response_bytes_sent / 8000.
+        self._response_bytes_sent = 0
         # Explicit outbound response lifecycle markers are queued through the
         # same audio_queue as audio chunks so start/chunk/end ordering is exact.
         self._audio_response_active = False
@@ -136,6 +142,7 @@ class SIPSession:
                             self._first_chunk_queued_time = None
                             self._first_chunk_sent_time = None
                             self._audio_response_active = True
+                            self._response_bytes_sent = 0
                             continue
                         elif command == 'end_audio_response':
                             if self.baresip_bot and hasattr(self.baresip_bot, 'end_tts_response'):
@@ -165,6 +172,10 @@ class SIPSession:
                     
                     await self._send_audio_to_sip(audio_chunk, timestamp)
                     self._audio_sent_count += 1
+                    try:
+                        self._response_bytes_sent += len(audio_chunk)
+                    except Exception:
+                        pass
                     if self._audio_sent_count % 10 == 0:
                         logger.info(f"S2S_DEBUG: Sent {self._audio_sent_count} audio chunks to SIP for session {self.log_id}")
                     
@@ -267,6 +278,7 @@ class SIPSession:
         self._first_chunk_queued_time = None
         self._first_chunk_sent_time = None
         self._audio_response_active = True
+        self._response_bytes_sent = 0
 
     async def end_audio_response(self):
         """Queue an explicit outbound audio response end marker.
@@ -356,6 +368,17 @@ class SIPSession:
             logger.info(f"Audio output RESUMED for session {self.log_id} (was halted for {halt_duration:.2f}s)")
         self.halt_audio_out = False
                 
+    def played_seconds(self) -> float:
+        """Approximate seconds of the current/last outbound response actually
+        sent to the call (u-law 8kHz, 1 byte/sample). Reset at each
+        start_audio_response. Used to estimate how much of an interrupted
+        response the caller actually heard before a barge-in.
+        """
+        try:
+            return self._response_bytes_sent / 8000.0
+        except Exception:
+            return 0.0
+
     async def end_session(self):
         """End the SIP session and cleanup resources"""
         logger.info(f"Ending SIP session {self.log_id}")
