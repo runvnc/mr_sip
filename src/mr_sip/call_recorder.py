@@ -348,6 +348,13 @@ class S2SBufferedRecorder:
         
         # Outgoing: sequential placement (timestamps kept for reference/logging only)
         self._out_pos_samples: Optional[int] = None  # None until first outgoing frame
+        # Per-response shift applied to clamp an outgoing turn so it never
+        # starts before the caller's most recent incoming audio. Recomputed at
+        # the start of each outgoing turn; constant within a turn so intra-turn
+        # timing is preserved.
+        self._out_response_shift: int = 0
+        # Ballpark per-turn latency metrics (for judging performance by ear/eye)
+        self._turn_latencies: List[dict] = []
 
         self._is_recording: bool = False
 
@@ -388,6 +395,9 @@ class S2SBufferedRecorder:
             # Build separate files if requested
             if self.record_separate:
                 await asyncio.to_thread(self._build_separate_wavs)
+
+            # Write a small latency report alongside the recording (ballpark)
+            await asyncio.to_thread(self._write_latency_report)
         except Exception as e:
             import traceback
 
@@ -431,6 +441,18 @@ class S2SBufferedRecorder:
         
         self._in_segments.append((start_sample, audio_data))
 
+    def _incoming_end_samples(self) -> int:
+        """Return the sample position just past the most recently recorded
+        incoming (caller) audio. Used to clamp outgoing turns so AI speech is
+        never placed before the caller's audio on the shared call timeline.
+        Incoming and outgoing share the same zero point (first incoming frame /
+        call_reference_time), so positions are directly comparable.
+        """
+        if not self._in_segments:
+            return 0
+        last_start, last_buf = self._in_segments[-1]
+        return last_start + len(last_buf)
+
     def record_outgoing(self, audio_data: bytes, timestamp: Optional[float] = None) -> None:
         """Buffer outgoing ulaw audio (system -> phone) with optional timestamp.
 
@@ -449,9 +471,48 @@ class S2SBufferedRecorder:
         # silence gaps between AI response turns, making latency measurable.
         if timestamp is not None and self._call_reference_time is not None:
             rel_s = timestamp - self._call_reference_time
-            start_sample = max(0, int(rel_s * self.sample_rate))
+            raw_start = max(0, int(rel_s * self.sample_rate))
+
+            # Detect the start of a new outgoing turn. The pacer re-anchors its
+            # clock on resume, so a new turn shows up as a forward jump well
+            # beyond where the previous turn left off.
+            NEW_TURN_GAP = int(0.12 * self.sample_rate)  # 120ms
+            is_new_turn = (
+                self._out_pos_samples is None
+                or raw_start > self._out_pos_samples + NEW_TURN_GAP
+            )
+
+            if is_new_turn:
+                # Clamp: an AI turn must not begin before the caller's most
+                # recent incoming audio (eager endpointing can stamp the first
+                # TTS chunk at/just-before the caller's real end-of-speech).
+                incoming_end = self._incoming_end_samples()
+                if raw_start < incoming_end:
+                    self._out_response_shift = incoming_end - raw_start
+                    logger.info(
+                        "Outgoing turn clamped: raw_start=%d -> incoming_end=%d "
+                        "(shift=%dms)",
+                        raw_start, incoming_end,
+                        int(self._out_response_shift / self.sample_rate * 1000),
+                    )
+                else:
+                    self._out_response_shift = 0
+                # Record a ballpark latency metric for this turn. raw_gap_ms is
+                # the unclamped gap (negative => AI started before caller end).
+                raw_gap_ms = (raw_start - incoming_end) / self.sample_rate * 1000.0
+                self._turn_latencies.append({
+                    "incoming_end_ms": incoming_end / self.sample_rate * 1000.0,
+                    "outgoing_start_ms": (raw_start + self._out_response_shift)
+                    / self.sample_rate * 1000.0,
+                    "raw_gap_ms": raw_gap_ms,
+                    "clamped": self._out_response_shift > 0,
+                })
+
+            start_sample = raw_start + self._out_response_shift
+            # Keep strictly monotonic within a turn (no overlap from jitter).
+            if self._out_pos_samples is not None and start_sample < self._out_pos_samples:
+                start_sample = self._out_pos_samples
             self._out_segments.append((start_sample, audio_data))
-            # Track the end so sequential fallback continues correctly
             self._out_pos_samples = start_sample + len(audio_data)
             return
 
@@ -475,6 +536,50 @@ class S2SBufferedRecorder:
 
     def interrupt_incoming(self) -> None:  # compatibility no-op
         """Compatibility hook; no special handling needed for buffered mode."""
+
+    def _write_latency_report(self) -> None:
+        """Write a small JSON sidecar with ballpark per-turn response latency.
+
+        For each AI turn we record:
+          - incoming_end_ms:  position of the caller's most recent audio when
+                              the turn started (shared call timeline)
+          - outgoing_start_ms: where the AI turn was actually placed (after clamp)
+          - raw_gap_ms:        unclamped gap (negative => AI audio was stamped
+                              before the caller's audio ended, i.e. eager EOT /
+                              early-stamping; useful as a diagnostic)
+          - clamped:           whether the floor was applied
+
+        These are ballpark numbers (queue/pacer-time based, not wire-time), but
+        good enough to judge system responsiveness alongside listening.
+        """
+        try:
+            import json
+            if not self._turn_latencies:
+                return
+            raw_gaps = [t["raw_gap_ms"] for t in self._turn_latencies]
+            sorted_gaps = sorted(raw_gaps)
+            n = len(sorted_gaps)
+            median = sorted_gaps[n // 2] if n % 2 else (
+                (sorted_gaps[n // 2 - 1] + sorted_gaps[n // 2]) / 2.0
+            )
+            summary = {
+                "call_id": self.call_id,
+                "turns": n,
+                "raw_gap_ms_min": min(raw_gaps),
+                "raw_gap_ms_median": median,
+                "raw_gap_ms_max": max(raw_gaps),
+                "turns_clamped": sum(1 for t in self._turn_latencies if t["clamped"]),
+                "per_turn": self._turn_latencies,
+            }
+            report_path = self.combined_path.with_suffix(".latency.json")
+            with open(report_path, "w", encoding="utf-8") as f:
+                json.dump(summary, f, indent=2)
+            logger.info(
+                "Latency report: %d turns, raw gap min/median/max = %.0f/%.0f/%.0f ms, %d clamped -> %s",
+                n, min(raw_gaps), median, max(raw_gaps), summary["turns_clamped"], report_path,
+            )
+        except Exception as e:
+            logger.error(f"Error writing latency report: {e}")
 
     # Incremental flush implementation ----------------------------------------
 
