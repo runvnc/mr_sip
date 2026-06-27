@@ -43,6 +43,7 @@ import urllib.request
 
 from .base_stt import BaseSTTProvider, STTResult
 from .whisper_features import compute_whisper_log_mel_features
+from .bargein_gate import BargeInGate
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,32 @@ class SmartTurnV3STT(BaseSTTProvider):
         self._vad_speech_active = False
         self._vad_silence_chunks = 0
         self._vad_silence_chunks_needed = 0
+
+        # ------------------------------------------------------------------
+        # Barge-in / foreground-vs-background gate (shared BargeInGate).
+        # Silero is primary; level is a second opinion. Path A fires on the
+        # first near-end voiced frame (zero added latency). Path B rescues a
+        # SUSTAINED loud segment Silero misses (e.g. a clipped greeting). BG
+        # (voiced but clearly quieter than the near-end reference) and NS never
+        # onset, so quiet background cross-talk neither halts the AI nor gets
+        # buffered/transcribed/injected. The gate is fed (silero_prob, raw_rms)
+        # on EVERY 32ms chunk so its near-end reference + noise floor stay
+        # coherent across the whole call.
+        # ------------------------------------------------------------------
+        self._gate = BargeInGate(
+            vad_threshold=self.threshold,
+            frame_ms=32,
+            rel_level_db=float(os.getenv('BARGE_IN_REL_LEVEL_DB', '15')),
+            min_rms=float(os.getenv('BARGE_IN_MIN_RMS', '0.01')),
+            ref_attack_alpha=float(os.getenv('BARGE_IN_REF_ATTACK_ALPHA', '0.4')),
+            ref_decay_alpha=float(os.getenv('BARGE_IN_REF_DECAY_ALPHA', '0.05')),
+            onset_voiced_frames=int(os.getenv('SILERO_ONSET_VOICED_FRAMES', '1')),
+            level_window_ms=int(os.getenv('BARGE_IN_LEVEL_WINDOW_MS', '160')),
+            rescue_enabled=os.getenv('BARGE_IN_RESCUE_ENABLED', '1').lower() not in ('0', 'false', 'no'),
+            rescue_snr_db=float(os.getenv('BARGE_IN_RESCUE_SNR_DB', '12')),
+            rescue_sustain_ms=int(os.getenv('BARGE_IN_RESCUE_SUSTAIN_MS', '160')),
+            noise_alpha=float(os.getenv('BARGE_IN_NOISE_ALPHA', '0.05')),
+        )
 
         # Audio state
         self._vad_buffer: bytes = b''
@@ -463,48 +490,81 @@ class SmartTurnV3STT(BaseSTTProvider):
 
             prob = self.vad_model(chunk_tensor, VAD_SAMPLE_RATE).item()
 
-            # Speech start detection only
+            # Raw per-chunk RMS on the SAME audio the VAD sees (no AGC). Used by
+            # the barge-in level gate and to build the near-end reference level.
+            rms = float(np.sqrt(np.mean(audio_float ** 2)))
+            voiced = prob >= self.threshold
+
+            # Feed the shared gate on EVERY chunk so its near-end reference and
+            # noise floor stay coherent across the whole call.
+            gate = self._gate.process(prob, rms)
+            label = gate['label']
+
+            # Speech start detection only.
             if not self._vad_speech_active:
-                if prob >= self.threshold:
+                if gate['barge_in']:
+                    # Foreground onset (Path A near-end, or Path B loud rescue).
                     now_pc = time.perf_counter()
                     self._vad_speech_active = True
                     self._vad_silence_chunks = 0
                     self._last_speech_audio_time = now_pc
+                    rel_str = f"{gate['rel_db']:.1f}" if gate['rel_db'] is not None else 'n/a'
+                    _dlog(f"[BARGE-IN] Onset accepted ({gate['reason']}): "
+                          f"rms={rms:.5f}, near_end_ref={gate['near_end_ref']}, "
+                          f"rel_db={rel_str}, snr_db={gate['snr_db']:.1f}, prob={prob:.3f}")
+                    _e2e_log('VAD_ONSET_ACCEPTED',
+                             utterance_num=self._utterance_count + 1,
+                             reason=gate['reason'], rel_db=rel_str,
+                             snr_db=f"{gate['snr_db']:.1f}", prob=f'{prob:.3f}')
                     await self._on_speech_start()
-                    # Include the VAD-triggering chunk itself.  add_audio_bytes()
+                    # Include the VAD-triggering chunk itself. add_audio_bytes()
                     # only appends new RTP audio while _is_speaking was already
                     # true at function entry, so without this the first voiced
-                    # 32ms chunk is dropped from the transcription buffer.  That
-                    # matters most for very short responses like "Blue".
+                    # 32ms chunk is dropped from the transcription buffer.
+                    # Matters most for very short responses like "Blue".
                     if self._is_speaking:
                         self._speech_buffer += chunk_bytes
+                elif label == self._gate.BG:
+                    # Quiet background cross-talk: ignore outright. No halt, no
+                    # buffer, no transcription. Log occasionally to avoid spam.
+                    if self._vad_chunks_processed % 50 == 0:
+                        rel_str = f"{gate['rel_db']:.1f}" if gate['rel_db'] is not None else 'n/a'
+                        _dlog(f'[BARGE-IN] Ignoring background frame: '
+                              f"rms={rms:.5f}, near_end_ref={gate['near_end_ref']}, "
+                              f'rel_db={rel_str}, prob={prob:.3f}')
             else:
-                # Track voiced/silent VAD chunks for SmartTurn gating and
-                # fallback turn completion.  Do NOT use raw RTP arrival time for
-                # _last_speech_audio_time: RTP packets keep arriving during
-                # silence, which made the fallback silence timer effectively
-                # useless.  Update it only when Silero says this chunk is voiced.
-                if prob < self.threshold:
+                # During an active turn we do NOT re-gate per-frame: once onset
+                # fires we buffer continuously to the Smart Turn endpoint (this
+                # avoids truncating intra-utterance dynamic range). Use raw
+                # Silero voiced only for silence counting / fallback turn-end.
+                # Do NOT use raw RTP arrival time for _last_speech_audio_time:
+                # RTP packets keep arriving during silence, which made the
+                # fallback silence timer useless. Update it on voiced only.
+                if not voiced:
                     self._vad_silence_chunks += 1
                 else:
                     self._vad_silence_chunks = 0
                     if self._is_speaking:
                         self._last_speech_audio_time = time.perf_counter()
-                    else:
-                        pass
 
                 # If an eager EOT has been emitted and speech resumes before
-                # final confirmation, cancel the pending eager state and let the
-                # normal barge-in callback stop any draft/early response.
-                if prob >= self.threshold and self._eager_pending:
-                    self._total_eager_cancelled += 1
-                    _dlog(f'[EAGER] Cancelled Smart Turn eager EOT #{self._eager_utterance_num} - user resumed speaking')
-                    self._eager_pending = False
-                    self._eager_text = ''
-                    self._eager_utterance_num = 0
-                    self._eager_audio_len = 0
-                    if self._turn_resumed_callback is not None:
-                        self._turn_resumed_callback()
+                # final confirmation, cancel the pending eager state. Only a
+                # FOREGROUND resume cancels: quiet background (BG/NS) must not
+                # cancel a legitimate eager EOT.
+                if voiced and self._eager_pending:
+                    if label == self._gate.FG:
+                        self._total_eager_cancelled += 1
+                        _dlog(f'[EAGER] Cancelled Smart Turn eager EOT #{self._eager_utterance_num} - user resumed speaking')
+                        self._eager_pending = False
+                        self._eager_text = ''
+                        self._eager_utterance_num = 0
+                        self._eager_audio_len = 0
+                        if self._turn_resumed_callback is not None:
+                            self._turn_resumed_callback()
+                    else:
+                        rel_str = f"{gate['rel_db']:.1f}" if gate['rel_db'] is not None else 'n/a'
+                        _dlog(f'[EAGER] Ignoring {label} resume during eager #{self._eager_utterance_num} '
+                              f'(rms={rms:.5f}, rel_db={rel_str})')
 
             # Always update pre-roll buffer
             if not self._is_speaking:

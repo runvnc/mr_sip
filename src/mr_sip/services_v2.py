@@ -175,10 +175,16 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
                 # Rewrite the last assistant message to reflect only the speech
                 # that was actually voiced before this barge-in.
                 try:
-                    if spoken_seconds and spoken_seconds > 0:
-                        tr = await service_manager.truncate_last_assistant_speech(
-                            spoken_seconds=spoken_seconds, context=ctx)
-                        logger.info(f'SIP_DEBUG truncate_last_assistant_speech: {tr} (spoken={spoken_seconds:.2f}s)')
+                    # Always reconcile the persisted assistant 'speak' text with
+                    # what was actually voiced. spoken_seconds == 0 is a VALID and
+                    # important case: the response was barged-in/halted during the
+                    # TTS warm-up before any audio reached the wire, so the entire
+                    # speak text should be dropped (budget=0 -> drop). Guarding on
+                    # '> 0' previously left the full untruncated text in the log.
+                    sp = spoken_seconds if (spoken_seconds and spoken_seconds > 0) else 0.0
+                    tr = await service_manager.truncate_last_assistant_speech(
+                        spoken_seconds=sp, context=ctx)
+                    logger.info(f'SIP_DEBUG truncate_last_assistant_speech: {tr} (spoken={sp:.2f}s)')
                 except Exception as _e:
                     logger.warning(f'SIP_DEBUG truncate_last_assistant_speech failed: {_e}')
                 session_manager = get_session_manager()

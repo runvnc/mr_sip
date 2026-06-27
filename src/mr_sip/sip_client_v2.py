@@ -279,6 +279,31 @@ class MindRootSIPBotV2:
 
     def _handle_turn_resumed(self):
         """Handle TurnResumed event from Deepgram - user is speaking (barge-in)."""
+        # Barge-in grace window: ignore the *immediate* halt if the current TTS
+        # response only just started. TTS plugins (e.g. mr_kyutai) have a warm-up
+        # of ~250-300ms before the first audio frame reaches the RTP wire. A bare
+        # VAD speech-start landing inside that window (cross-talk, hold music, a
+        # new party answering during a transfer) would otherwise halt/clear the
+        # outbound stream BEFORE the first chunk is ever queued, producing dead
+        # air for the caller while the AI 'spoke' into a cleared queue.
+        #
+        # Skipping the immediate halt here does NOT drop a genuine interruption:
+        # when the interrupting utterance actually completes, the eager-EOT /
+        # utterance callback path still runs cancel_and_wait + speech truncation.
+        # It only defers barge-in by a few hundred ms in the rare case the caller
+        # truly interrupts within the first fraction of a second.
+        try:
+            grace_ms = float(os.getenv('MR_SIP_BARGE_IN_GRACE_MS', '400'))
+        except (TypeError, ValueError):
+            grace_ms = 400.0
+        start_pc = getattr(self, '_tts_response_start_pc', None)
+        if (self._tts_response_active and start_pc is not None
+                and (time.perf_counter() - start_pc) * 1000.0 < grace_ms):
+            elapsed_ms = (time.perf_counter() - start_pc) * 1000.0
+            logger.info(
+                '[BARGE-IN] Ignoring speech-start during TTS warm-up grace '
+                f'({elapsed_ms:.0f}ms < {grace_ms:.0f}ms); not halting yet')
+            return
         logger.info('[BARGE-IN] User speaking - clearing audio queue')
         self._schedule_coroutine(self._halt_audio_output())
         self.last_eager_eot_text = ''
