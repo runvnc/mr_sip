@@ -844,150 +844,12 @@ def _load_wav_as_ulaw_8k(file_path: str, channel: str = 'left') -> bytes:
     return audioop.lin2ulaw(pcm, 2)
 
 
-@command()
-async def inject_inbound_audio(file_path: str, channel: str = 'left',
-                               wait: bool = False, frame_ms: int = 20,
-                               context=None) -> str:
-    """
-    Stream a WAV file INTO the active call's inbound STT pipeline as if it were
-    the caller's (far-end) audio.
-
-    This is a test/diagnostic command for the barge-in / foreground-vs-background
-    gate. The clip is converted to PCMU (ulaw) 8kHz mono and fed, paced at real
-    time in 20ms frames, into the SAME path that incoming RTP frames take to the
-    STT provider (bot.stt.add_audio_bytes). It is NOT the outbound TTS path.
-
-    Use it to replay the problematic far-end of a call (e.g. quiet background
-    cross-talk) and confirm the gate ignores the background (no dead-air halt,
-    no spurious user turn) while still responding to real near-end speech.
-
-    Args:
-        file_path: Absolute path to a WAV file (any rate/width/channels).
-        channel: For stereo input, which channel is the caller: 'left'
-                 (default, = far-end in this project's recordings), 'right',
-                 or 'mix'.
-        wait: If True, block until the whole clip has been streamed. If False
-              (default), stream in the background and return immediately so logs
-              can be watched live.
-        frame_ms: Frame size in ms (default 20 = 160 ulaw bytes, matches RTP).
-        context: MindRoot context (automatically provided).
-
-    Returns:
-        str: Status message with the converted duration and frame count.
-
-    Example:
-        { "inject_inbound_audio": { "file_path": "/files/upd6/mr_verification_dashboard/recordings/hannah_farend_from2_46_5.wav" } }
-        { "inject_inbound_audio": { "file_path": "/path/clip.wav", "wait": true } }
-    """
-    try:
-        if not context or not context.log_id:
-            return 'Error: Valid MindRoot context is required'
-        if not file_path or not os.path.exists(file_path):
-            return f'Error: WAV file not found: {file_path}'
-
-        session_manager = get_session_manager()
-        session = await session_manager.get_session(context.log_id)
-        if not session or not session.is_active:
-            return f'Error: No active call for session {context.log_id}'
-
-        bot = session.baresip_bot
-        if not bot:
-            return 'Error: No SIP bot attached to this session'
-        stt = getattr(bot, 'stt', None)
-        if not stt or not getattr(stt, 'is_running', False):
-            return 'Error: STT provider is not running on this call'
-
-        try:
-            ulaw = _load_wav_as_ulaw_8k(file_path, channel=channel)
-        except Exception as e:
-            logger.error(f'inject_inbound_audio: failed to load/convert {file_path}: {e}')
-            return f'Error loading WAV: {e}'
-
-        frame_bytes = max(1, int(8000 * (frame_ms / 1000.0)))  # 160 for 20ms
-        n_frames = (len(ulaw) + frame_bytes - 1) // frame_bytes
-        duration_s = len(ulaw) / 8000.0
-        has_add_bytes = hasattr(stt, 'add_audio_bytes')
-
-        logger.info(
-            f'inject_inbound_audio: streaming {file_path} ({duration_s:.2f}s, '
-            f'{n_frames} x {frame_ms}ms frames) into inbound STT for '
-            f'session {context.log_id} (channel={channel}, wait={wait})'
-        )
-
-        async def _stream():
-            import audioop as _audioop
-            import numpy as _np
-            frame_dt = frame_ms / 1000.0
-            start = time.perf_counter()
-            sent = 0
-            try:
-                for i in range(0, len(ulaw), frame_bytes):
-                    if not session.is_active or not getattr(stt, 'is_running', False):
-                        logger.info('inject_inbound_audio: call/STT no longer active, stopping injection')
-                        break
-                    frame = ulaw[i:i + frame_bytes]
-                    if has_add_bytes:
-                        await stt.add_audio_bytes(frame)
-                    else:
-                        pcm = _audioop.ulaw2lin(frame, 2)
-                        arr = _np.frombuffer(pcm, dtype=_np.int16).astype(_np.float32) / 32768.0
-                        await stt.add_audio(arr)
-                    # Mirror into the call recorder + keep the silence watchdog calm.
-                    try:
-                        if getattr(bot, 'recorder', None):
-                            bot.recorder.record_incoming(frame)
-                    except Exception:
-                        pass
-                    try:
-                        bot.last_activity_time = time.time()
-                    except Exception:
-                        pass
-                    sent += 1
-                    # Realtime pacing on a monotonic schedule (avoids drift).
-                    next_t = start + sent * frame_dt
-                    delay = next_t - time.perf_counter()
-                    if delay > 0:
-                        await asyncio.sleep(delay)
-                logger.info(f'inject_inbound_audio: done, streamed {sent}/{n_frames} frames for session {context.log_id}')
-            except Exception as e:
-                logger.error(f'inject_inbound_audio: error during streaming: {e}\n{traceback.format_exc()}')
-
-        if wait:
-            await _stream()
-            return (f'Injected {file_path} ({duration_s:.2f}s, {n_frames} frames) '
-                    f'into inbound STT for session {context.log_id}.')
-        else:
-            asyncio.create_task(_stream())
-            return (f'Started injecting {file_path} ({duration_s:.2f}s, {n_frames} '
-                    f'frames) into inbound STT for session {context.log_id} '
-                    f'(streaming in background at realtime pace).')
-    except Exception as e:
-        logger.error(f'Error in inject_inbound_audio: {e}\n{traceback.format_exc()}')
-        return f'Error injecting inbound audio: {str(e)}'
-
-
-@command()
-async def sip_play_inbound_file(file_path: str, channel: str = 'left',
-                                wait: bool = False, context=None) -> str:
-    """
-    Alias for inject_inbound_audio: stream a WAV file into the active call's
-    inbound STT pipeline as if it were the caller's audio. See
-    inject_inbound_audio for full details.
-
-    Example:
-        { "sip_play_inbound_file": { "file_path": "/path/clip.wav" } }
-    """
-    return await inject_inbound_audio(file_path=file_path, channel=channel,
-                                      wait=wait, context=context)
-
-
-@command()
 async def play_audio(file_path: str, channel: str = 'mix', wait: bool = True,
                      context=None) -> str:
     """
     Play a WAV file OUT to the caller on the active call (outbound audio).
 
-    This is the opposite of inject_inbound_audio: the clip is converted to PCMU
+    The clip is converted to PCMU
     (ulaw) 8kHz mono and streamed, paced at real time in 20ms frames, out the
     SAME outbound path the TTS uses (bot.start_tts_response -> send_tts_audio ->
     end_tts_response -> PySIP RTP). The far end hears it. Useful for an incoming
@@ -1084,16 +946,3 @@ async def play_audio(file_path: str, channel: str = 'mix', wait: bool = True,
         logger.error(f'Error in play_audio: {e}\n{traceback.format_exc()}')
         return f'Error playing audio: {str(e)}'
 
-
-@command()
-async def sip_play_audio_file(file_path: str, channel: str = 'mix',
-                             wait: bool = True, context=None) -> str:
-    """
-    Alias for play_audio: play a WAV file OUT to the caller on the active call.
-    See play_audio for full details.
-
-    Example:
-        { "sip_play_audio_file": { "file_path": "/path/greeting.wav" } }
-    """
-    return await play_audio(file_path=file_path, channel=channel, wait=wait,
-                            context=context)
