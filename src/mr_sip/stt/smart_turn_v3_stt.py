@@ -84,6 +84,24 @@ def _e2e_log(event: str, utterance_num: int = 0, **kwargs):
         pass
     logger.info(f'[E2E] {event} utterance={utterance_num} {extra}')
 
+DEADAIR_LOG = '/tmp/sip_deadair.log'
+
+
+def _deadair_log(event: str, utterance_num: int = 0, **kwargs):
+    """Append an STT-side dead-air trigger marker to DEADAIR_LOG."""
+    now = datetime.now()
+    ts = now.strftime('%Y-%m-%d %H:%M:%S') + f'.{now.microsecond // 1000:03d}'
+    pc = time.perf_counter()
+    extra = ' '.join(f'{k}={v}' for k, v in kwargs.items())
+    line = f'[{ts}] [DEADAIR] {event} perf_counter={pc:.6f} utterance={utterance_num} {extra}'
+    try:
+        with open(DEADAIR_LOG, 'a') as f:
+            f.write(line + '\n')
+            f.flush()
+    except Exception:
+        pass
+    logger.info(f'[DEADAIR-STT] {event} utterance={utterance_num} {extra}')
+
 
 class SmartTurnV3STT(BaseSTTProvider):
     """
@@ -555,6 +573,9 @@ class SmartTurnV3STT(BaseSTTProvider):
                     if label == self._gate.FG:
                         self._total_eager_cancelled += 1
                         _dlog(f'[EAGER] Cancelled Smart Turn eager EOT #{self._eager_utterance_num} - user resumed speaking')
+                        _deadair_log('STT_EAGER_CANCEL_FG_RESUME',
+                                     utterance_num=self._eager_utterance_num,
+                                     rms=f'{rms:.5f}')
                         self._eager_pending = False
                         self._eager_text = ''
                         self._eager_utterance_num = 0
@@ -602,6 +623,8 @@ class SmartTurnV3STT(BaseSTTProvider):
         if self._turn_resumed_callback is not None:
             try:
                 _dlog('[VAD] Firing turn_resumed_callback (barge-in)')
+                _deadair_log('STT_SPEECH_START_BARGE_IN',
+                             utterance_num=self._utterance_count + 1)
                 self._turn_resumed_callback()
             except Exception as e:
                 _dlog(f'_on_speech_start: turn_resumed_callback error: {e}')

@@ -49,6 +49,28 @@ def _e2e_log(event: str, utterance_num: int = 0, **kwargs):
         pass
     logger.info(f'[E2E] {event} utterance={utterance_num} {extra}')
 
+# Dead-air diagnostics log (dedicated file for easy grepping of the
+# barge-in / cancel / stream-swap kill paths that can drop AI audio before it
+# reaches PySIP/RTP). Log-only; no behavior change.
+DEADAIR_LOG = '/tmp/sip_deadair.log'
+
+
+def _deadair_log(event: str, utterance_num: int = 0, **kwargs):
+    """Append a dead-air diagnostic marker to DEADAIR_LOG."""
+    from datetime import datetime
+    now = datetime.now()
+    ts = now.strftime('%Y-%m-%d %H:%M:%S') + f'.{now.microsecond // 1000:03d}'
+    pc = time.perf_counter()
+    extra = ' '.join(f'{k}={v}' for k, v in kwargs.items())
+    line = f'[{ts}] [DEADAIR] {event} perf_counter={pc:.6f} utterance={utterance_num} {extra}'
+    try:
+        with open(DEADAIR_LOG, 'a') as f:
+            f.write(line + '\n')
+            f.flush()
+    except Exception:
+        pass
+    logger.info(f'[DEADAIR] {event} utterance={utterance_num} {extra}')
+
 class AudioStreamAdapter:
     """Adapter to feed audio to PySIP's RTP session.
     
@@ -303,8 +325,19 @@ class MindRootSIPBotV2:
             logger.info(
                 '[BARGE-IN] Ignoring speech-start during TTS warm-up grace '
                 f'({elapsed_ms:.0f}ms < {grace_ms:.0f}ms); not halting yet')
+            _deadair_log('TURN_RESUMED_GRACE_DEFER',
+                         utterance_num=getattr(self, '_e2e_current_utterance_num', 0),
+                         elapsed_ms=f'{elapsed_ms:.0f}', grace_ms=f'{grace_ms:.0f}',
+                         tts_active=self._tts_response_active,
+                         frames_sent=getattr(self, '_response_output_frame_count', 0),
+                         draft_active=getattr(self, 'draft_response_active', None))
             return
         logger.info('[BARGE-IN] User speaking - clearing audio queue')
+        _deadair_log('TURN_RESUMED_HALT',
+                     utterance_num=getattr(self, '_e2e_current_utterance_num', 0),
+                     tts_active=self._tts_response_active,
+                     frames_sent=getattr(self, '_response_output_frame_count', 0),
+                     draft_active=getattr(self, 'draft_response_active', None))
         self._schedule_coroutine(self._halt_audio_output())
         self.last_eager_eot_text = ''
         if self.draft_response_active:
@@ -322,6 +355,10 @@ class MindRootSIPBotV2:
         else:
             pass
         try:
+            _deadair_log('CANCEL_AI_RESPONSE',
+                         utterance_num=getattr(self, '_e2e_current_utterance_num', 0),
+                         tts_active=self._tts_response_active,
+                         frames_sent=getattr(self, '_response_output_frame_count', 0))
             result = await service_manager.cancel_active_response(log_id=self.context.log_id, context=self.context)
             logger.info(f'AI response cancelled: {result}')
         except Exception as e:
@@ -716,6 +753,17 @@ class MindRootSIPBotV2:
             # begins on a clean 20ms/160-byte ulaw boundary.
             self._frame_remainder = b""
 
+            _prev_stream = getattr(self, 'audio_stream', None)
+            try:
+                _prev_q = _prev_stream.input_q.qsize() if _prev_stream is not None else -1
+            except Exception:
+                _prev_q = -1
+            if self._tts_response_active or _prev_q > 0:
+                _deadair_log('NEW_STREAM_REPLACES_ACTIVE',
+                             utterance_num=getattr(self, '_e2e_current_utterance_num', 0),
+                             prev_tts_active=self._tts_response_active,
+                             prev_unsent_frames=_prev_q,
+                             prev_frames_sent=getattr(self, '_response_output_frame_count', 0))
             self.audio_stream = stream
             self.call._rtp_session.set_audio_stream(stream)
             self._tts_response_active = True
@@ -830,6 +878,10 @@ class MindRootSIPBotV2:
             ulaw_audio = ulaw_audio[:n_complete]
 
             if self._interrupting:
+                _deadair_log('DROP_CHUNK_INTERRUPTING',
+                             utterance_num=getattr(self, '_e2e_current_utterance_num', 0),
+                             dropped_bytes=len(ulaw_audio),
+                             frames_sent=getattr(self, '_response_output_frame_count', 0))
                 return
             else:
                 # Log FIRST_CHUNK_QUEUED when first chunk enters the AudioStream
@@ -843,6 +895,10 @@ class MindRootSIPBotV2:
             FRAME_SIZE = 160
             for i in range(0, len(ulaw_audio), FRAME_SIZE):
                 if self._interrupting:
+                    _deadair_log('DROP_MIDCHUNK_INTERRUPTING',
+                                 utterance_num=getattr(self, '_e2e_current_utterance_num', 0),
+                                 frames_sent=getattr(self, '_response_output_frame_count', 0),
+                                 at_byte=i)
                     return
                 if not hasattr(self, '_response_output_frame_count'):
                     self._response_output_frame_count = 0
@@ -927,6 +983,10 @@ class MindRootSIPBotV2:
                     else:
                         pass
                     logger.info(f'Cleared {cleared_count} audio frames from queue')
+                    _deadair_log('CLEAR_AUDIO_QUEUE',
+                                 utterance_num=getattr(self, '_e2e_current_utterance_num', 0),
+                                 cleared_frames=cleared_count,
+                                 frames_sent=getattr(self, '_response_output_frame_count', 0))
                 except Exception as e:
                     logger.error(f'Error clearing audio queue: {e}')
                 finally:
