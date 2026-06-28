@@ -234,6 +234,19 @@ class SmartTurnV3STT(BaseSTTProvider):
         # Trim trailing background past the last near-end frame (see below) is
         # active whenever we are not in legacy 'voiced' mode.
         self._bg_ends_turn = self._bg_during_turn != 'voiced'
+        # Turn-END level strictness, DECOUPLED from the onset gate. The onset
+        # gate (BARGE_IN_REL_LEVEL_DB, 15dB) must stay permissive so a genuinely
+        # quiet near-end caller can still barge in. But for ENDING a turn over
+        # overlapping cross-talk we want a stricter split: a frame counts as
+        # near-end (keeps the turn alive) only if it is within this many dB of
+        # the near-end reference. Anything quieter accrues end-silence. Default
+        # 9dB (stricter than onset) so moderate, only-slightly-quieter
+        # background ends the turn out of the box - no env override needed.
+        # This is safe against cutting a quiet FG tail because endpointing ALSO
+        # requires a sustained (>= SMART_TURN_SEMANTIC_CHECK_SILENCE_MS) below-
+        # near-end run AND Smart Turn predicting semantic completion. <=0 falls
+        # back to the gate's own FG/BG label.
+        self._turn_end_rel_db = float(os.getenv('BARGE_IN_TURN_END_REL_LEVEL_DB', '9'))
         # On turn end, trim trailing audio beyond the last near-end (FG) frame
         # (plus this pad) so any background that bled into the buffer before the
         # endpoint fired is not transcribed. <0 disables trimming.
@@ -596,20 +609,32 @@ class SmartTurnV3STT(BaseSTTProvider):
                 # Do NOT use raw RTP arrival time for _last_speech_audio_time:
                 # RTP packets keep arriving during silence, which made the
                 # fallback silence timer useless. Update it on near-end only.
+                # Stricter turn-end level test (decoupled from onset). A frame
+                # keeps the turn alive only if it is near-end AND within
+                # _turn_end_rel_db of the near-end reference; anything quieter
+                # accrues end-silence so overlapping cross-talk ends the turn.
+                rel_db = gate['rel_db']
+                near_end_level = (
+                    self._turn_end_rel_db <= 0
+                    or rel_db is None
+                    or rel_db >= -self._turn_end_rel_db
+                )
                 if self._bg_during_turn == 'voiced':
                     # Legacy: any voiced frame (incl. background) keeps the turn.
                     is_near_end = voiced
                     is_silence = not voiced
                 elif self._bg_during_turn == 'neutral':
-                    # BG frozen: only true non-speech accrues silence.
-                    is_near_end = (label == self._gate.FG)
+                    # Only near-end keeps the turn; only true non-speech accrues
+                    # silence; quieter background is frozen.
+                    is_near_end = (label == self._gate.FG and near_end_level)
                     is_silence = (label == self._gate.NS)
                 else:  # 'silence' (default)
-                    # Quieter-than-near-end background counts as end-silence, so
-                    # the turn endpoints at the caller's words even when the
-                    # background overlaps with no real pause.
-                    is_near_end = (label == self._gate.FG)
-                    is_silence = (label != self._gate.FG)
+                    # Everything not clearly near-end (NS, BG, or an FG frame
+                    # quieter than _turn_end_rel_db) accrues end-silence, so the
+                    # turn endpoints at the caller's words even when background
+                    # overlaps with no real pause.
+                    is_near_end = (label == self._gate.FG and near_end_level)
+                    is_silence = not is_near_end
 
                 if is_near_end:
                     self._vad_silence_chunks = 0
