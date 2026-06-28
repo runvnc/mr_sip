@@ -844,6 +844,7 @@ def _load_wav_as_ulaw_8k(file_path: str, channel: str = 'left') -> bytes:
     return audioop.lin2ulaw(pcm, 2)
 
 
+@command()
 async def play_audio(file_path: str, channel: str = 'mix', wait: bool = True,
                      context=None) -> str:
     """
