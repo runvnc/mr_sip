@@ -979,3 +979,121 @@ async def sip_play_inbound_file(file_path: str, channel: str = 'left',
     """
     return await inject_inbound_audio(file_path=file_path, channel=channel,
                                       wait=wait, context=context)
+
+
+@command()
+async def play_audio(file_path: str, channel: str = 'mix', wait: bool = True,
+                     context=None) -> str:
+    """
+    Play a WAV file OUT to the caller on the active call (outbound audio).
+
+    This is the opposite of inject_inbound_audio: the clip is converted to PCMU
+    (ulaw) 8kHz mono and streamed, paced at real time in 20ms frames, out the
+    SAME outbound path the TTS uses (bot.start_tts_response -> send_tts_audio ->
+    end_tts_response -> PySIP RTP). The far end hears it. Useful for an incoming
+    receptionist agent to play a scripted clip to the caller (e.g. to test the
+    other side's barge-in / cross-talk VAD with controlled, repeatable audio).
+
+    Args:
+        file_path: Absolute path to a WAV file (any rate/width/channels).
+        channel:   For stereo input, which channel to play: 'mix' (default),
+                   'left', or 'right'.
+        wait:      If True (default), block until the whole clip has played, so
+                   the agent's next action happens after playback. If False,
+                   play in the background and return immediately.
+        context:   MindRoot context (automatically provided).
+
+    Returns:
+        str: Status message with the converted duration and frame count.
+
+    Example:
+        { "play_audio": { "file_path": "/path/greeting.wav" } }
+        { "play_audio": { "file_path": "/path/clip.wav", "wait": false } }
+    """
+    try:
+        if not context or not context.log_id:
+            return 'Error: Valid MindRoot context is required'
+        if not file_path or not os.path.exists(file_path):
+            return f'Error: WAV file not found: {file_path}'
+
+        session_manager = get_session_manager()
+        session = await session_manager.get_session(context.log_id)
+        if not session or not session.is_active:
+            return f'Error: No active call for session {context.log_id}'
+
+        bot = session.baresip_bot
+        if not bot:
+            return 'Error: No SIP bot attached to this session'
+        for _m in ('start_tts_response', 'send_tts_audio', 'end_tts_response'):
+            if not hasattr(bot, _m):
+                return f'Error: bot does not support {_m} (outbound playback unavailable on this bot type)'
+
+        try:
+            ulaw = _load_wav_as_ulaw_8k(file_path, channel=channel)
+        except Exception as e:
+            logger.error(f'play_audio: failed to load/convert {file_path}: {e}')
+            return f'Error loading WAV: {e}'
+
+        frame_bytes = 160  # 20ms at ulaw 8kHz
+        n_frames = (len(ulaw) + frame_bytes - 1) // frame_bytes
+        duration_s = len(ulaw) / 8000.0
+
+        logger.info(
+            f'play_audio: playing {file_path} ({duration_s:.2f}s, {n_frames} '
+            f'x 20ms frames) OUT to caller for session {context.log_id} '
+            f'(channel={channel}, wait={wait})'
+        )
+
+        async def _play():
+            frame_dt = 0.02
+            sent = 0
+            try:
+                await bot.start_tts_response()
+                start = time.perf_counter()
+                for i in range(0, len(ulaw), frame_bytes):
+                    if not session.is_active:
+                        logger.info('play_audio: call no longer active, stopping playback')
+                        break
+                    frame = ulaw[i:i + frame_bytes]
+                    ts = start + sent * frame_dt
+                    await bot.send_tts_audio(frame, timestamp=ts)
+                    sent += 1
+                    next_t = start + sent * frame_dt
+                    delay = next_t - time.perf_counter()
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+            except Exception as e:
+                logger.error(f'play_audio: error during playback: {e}\n{traceback.format_exc()}')
+            finally:
+                try:
+                    await bot.end_tts_response()
+                except Exception:
+                    pass
+            logger.info(f'play_audio: done, played {sent}/{n_frames} frames for session {context.log_id}')
+
+        if wait:
+            await _play()
+            return (f'Played {file_path} ({duration_s:.2f}s, {n_frames} frames) '
+                    f'out to caller for session {context.log_id}.')
+        else:
+            asyncio.create_task(_play())
+            return (f'Started playing {file_path} ({duration_s:.2f}s, {n_frames} '
+                    f'frames) out to caller for session {context.log_id} '
+                    f'(background, realtime pace).')
+    except Exception as e:
+        logger.error(f'Error in play_audio: {e}\n{traceback.format_exc()}')
+        return f'Error playing audio: {str(e)}'
+
+
+@command()
+async def sip_play_audio_file(file_path: str, channel: str = 'mix',
+                             wait: bool = True, context=None) -> str:
+    """
+    Alias for play_audio: play a WAV file OUT to the caller on the active call.
+    See play_audio for full details.
+
+    Example:
+        { "sip_play_audio_file": { "file_path": "/path/greeting.wav" } }
+    """
+    return await play_audio(file_path=file_path, channel=channel, wait=wait,
+                            context=context)
