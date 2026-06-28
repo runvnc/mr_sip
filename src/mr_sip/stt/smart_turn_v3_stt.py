@@ -214,6 +214,32 @@ class SmartTurnV3STT(BaseSTTProvider):
             rescue_sustain_ms=int(os.getenv('BARGE_IN_RESCUE_SUSTAIN_MS', '160')),
             noise_alpha=float(os.getenv('BARGE_IN_NOISE_ALPHA', '0.05')),
         )
+        # How quiet BACKGROUND (BG) speech is treated for turn-END timing while
+        # a turn is active (BARGE_IN_BG_DURING_TURN):
+        #   'silence' (default) - BG counts toward end-silence just like true
+        #       non-speech, so overlapping background that is below the near-end
+        #       reference lets the turn endpoint at the caller's words even with
+        #       NO real pause (caller "Hello?" + quieter overlapping woman ->
+        #       endpoints on "Hello?"). The discriminator is purely level: tune
+        #       BARGE_IN_REL_LEVEL_DB (lower = stricter = more of a somewhat-
+        #       quieter overlap is treated as background).
+        #   'neutral'  - BG neither resets nor accrues silence (frozen). Best
+        #       protects a quiet FG tail, but will NOT endpoint over continuous
+        #       overlapping background (no true pause).
+        #   'voiced'   - legacy: any voiced frame (incl. background) keeps the
+        #       turn alive.
+        self._bg_during_turn = os.getenv('BARGE_IN_BG_DURING_TURN', 'silence').strip().lower()
+        if self._bg_during_turn not in ('silence', 'neutral', 'voiced'):
+            self._bg_during_turn = 'silence'
+        # Trim trailing background past the last near-end frame (see below) is
+        # active whenever we are not in legacy 'voiced' mode.
+        self._bg_ends_turn = self._bg_during_turn != 'voiced'
+        # On turn end, trim trailing audio beyond the last near-end (FG) frame
+        # (plus this pad) so any background that bled into the buffer before the
+        # endpoint fired is not transcribed. <0 disables trimming.
+        self._bg_trim_pad_ms = int(os.getenv('BARGE_IN_BG_TRIM_PAD_MS', '200'))
+        # ulaw byte offset (within _speech_buffer) of the last near-end frame.
+        self._last_fg_speech_len = 0
 
         # Audio state
         self._vad_buffer: bytes = b''
@@ -551,19 +577,48 @@ class SmartTurnV3STT(BaseSTTProvider):
                               f"rms={rms:.5f}, near_end_ref={gate['near_end_ref']}, "
                               f'rel_db={rel_str}, prob={prob:.3f}')
             else:
-                # During an active turn we do NOT re-gate per-frame: once onset
-                # fires we buffer continuously to the Smart Turn endpoint (this
-                # avoids truncating intra-utterance dynamic range). Use raw
-                # Silero voiced only for silence counting / fallback turn-end.
+                # During an active turn we keep buffering ALL audio to the Smart
+                # Turn endpoint (so a quiet intra-utterance FG tail is never
+                # truncated), but turn-END timing uses the gate label:
+                #   FG  -> near-end speech: reset silence, keep the turn alive,
+                #          and remember the buffer position (for trailing trim).
+                #   NS  -> true non-speech: accrue end-silence.
+                #   BG  -> quieter-than-near-end background cross-talk. Handled
+                #          per BARGE_IN_BG_DURING_TURN: 'silence' (default) makes
+                #          it accrue end-silence so the turn endpoints at the
+                #          caller's words even when background OVERLAPS with no
+                #          real pause; 'neutral' freezes the timer; 'voiced' is
+                #          legacy keep-alive. The FG/BG split is purely by level
+                #          vs the near-end reference, so BARGE_IN_REL_LEVEL_DB is
+                #          the knob: LOWER it to treat a smaller level gap as
+                #          background (ends the turn sooner over louder/closer
+                #          cross-talk); RAISE it to be more permissive.
                 # Do NOT use raw RTP arrival time for _last_speech_audio_time:
                 # RTP packets keep arriving during silence, which made the
-                # fallback silence timer useless. Update it on voiced only.
-                if not voiced:
-                    self._vad_silence_chunks += 1
-                else:
+                # fallback silence timer useless. Update it on near-end only.
+                if self._bg_during_turn == 'voiced':
+                    # Legacy: any voiced frame (incl. background) keeps the turn.
+                    is_near_end = voiced
+                    is_silence = not voiced
+                elif self._bg_during_turn == 'neutral':
+                    # BG frozen: only true non-speech accrues silence.
+                    is_near_end = (label == self._gate.FG)
+                    is_silence = (label == self._gate.NS)
+                else:  # 'silence' (default)
+                    # Quieter-than-near-end background counts as end-silence, so
+                    # the turn endpoints at the caller's words even when the
+                    # background overlaps with no real pause.
+                    is_near_end = (label == self._gate.FG)
+                    is_silence = (label != self._gate.FG)
+
+                if is_near_end:
                     self._vad_silence_chunks = 0
                     if self._is_speaking:
                         self._last_speech_audio_time = time.perf_counter()
+                        self._last_fg_speech_len = len(self._speech_buffer)
+                elif is_silence:
+                    self._vad_silence_chunks += 1
+                # else: BG-neutral -> leave _vad_silence_chunks frozen.
 
                 # If an eager EOT has been emitted and speech resumes before
                 # final confirmation, cancel the pending eager state. Only a
@@ -615,6 +670,10 @@ class SmartTurnV3STT(BaseSTTProvider):
             preroll_bytes = b''.join(self._preroll_buffer)
             self._speech_buffer = preroll_bytes
             _dlog(f'[VAD] Pre-roll: prepended {len(preroll_bytes)} bytes')
+
+        # Baseline near-end buffer position for trailing-background trim. The
+        # onset itself is near-end; subsequent FG chunks push this forward.
+        self._last_fg_speech_len = len(self._speech_buffer)
 
         _dlog(f'[VAD] Speech START (utterance #{self._utterance_count + 1}) - '
               f'Smart Turn runtime: {self._smart_turn_runtime_label()}')
@@ -804,6 +863,9 @@ class SmartTurnV3STT(BaseSTTProvider):
             return
 
         speech_bytes = bytes(self._speech_buffer)
+        # Drop any trailing background cross-talk that leaked in before this
+        # eager endpoint so it is not transcribed / merged into the eager text.
+        speech_bytes = self._trim_trailing_background(speech_bytes)
         if len(speech_bytes) < VAD_CHUNK_SAMPLES * 2:
             _dlog('[EAGER] Speech segment too short, skipping eager EOT')
             return
@@ -916,6 +978,9 @@ class SmartTurnV3STT(BaseSTTProvider):
             _e2e_log('VAD_FINAL_CONFIRMED', utterance_num=utterance_num, reason=reason)
             return
 
+        # Drop any trailing background cross-talk that leaked in before endpoint.
+        speech_bytes = self._trim_trailing_background(speech_bytes)
+
         if len(speech_bytes) < VAD_CHUNK_SAMPLES * 2:
             _dlog('[TURN_COMPLETE] Speech segment too short, skipping transcription')
             return
@@ -994,6 +1059,28 @@ class SmartTurnV3STT(BaseSTTProvider):
 
     def _normalize_buffer(self, ulaw_bytes: bytes) -> bytes:
         """Normalize full speech buffer to target RMS level."""
+        return self._normalize_buffer_impl(ulaw_bytes)
+
+    def _trim_trailing_background(self, speech_bytes: bytes) -> bytes:
+        """Trim audio past the last near-end (FG) frame (+ pad) so background
+        cross-talk that bled into the buffer before the turn endpointed is not
+        transcribed. Controlled by BARGE_IN_BG_ENDS_TURN / BARGE_IN_BG_TRIM_PAD_MS.
+        """
+        if not self._bg_ends_turn or self._bg_trim_pad_ms < 0:
+            return speech_bytes
+        if self._last_fg_speech_len <= 0:
+            return speech_bytes
+        pad = int(self._bg_trim_pad_ms / 1000.0 * VAD_SAMPLE_RATE)  # ulaw 1B/sample
+        cut = min(len(speech_bytes), self._last_fg_speech_len + pad)
+        if cut < len(speech_bytes):
+            trimmed = len(speech_bytes) - cut
+            _dlog(f'[TRIM] Trailing background trimmed: {trimmed} bytes '
+                  f'({trimmed / VAD_SAMPLE_RATE * 1000:.0f}ms) after last FG '
+                  f'(last_fg_len={self._last_fg_speech_len}, pad_ms={self._bg_trim_pad_ms})')
+            return speech_bytes[:cut]
+        return speech_bytes
+
+    def _normalize_buffer_impl(self, ulaw_bytes: bytes) -> bytes:
         if self.transcribe_target_rms <= 0:
             return ulaw_bytes
         pcm_bytes = audioop.ulaw2lin(ulaw_bytes, 2)
