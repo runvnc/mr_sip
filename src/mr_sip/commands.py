@@ -352,6 +352,50 @@ async def wait(seconds: float, context=None) -> str:
     finally:
         pass
 
+
+DISCONNECT_MARKER = '-- CALL DISCONNECTED --'
+
+
+def _message_text(msg) -> str:
+    """Best-effort extraction of all text from a chat message regardless of shape.
+
+    Handles content stored as a plain string, a list of parts (dicts with 'text'
+    or plain strings), or other/missing shapes. Scans ALL parts, not just [0].
+    """
+    try:
+        content = msg.get('content') if isinstance(msg, dict) else None
+    except Exception:
+        content = None
+    if content is None:
+        return ''
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                t = part.get('text')
+                if isinstance(t, str):
+                    parts.append(t)
+        return '\n'.join(parts)
+    return str(content)
+
+
+def _log_has_disconnect(log) -> bool:
+    """True if any user message in the log contains the disconnect marker."""
+    try:
+        for msg in log.messages:
+            if msg.get('role') != 'user':
+                continue
+            if DISCONNECT_MARKER in _message_text(msg):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 @command()
 async def await_call_result(log_id: str, agent: str, idle_timeout_seconds: int=120, finish_timeout_seconds: int=20, context=None):
     """
@@ -371,6 +415,7 @@ async def await_call_result(log_id: str, agent: str, idle_timeout_seconds: int=1
     """
     try:
         finished = False
+        disconnected_at = None
         while not finished:
             await asyncio.sleep(1)
             log = ChatLog(log_id, agent=agent, user=context.username)
@@ -393,27 +438,17 @@ async def await_call_result(log_id: str, agent: str, idle_timeout_seconds: int=1
                     pass
             else:
                 pass
-            user_messages = [msg for msg in log.messages if msg['role'] == 'user']
-            logger.debug(f'AWAIT_CALL_RESULT Call session {log_id} checking user messages for CALL DISCONNECTED: {str(user_messages)}')
-            for msg in user_messages:
-                if msg['content'] and isinstance(msg['content'], list) and (len(msg['content']) > 0):
-                    text = msg['content'][0].get('text', '')
-                    logger.debug(f'AWAIT_CALL_RESULT Call session {log_id} user message content: {text}')
-                    if '-- CALL DISCONNECTED --' in text:
-                        logger.info(f'AWAIT_CALL_RESULT Call session {log_id} detected CALL DISCONNECTED message')
-                        if idle >= finish_timeout_seconds:
-                            logger.info(f'AWAIT_CALL_RESULT Call session {log_id} finish timeout reached ({finish_timeout_seconds}s) after disconnect')
-                            finished = True
-                        else:
-                            pass
-                    else:
-                        pass
-                else:
-                    pass
-            else:
-                pass
-        else:
-            pass
+            # Latched disconnect detection. Decoupled from log.last_modified because
+            # _show_disconnected also pings the agent (send_message_to_agent), which
+            # bumps last_modified and would otherwise keep resetting the finish timer.
+            if disconnected_at is None and _log_has_disconnect(log):
+                disconnected_at = time.time()
+                logger.info(f'AWAIT_CALL_RESULT Call session {log_id} detected CALL DISCONNECTED message (latched)')
+            if disconnected_at is not None:
+                since_disc = time.time() - disconnected_at
+                if since_disc >= finish_timeout_seconds:
+                    logger.info(f'AWAIT_CALL_RESULT Call session {log_id} finish timeout reached ({finish_timeout_seconds}s); {since_disc:.1f}s since disconnect')
+                    finished = True
         log = ChatLog(log_id, agent=agent, user=context.username)
         log_dump = json.dumps(log.messages)
         return log_dump
@@ -593,6 +628,7 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str, jo
         call_start_time = time.time()
         max_call_exceeded = False
         finished = False
+        disconnected_at = None
         while not finished:
             await asyncio.sleep(1)
             call_duration = time.time() - call_start_time
@@ -641,25 +677,16 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str, jo
                 break
             else:
                 pass
-            user_messages = [msg for msg in log.messages if msg['role'] == 'user']
-            for msg in user_messages:
-                if msg['content'] and isinstance(msg['content'], list) and (len(msg['content']) > 0):
-                    text = msg['content'][0].get('text', '')
-                    if '-- CALL DISCONNECTED --' in text:
-                        if idle >= finish_timeout_seconds:
-                            logger.info(f'Call job {queued_job_id} finish timeout reached after disconnect')
-                            finished = True
-                            break
-                        else:
-                            pass
-                    else:
-                        pass
-                else:
-                    pass
-            else:
-                pass
-        else:
-            pass
+            # Latched disconnect detection (decoupled from last_modified; see await_call_result).
+            if disconnected_at is None and _log_has_disconnect(log):
+                disconnected_at = time.time()
+                logger.info(f'Call job {queued_job_id} detected CALL DISCONNECTED message (latched)')
+            if disconnected_at is not None:
+                since_disc = time.time() - disconnected_at
+                if since_disc >= finish_timeout_seconds:
+                    logger.info(f'Call job {queued_job_id} finish timeout reached ({finish_timeout_seconds}s); {since_disc:.1f}s since disconnect')
+                    finished = True
+                    break
         try:
             session_manager = get_session_manager()
             session = await session_manager.get_session(queued_job_id)
