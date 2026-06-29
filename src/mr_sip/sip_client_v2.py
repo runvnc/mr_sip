@@ -71,6 +71,25 @@ def _deadair_log(event: str, utterance_num: int = 0, **kwargs):
         pass
     logger.info(f'[DEADAIR] {event} utterance={utterance_num} {extra}')
 
+# Dedicated hangup diagnostics log (shared with PySIP)
+HANGUP_LOG = '/tmp/sip_hangup.log'
+
+
+def _hangup_log(event: str, call_id: str = '', **kwargs):
+    """Append a hangup diagnostic marker to HANGUP_LOG."""
+    now = datetime.now()
+    ts = now.strftime('%Y-%m-%d %H:%M:%S') + f'.{now.microsecond // 1000:03d}'
+    pc = time.perf_counter()
+    extra = ' '.join(f'{k}={v}' for k, v in kwargs.items())
+    line = f'[{ts}] [HANGUP] {event} perf_counter={pc:.6f} call_id={call_id} {extra}'
+    try:
+        with open(HANGUP_LOG, 'a') as f:
+            f.write(line + '\n')
+            f.flush()
+    except Exception:
+        pass
+    logger.info(f'[HANGUP] {event} call_id={call_id} {extra}')
+
 class AudioStreamAdapter:
     """Adapter to feed audio to PySIP's RTP session.
     
@@ -398,6 +417,10 @@ class MindRootSIPBotV2:
             async def on_state(state: CallState):
                 try:
                     logger.info(f'Call state changed: {state}')
+                    _hangup_log('MR_SIP_ON_STATE',
+                                getattr(self.call, 'call_id', '') or '',
+                                state=state,
+                                is_active=self.is_active)
                     if state in [CallState.ENDED, CallState.FAILED, CallState.BUSY]:
                         await self._on_call_ended(state)
                     else:
@@ -544,6 +567,10 @@ class MindRootSIPBotV2:
         async def on_state(state):
             try:
                 logger.info(f'Incoming call state changed: {state}')
+                _hangup_log('MR_SIP_ON_STATE_INCOMING',
+                            getattr(call, 'call_id', '') or '',
+                            state=state,
+                            is_active=self.is_active)
                 if state in [CallState.ENDED, CallState.FAILED, CallState.BUSY]:
                     await self._on_call_ended(state)
             except Exception as e:
@@ -621,14 +648,25 @@ class MindRootSIPBotV2:
     async def _on_call_ended(self, state: CallState):
         """Called when call ends."""
         if self._ended:
+            _hangup_log('MR_SIP_ON_CALL_ENDED_SKIP_ENDED',
+                        getattr(self.call, 'call_id', '') if self.call else '',
+                        state=state, already_ended=self._ended)
             logger.debug(f'_on_call_ended ignored because cleanup already completed: {state}')
             return
         if self._ending:
+            _hangup_log('MR_SIP_ON_CALL_ENDED_SKIP_ENDING',
+                        getattr(self.call, 'call_id', '') if self.call else '',
+                        state=state, already_ending=self._ending)
             logger.debug(f'_on_call_ended ignored because cleanup is already in progress: {state}')
             return
 
         self._ending = True
         try:
+            _hangup_log('MR_SIP_ON_CALL_ENDED_ENTRY',
+                        getattr(self.call, 'call_id', '') if self.call else '',
+                        state=state,
+                        input_frames=self._input_frame_count,
+                        output_frames=self._output_frame_count)
             logger.info(f'=== CALL ENDED: {state} (PySIP V2) ===')
             if self.call:
                 dialogue = getattr(self.call, 'dialogue', None)
@@ -682,15 +720,25 @@ class MindRootSIPBotV2:
             await self._show_disconnected()
             logger.info(f'Call statistics - Input frames: {self._input_frame_count}, Output frames: {self._output_frame_count}, Dropped frames: {self._dropped_frame_count}')
         except Exception as e:
+            _hangup_log('MR_SIP_ON_CALL_ENDED_ERROR',
+                        getattr(self.call, 'call_id', '') if self.call else '',
+                        error=str(e))
             logger.error(f'Error in _on_call_ended: {e}')
             logger.error(traceback.format_exc())
         finally:
+            _hangup_log('MR_SIP_ON_CALL_ENDED_FINALLY',
+                        getattr(self.call, 'call_id', '') if self.call else '',
+                        ended=self._ended,
+                        has_callback=bool(self.on_call_ended_callback))
             self._ended = True
             self._ending = False
             if self.on_call_ended_callback:
                 try:
                     await self.on_call_ended_callback(self, state)
                 except Exception as e:
+                    _hangup_log('MR_SIP_CALL_ENDED_CB_ERROR',
+                                getattr(self.call, 'call_id', '') if self.call else '',
+                                error=str(e))
                     logger.error(f'Error in call-ended cleanup callback: {e}')
                     logger.error(traceback.format_exc())
 
@@ -702,6 +750,12 @@ class MindRootSIPBotV2:
         local abort paths such as agent hangup, setup failure, or the emergency
         RTP watchdog.
         """
+        _hangup_log('MR_SIP_TERMINATE_CALL_ENTRY',
+                    getattr(self.call, 'call_id', '') if self.call else '',
+                    reason=reason,
+                    state=state,
+                    is_active=self.is_active,
+                    already_ended=self._ended)
         logger.warning(f'Terminating SIP call: {reason}')
         self.is_active = False
         try:
@@ -715,6 +769,10 @@ class MindRootSIPBotV2:
                     getattr(self.call, '_is_call_stopped', None),
                 )
                 await self.call.stop(reason)
+                _hangup_log('MR_SIP_TERMINATE_CALL_STOP_DONE',
+                            getattr(self.call, 'call_id', '') or '',
+                            reason=reason,
+                            dialogue_state=getattr(dialogue, 'state', None))
                 logger.info('PySIP stop completed for reason: %s', reason)
                 # NOTE: stop() returns even when the BYE was rejected by the
                 # carrier (e.g. Telnyx 403 Forbidden on a mis-tagged UAS BYE) or
@@ -722,11 +780,18 @@ class MindRootSIPBotV2:
                 # therefore NOT proof of a real on-wire teardown. Verify the
                 # dialog actually reached TERMINATED and surface it loudly.
             else:
+                _hangup_log('MR_SIP_TERMINATE_CALL_NO_CALL', '', reason=reason)
                 logger.warning('No SipCall object available while terminating call')
         except Exception as e:
+            _hangup_log('MR_SIP_TERMINATE_CALL_ERROR',
+                        getattr(self.call, 'call_id', '') if self.call else '',
+                        reason=reason, error=str(e))
             logger.error(f'Error while stopping SIP call for reason {reason}: {e}')
             logger.error(traceback.format_exc())
         finally:
+            _hangup_log('MR_SIP_TERMINATE_CALL_FINALLY',
+                        getattr(self.call, 'call_id', '') if self.call else '',
+                        reason=reason, ended=self._ended)
             if not self._ended:
                 await self._on_call_ended(state)
 
