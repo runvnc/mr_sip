@@ -130,7 +130,7 @@ class SileroCohereSTT(BaseSTTProvider):
     ):
         super().__init__(sample_rate=sample_rate)
 
-        self.threshold = float(os.getenv('SILERO_VAD_THRESHOLD', str(threshold)))
+        self.threshold = float(os.getenv('SILERO_VAD_THRESHOLD', '0.7'))
 
         # Dual-threshold VAD: higher threshold for speech start, lower for speech end
         # This makes the silence timer start sooner after the user stops talking

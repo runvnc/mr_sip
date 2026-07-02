@@ -128,7 +128,7 @@ class SmartTurnV3STT(BaseSTTProvider):
         super().__init__(sample_rate=sample_rate)
         print('Smart turn init!!!')
         # Silero VAD params (speech start only)
-        self.threshold = float(os.getenv('SILERO_VAD_THRESHOLD', str(threshold)))
+        self.threshold = float(os.getenv('SILERO_VAD_THRESHOLD', '0.7'))
         self.speech_pad_ms = int(os.getenv('SILERO_SPEECH_PAD_MS', str(speech_pad_ms)))
 
         # Smart Turn v3 params
@@ -203,14 +203,14 @@ class SmartTurnV3STT(BaseSTTProvider):
         self._gate = BargeInGate(
             vad_threshold=self.threshold,
             frame_ms=32,
-            rel_level_db=float(os.getenv('BARGE_IN_REL_LEVEL_DB', '15')),
+            rel_level_db=float(os.getenv('BARGE_IN_REL_LEVEL_DB', '10')),
             min_rms=float(os.getenv('BARGE_IN_MIN_RMS', '0.01')),
             ref_attack_alpha=float(os.getenv('BARGE_IN_REF_ATTACK_ALPHA', '0.4')),
             ref_decay_alpha=float(os.getenv('BARGE_IN_REF_DECAY_ALPHA', '0.05')),
-            onset_voiced_frames=int(os.getenv('SILERO_ONSET_VOICED_FRAMES', '1')),
+            onset_voiced_frames=int(os.getenv('SILERO_ONSET_VOICED_FRAMES', '3')),
             level_window_ms=int(os.getenv('BARGE_IN_LEVEL_WINDOW_MS', '160')),
             rescue_enabled=os.getenv('BARGE_IN_RESCUE_ENABLED', '1').lower() not in ('0', 'false', 'no'),
-            rescue_snr_db=float(os.getenv('BARGE_IN_RESCUE_SNR_DB', '12')),
+            rescue_snr_db=float(os.getenv('BARGE_IN_RESCUE_SNR_DB', '18')),
             rescue_sustain_ms=int(os.getenv('BARGE_IN_RESCUE_SUSTAIN_MS', '160')),
             noise_alpha=float(os.getenv('BARGE_IN_NOISE_ALPHA', '0.05')),
         )

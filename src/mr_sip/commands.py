@@ -396,6 +396,37 @@ def _log_has_disconnect(log) -> bool:
     return False
 
 
+# Cleanup awaits (hangup_call / end_session) can hang indefinitely when a call's
+# far-end BYE was never cleanly processed (e.g. Bug A mis-routing), leaving a SIP
+# teardown awaiting an ACK/transaction that never arrives. A plain try/except does
+# NOT protect against a *hang* (only exceptions), so every cleanup await is bounded
+# with asyncio.wait_for. This guarantees delegate_call_job / delegate_call_task
+# always return instead of stranding the parent job (and its worker slot) forever.
+CLEANUP_AWAIT_TIMEOUT = float(os.getenv('MR_SIP_CLEANUP_TIMEOUT', '10'))
+
+
+async def _await_guarded(coro, what: str, timeout: float = None) -> bool:
+    """Await a cleanup coroutine but never block the caller forever.
+
+    Returns True if it completed, False on timeout/error (both logged). On
+    timeout the underlying coroutine is cancelled by asyncio.wait_for.
+    """
+    if timeout is None:
+        timeout = CLEANUP_AWAIT_TIMEOUT
+    try:
+        await asyncio.wait_for(coro, timeout=timeout)
+        return True
+    except asyncio.TimeoutError:
+        logger.error(
+            f'CLEANUP TIMEOUT after {timeout}s during: {what}. Continuing; '
+            f'SIP teardown may be incomplete (see Bug A / far-end BYE handling).'
+        )
+        return False
+    except Exception as e:
+        logger.warning(f'Error during {what}: {e}')
+        return False
+
+
 @command()
 async def await_call_result(log_id: str, agent: str, idle_timeout_seconds: int=120, finish_timeout_seconds: int=20, context=None):
     """
@@ -490,14 +521,10 @@ async def delegate_call_task(agent: str, phone_number: str, instructions: str, i
                 # Always hang up the call on exit so the recorder (write-at-end)
                 # is flushed to disk and the SIP session is torn down cleanly,
                 # regardless of why the wait loop ended (idle timeout, task_result, etc.).
-                try:
-                    await session.baresip_bot.hangup_call()
-                except Exception as he:
-                    logger.warning(f'Error hanging up call during cleanup: {he}')
-                try:
-                    await session_manager.end_session(log_id)
-                except Exception as ee:
-                    logger.warning(f'Error ending session during cleanup: {ee}')
+                await _await_guarded(session.baresip_bot.hangup_call(),
+                                     f'hangup_call cleanup ({log_id})')
+                await _await_guarded(session_manager.end_session(log_id),
+                                     f'end_session cleanup ({log_id})')
             else:
                 pass
         except Exception as e:
@@ -643,7 +670,8 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str, jo
                             session.baresip_bot.stop_silence_monitor()
                         else:
                             pass
-                        await session.baresip_bot.hangup_call()
+                        await _await_guarded(session.baresip_bot.hangup_call(),
+                                             f'max-length hangup_call ({queued_job_id})')
                         logger.info(f'Call job {queued_job_id} terminated due to max call length')
                     else:
                         pass
@@ -696,14 +724,10 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str, jo
                 # Always hang up the call on exit so the recorder (write-at-end)
                 # is flushed to disk and the SIP session is torn down cleanly,
                 # regardless of why the wait loop ended (idle timeout, task_result, etc.).
-                try:
-                    await session.baresip_bot.hangup_call()
-                except Exception as he:
-                    logger.warning(f'Error hanging up call during cleanup: {he}')
-                try:
-                    await session_manager.end_session(queued_job_id)
-                except Exception as ee:
-                    logger.warning(f'Error ending session during cleanup: {ee}')
+                await _await_guarded(session.baresip_bot.hangup_call(),
+                                     f'hangup_call cleanup ({queued_job_id})')
+                await _await_guarded(session_manager.end_session(queued_job_id),
+                                     f'end_session cleanup ({queued_job_id})')
             else:
                 pass
         except Exception as e:
