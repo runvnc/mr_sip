@@ -673,14 +673,18 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str, jo
             except Exception as ce:
                 logger.warning(f'Could not cancel orphaned job {queued_job_id}: {ce}')
             if cancel_succeeded:
+                _dbg('DCJ_DID_NOT_START_RETURN', job_id=queued_job_id, cancelled=True)
                 return (
-                    f'The call task was cancelled because the worker did not pick it up within {max_queue_wait}s. '
-                    f'Wait 10 seconds and try again, up to 3 times, after that fail the task.'
+                    f'CALL FAILED: the call worker did not pick up the job within {max_queue_wait}s '
+                    f'(job_id: {queued_job_id}); the queued job was cancelled. Record this as a FAILED '
+                    f'call attempt (no connection was made) and move on. DO NOT retry or redial this number.'
                 )
             else:
+                _dbg('DCJ_DID_NOT_START_RETURN', job_id=queued_job_id, cancelled=False)
                 return (
-                    f'The call task timed out after {max_queue_wait}s and could NOT be cancelled (job_id: {queued_job_id}). '
-                    f'DO NOT reattempt this call as it may result in a duplicate call.'
+                    f'CALL FAILED: the call worker did not pick up the job within {max_queue_wait}s and it '
+                    f'could NOT be cancelled (job_id: {queued_job_id}). Record this as a FAILED call attempt '
+                    f'and move on. DO NOT retry or redial this number (a duplicate call may already be in progress).'
                 )
         else:
             pass
