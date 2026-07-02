@@ -68,6 +68,27 @@ def _check_s2s_available():
 logger = logging.getLogger(__name__)
 logger.info('Commands module loaded - SIP config will be read from context/environment at runtime')
 
+# ---------------------------------------------------------------------------
+# Dedicated runtime diagnostic log for delegate_call_job / job-queue tracing.
+# Writes to /tmp so it is isolated from the main app logs and easy to tail on
+# the server. Disable with MR_SIP_DELEGATE_DEBUG=0. Never raises.
+# ---------------------------------------------------------------------------
+DELEGATE_DEBUG_LOG = os.getenv('MR_SIP_DELEGATE_DEBUG_LOG', '/tmp/delegate_call_debug.log')
+DELEGATE_DEBUG_ENABLED = os.getenv('MR_SIP_DELEGATE_DEBUG', '1') not in ('0', 'false', 'False', '')
+
+def _dbg(tag, **fields):
+    """Append a single structured line to the delegate-call debug log."""
+    if not DELEGATE_DEBUG_ENABLED:
+        return
+    try:
+        ts = time.strftime('%Y-%m-%d %H:%M:%S') + f'.{int((time.time() % 1) * 1000):03d}'
+        parts = ' '.join(f'{k}={v!r}' for k, v in fields.items())
+        line = f'{ts} pid={os.getpid()} [SIP] {tag} {parts}\n'
+        with open(DELEGATE_DEBUG_LOG, 'a') as f:
+            f.write(line)
+    except Exception:
+        pass
+
 @command()
 async def call(destination: str, context=None) -> str:
     """
@@ -582,6 +603,10 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str, jo
     try:
         job_id = nanoid.generate()
         call_start_time = None
+        _dbg('DCJ_ENTER', job_id=job_id, agent=agent, phone=phone_number, job_type=job_type,
+             timeout=timeout, idle_timeout=idle_timeout_seconds,
+             finish_timeout=finish_timeout_seconds, max_call_length=max_call_length_seconds,
+             parent_log=getattr(context, 'log_id', None))
         full_instructions = instructions + f'\n\n Call the phone number {phone_number} to accomplish the task.'
         if job_type is None:
             job_type = f'call.{agent}'
@@ -616,10 +641,16 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str, jo
         max_queue_wait = min(timeout, 420)  # 7 minutes max
         while time.time() - start_wait < max_queue_wait:
             job_data = await service_manager.get_job_data_service(queued_job_id)
+            status = job_data.get('status') if job_data else None
+            elapsed = time.time() - start_wait
+            if int(elapsed) % 5 == 0:
+                _dbg('DCJ_QUEUE_POLL', job_id=queued_job_id, elapsed=round(elapsed, 1),
+                     status=status, found=bool(job_data))
             if job_data:
-                status = job_data.get('status')
                 if status in ('active', 'completed', 'failed'):
                     job_started = True
+                    _dbg('DCJ_JOB_STARTED', job_id=queued_job_id, status=status,
+                         elapsed=round(elapsed, 1))
                     logger.info(f'Call job {queued_job_id} is now {status}')
                     break
                 else:
@@ -630,7 +661,8 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str, jo
         else:
             pass
         if not job_started:
-            logger.warning(f'Call job {queued_job_id} did not start within {timeout}s')
+            _dbg('DCJ_DID_NOT_START', job_id=queued_job_id, waited=max_queue_wait, last_status=status)
+            logger.warning(f'Call job {queued_job_id} did not start within {max_queue_wait}s (waited full queue window)')
             # Cancel the orphaned queued job
             cancel_succeeded = False
             try:
@@ -656,9 +688,22 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str, jo
         max_call_exceeded = False
         finished = False
         disconnected_at = None
+        _dbg('DCJ_MONITOR_START', job_id=queued_job_id, max_call_length=max_call_length_seconds,
+             idle_timeout=idle_timeout_seconds, finish_timeout=finish_timeout_seconds)
+        _last_mon_log = -999.0
         while not finished:
             await asyncio.sleep(1)
             call_duration = time.time() - call_start_time
+            if call_duration - _last_mon_log >= 5:
+                _last_mon_log = call_duration
+                try:
+                    _mlog = ChatLog(queued_job_id, agent=agent, user=context.username)
+                    _idle = time.time() - _mlog.last_modified
+                except Exception:
+                    _idle = None
+                _dbg('DCJ_MONITOR_TICK', job_id=queued_job_id, duration=round(call_duration, 1),
+                     idle=(round(_idle, 1) if _idle is not None else None),
+                     since_disc=(round(time.time() - disconnected_at, 1) if disconnected_at else None))
             if call_duration >= max_call_length_seconds:
                 logger.info(f'Call job {queued_job_id} exceeded max call length ({max_call_length_seconds}s), terminating')
                 max_call_exceeded = True
@@ -715,9 +760,15 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str, jo
                     logger.info(f'Call job {queued_job_id} finish timeout reached ({finish_timeout_seconds}s); {since_disc:.1f}s since disconnect')
                     finished = True
                     break
+        _dbg('DCJ_MONITOR_EXIT', job_id=queued_job_id,
+             duration=round(time.time() - call_start_time, 1),
+             max_call_exceeded=max_call_exceeded,
+             disconnected=(disconnected_at is not None))
+        _dbg('DCJ_CLEANUP_GET_SESSION_BEGIN', job_id=queued_job_id)
         try:
             session_manager = get_session_manager()
-            session = await session_manager.get_session(queued_job_id)
+            session = await asyncio.wait_for(session_manager.get_session(queued_job_id), timeout=CLEANUP_AWAIT_TIMEOUT)
+            _dbg('DCJ_CLEANUP_GET_SESSION_DONE', job_id=queued_job_id, has_session=bool(session))
             if session and session.baresip_bot:
                 if hasattr(session.baresip_bot, 'stop_silence_monitor'):
                     session.baresip_bot.stop_silence_monitor()
@@ -742,18 +793,25 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str, jo
             pass
         log = ChatLog(queued_job_id, agent=agent, user=context.username)
         call_result = json.dumps(log.messages)
+        _dbg('DCJ_RETURN', job_id=queued_job_id, max_call_exceeded=max_call_exceeded,
+             result_len=len(call_result))
         if max_call_exceeded:
             actual_duration = time.time() - call_start_time
             exceeded_note = f'\n\n--- CALL TERMINATED: Exceeded maximum call length of {max_call_length_seconds} seconds (actual duration: {actual_duration:.1f}s) ---'
             return f'Job ID: {queued_job_id}. Result: {call_result}{exceeded_note}'
         else:
             return f'Job ID: {queued_job_id}. Result: {call_result}'
+    except asyncio.CancelledError:
+        _dbg('DCJ_CANCELLED', job_id=locals().get('queued_job_id', None),
+             note='coroutine cancelled (SSE/turn cancel or process shutdown) - NOT returning to caller')
+        raise
     except Exception as e:
         trace = traceback.format_exc()
+        _dbg('DCJ_EXCEPTION', job_id=locals().get('queued_job_id', None), error=str(e))
         logger.error(f'Error in delegate_call_job: {e}\n\n{trace}')
         return f'Error delegating call job: {str(e)}\n\n{trace}'
     finally:
-        pass
+        _dbg('DCJ_FINALLY', job_id=locals().get('queued_job_id', None))
 
 
 @command()
@@ -997,4 +1055,3 @@ async def play_audio(file_path: str, channel: str = 'mix', wait: bool = True,
     except Exception as e:
         logger.error(f'Error in play_audio: {e}\n{traceback.format_exc()}')
         return f'Error playing audio: {str(e)}'
-
