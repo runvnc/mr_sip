@@ -203,10 +203,12 @@ class SmartTurnV3STT(BaseSTTProvider):
         self._gate = BargeInGate(
             vad_threshold=self.threshold,
             frame_ms=32,
+            # Tightened from 15/1/0.5/12: brief background spikes within 15dB of near-end ref triggered false barge-in on a single voiced frame.
             rel_level_db=float(os.getenv('BARGE_IN_REL_LEVEL_DB', '10')),
             min_rms=float(os.getenv('BARGE_IN_MIN_RMS', '0.01')),
             ref_attack_alpha=float(os.getenv('BARGE_IN_REF_ATTACK_ALPHA', '0.4')),
             ref_decay_alpha=float(os.getenv('BARGE_IN_REF_DECAY_ALPHA', '0.05')),
+            # 3 frames (~96ms) rejects 40-60ms background spikes that pass a single-frame onset check.
             onset_voiced_frames=int(os.getenv('SILERO_ONSET_VOICED_FRAMES', '3')),
             level_window_ms=int(os.getenv('BARGE_IN_LEVEL_WINDOW_MS', '160')),
             rescue_enabled=os.getenv('BARGE_IN_RESCUE_ENABLED', '1').lower() not in ('0', 'false', 'no'),
