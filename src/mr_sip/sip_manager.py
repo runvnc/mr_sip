@@ -419,8 +419,12 @@ class SIPSessionManager:
         async with self._lock:
             if log_id in self.sessions:
                 logger.warning(f"Session {log_id} already exists, ending previous session")
-                await self.end_session(log_id)
-                
+                # MUST NOT call self.end_session() here: it re-acquires self._lock
+                # (asyncio.Lock is NOT reentrant) and deadlocks, holding the global
+                # lock forever and hanging every other get_session/create_session/
+                # end_session in the process. Use the lock-free helper.
+                await self._end_session_locked(log_id)
+
             session = SIPSession(log_id, destination, baresip_bot)
             self.sessions[log_id] = session
             logger.info(f"Created SIP session {log_id} for destination {destination}")
@@ -431,16 +435,20 @@ class SIPSessionManager:
         async with self._lock:
             return self.sessions.get(log_id)
             
+    async def _end_session_locked(self, log_id: str) -> bool:
+        """End a session. Caller MUST already hold self._lock."""
+        session = self.sessions.get(log_id)
+        if session:
+            await session.end_session()
+            del self.sessions[log_id]
+            logger.info(f"Ended SIP session {log_id}")
+            return True
+        return False
+
     async def end_session(self, log_id: str) -> bool:
         """End a SIP session"""
         async with self._lock:
-            session = self.sessions.get(log_id)
-            if session:
-                await session.end_session()
-                del self.sessions[log_id]
-                logger.info(f"Ended SIP session {log_id}")
-                return True
-            return False
+            return await self._end_session_locked(log_id)
             
     async def get_active_sessions(self) -> Dict[str, SIPSession]:
         """Get all active sessions"""
@@ -451,7 +459,7 @@ class SIPSessionManager:
         """Cleanup all sessions (called on shutdown)"""
         async with self._lock:
             for log_id in list(self.sessions.keys()):
-                await self.end_session(log_id)
+                await self._end_session_locked(log_id)
             logger.info("All SIP sessions cleaned up")
 
 # Global session manager instance
