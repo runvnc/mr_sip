@@ -597,7 +597,7 @@ class SmartTurnV3STT(BaseSTTProvider):
                     _dlog(f"[BARGE-IN] Onset accepted ({gate['reason']}): "
                           f"rms={rms:.5f}, near_end_ref={gate['near_end_ref']}, "
                           f"rel_db={rel_str}, snr_db={gate['snr_db']:.1f}, prob={prob:.3f}")
-                    _e2e_log('VAD_ONSET_ACCEPTED',
+                    _e2e_log('VAD_ONSET_ACCEPTED', session=getattr(self, '_session_id', 'unknown'),
                              utterance_num=self._utterance_count + 1,
                              reason=gate['reason'], rel_db=rel_str,
                              snr_db=f"{gate['snr_db']:.1f}", prob=f'{prob:.3f}')
@@ -715,7 +715,7 @@ class SmartTurnV3STT(BaseSTTProvider):
         self._silence_start_time = None
 
         # Log speech start for e2e profiling
-        _e2e_log('VAD_SPEECH_START', utterance_num=self._utterance_count + 1,
+        _e2e_log('VAD_SPEECH_START', utterance_num=self._utterance_count + 1, session=getattr(self, '_session_id', 'unknown'),
                  threshold=self.threshold)
 
         # Prepend pre-roll buffer
@@ -927,7 +927,7 @@ class SmartTurnV3STT(BaseSTTProvider):
         eager_pc = time.perf_counter()
         self._last_vad_eager_end_pc = eager_pc
         self._last_user_speech_end_pc = eager_pc - (silence_at_end_ms / 1000.0)
-        _e2e_log('SMART_TURN_EAGER_END', utterance_num=self._utterance_count + 1,
+        _e2e_log('SMART_TURN_EAGER_END', utterance_num=self._utterance_count + 1, session=getattr(self, '_session_id', 'unknown'),
                  prob=f'{prob:.3f}', silence_ms=silence_at_end_ms)
 
         t0 = time.perf_counter()
@@ -943,7 +943,7 @@ class SmartTurnV3STT(BaseSTTProvider):
         elapsed_pc = time.perf_counter() - t0
         self._transcription_times.append(elapsed_pc)
         _dlog(f'[EAGER] Transcribe done in {elapsed_pc*1000:.0f}ms -> "{text}"')
-        _e2e_log('TRANSCRIBE_DONE', utterance_num=self._utterance_count + 1,
+        _e2e_log('TRANSCRIBE_DONE', utterance_num=self._utterance_count + 1, session=getattr(self, '_session_id', 'unknown'),
                  transcribe_ms=f'{elapsed_pc*1000:.0f}', eager=True)
 
         if not text or not text.strip():
@@ -1002,7 +1002,7 @@ class SmartTurnV3STT(BaseSTTProvider):
         self._speech_buffer = b''
 
         _dlog(f'[TURN_COMPLETE] reason={reason} speech_duration={speech_duration:.2f}s, {len(speech_bytes)} bytes')
-        _e2e_log('TURN_COMPLETE', utterance_num=(self._eager_utterance_num or self._utterance_count + 1),
+        _e2e_log('TURN_COMPLETE', utterance_num=(self._eager_utterance_num or self._utterance_count + 1), session=getattr(self, '_session_id', 'unknown'),
                  speech_duration_s=f'{speech_duration:.2f}', bytes=len(speech_bytes), reason=reason)
 
         if was_eager_pending:
@@ -1028,7 +1028,7 @@ class SmartTurnV3STT(BaseSTTProvider):
             result.utterance_num = utterance_num
             _dlog(f'[EMIT] Final (confirmed eager) #{utterance_num}: "{text}"')
             self._emit_final(result)
-            _e2e_log('VAD_FINAL_CONFIRMED', utterance_num=utterance_num, reason=reason)
+            _e2e_log('VAD_FINAL_CONFIRMED', utterance_num=utterance_num, session=getattr(self, '_session_id', 'unknown'), reason=reason)
             return
 
         # Drop any trailing background cross-talk that leaked in before endpoint.
@@ -1053,7 +1053,7 @@ class SmartTurnV3STT(BaseSTTProvider):
         elapsed_pc = time.perf_counter() - t0
         self._transcription_times.append(elapsed_pc)
         _dlog(f'[TRANSCRIBE] Done in {elapsed_pc*1000:.0f}ms -> "{text}"')
-        _e2e_log('TRANSCRIBE_DONE', utterance_num=self._utterance_count + 1,
+        _e2e_log('TRANSCRIBE_DONE', utterance_num=self._utterance_count + 1, session=getattr(self, '_session_id', 'unknown'),
                  transcribe_ms=f'{elapsed_pc*1000:.0f}')
 
         if not text or not text.strip():

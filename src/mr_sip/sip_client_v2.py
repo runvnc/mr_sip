@@ -237,6 +237,8 @@ class MindRootSIPBotV2:
                 self.stt.main_loop = self.main_loop
             else:
                 pass
+            self.stt._session_id = getattr(self.context, 'log_id', None) or 'unknown'
+            logger.info(f'STT session_id set to: {self.stt._session_id}')
             if hasattr(self.stt, 'set_sip_call_established'):
                 self.stt.set_sip_call_established(True)
             else:
@@ -273,7 +275,7 @@ class MindRootSIPBotV2:
                 self.draft_response_active = True
                 self.last_eager_eot_text = result.text
                 self._stt_dlog(f'[EAGER EOT] Calling utterance callback (is_eager=True): "{result.text}"')
-                _e2e_log('EAGER_EOT_CALLBACK', utterance_num=len(self.utterances) + 1, text=result.text[:50])
+                _e2e_log('EAGER_EOT_CALLBACK', utterance_num=len(self.utterances) + 1, text=result.text[:50], session=getattr(self.context, 'log_id', None) or 'unknown')
                 if self.on_utterance_callback:
                     utterance_num = len(self.utterances) + 1
                     self._schedule_coroutine(self._call_utterance_callback(result.text, utterance_num, result.timestamp or time.time(), is_eager=True))
@@ -851,7 +853,7 @@ class MindRootSIPBotV2:
                 stream._e2e_vad_eager_end_pc = None
                 stream._e2e_user_speech_end_pc = None
                 stream._e2e_vad_utterance_num = 0
-            _e2e_log('TTS_RESPONSE_START', utterance_num=self._e2e_current_utterance_num)
+            _e2e_log('TTS_RESPONSE_START', utterance_num=self._e2e_current_utterance_num, session=getattr(self.context, 'log_id', None) or 'unknown')
             logger.debug(f'Started TTS response stream {stream.stream_id}')
             # Reset per-response chunk tracking for FIRST_CHUNK_QUEUED
             self._e2e_first_chunk_queued_logged = False
@@ -953,7 +955,7 @@ class MindRootSIPBotV2:
                 if not getattr(self, '_e2e_first_chunk_queued_logged', False):
                     self._e2e_first_chunk_queued_logged = True
                     self._e2e_first_chunk_queued_time = time.perf_counter()
-                    _e2e_log('FIRST_CHUNK_QUEUED', utterance_num=getattr(self, '_e2e_current_utterance_num', 0),
+                    _e2e_log('FIRST_CHUNK_QUEUED', utterance_num=getattr(self, '_e2e_current_utterance_num', 0), session=getattr(self.context, 'log_id', None) or 'unknown',
                              chunk_len=len(ulaw_audio),
                              since_tts_start_ms=f'{(time.perf_counter() - getattr(self, "_tts_response_start_pc", time.perf_counter()))*1000:.0f}')
                 pass
@@ -968,7 +970,7 @@ class MindRootSIPBotV2:
                 if not hasattr(self, '_response_output_frame_count'):
                     self._response_output_frame_count = 0
                 if self._response_output_frame_count == 0:
-                    _e2e_log('FIRST_TTS_CHUNK_PYSIP', utterance_num=getattr(self, '_e2e_current_utterance_num', 0),
+                    _e2e_log('FIRST_TTS_CHUNK_PYSIP', utterance_num=getattr(self, '_e2e_current_utterance_num', 0), session=getattr(self.context, 'log_id', None) or 'unknown',
                              since_tts_response_start_ms=f'{(time.perf_counter() - getattr(self, "_tts_response_start_pc", time.perf_counter()))*1000:.0f}',
                              chunk_len=len(ulaw_audio[i:i + FRAME_SIZE]))
                 self._response_output_frame_count += 1

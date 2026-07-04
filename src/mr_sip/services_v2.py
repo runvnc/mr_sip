@@ -159,7 +159,7 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
         async def on_utterance_callback(text: str, utterance_num: int, timestamp: float, ctx, is_eager: bool=False):
             """Callback for when complete utterances are transcribed"""
             try:
-                _e2e_log('UTTERANCE_CALLBACK', utterance_num=utterance_num,
+                _e2e_log('UTTERANCE_CALLBACK', utterance_num=utterance_num, session=getattr(ctx, 'log_id', None) or 'unknown',
                          is_eager=is_eager, text=text[:50] if text else '')
                 logger.info(f'SIP_DEBUG Transcribed utterance #{utterance_num}: {text}')
                 # Capture how much of the in-flight TTS response actually played

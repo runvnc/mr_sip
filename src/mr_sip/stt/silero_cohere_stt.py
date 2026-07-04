@@ -534,7 +534,7 @@ class SileroCohereSTT(BaseSTTProvider):
             _dlog(f'[VAD] Pre-roll: prepended {len(preroll_bytes)} bytes ({len(self._preroll_buffer)} chunks)')
 
         # Log speech start for e2e profiling
-        _e2e_log('VAD_SPEECH_START', utterance_num=self._utterance_count + 1,
+        _e2e_log('VAD_SPEECH_START', utterance_num=self._utterance_count + 1, session=getattr(self, '_session_id', 'unknown'),
                  threshold=self.threshold)
 
         _dlog(f'[VAD] Speech START (utterance #{self._utterance_count + 1})')
@@ -565,7 +565,7 @@ class SileroCohereSTT(BaseSTTProvider):
         # including silence chunks while _is_speaking is True)
         approx_last_speech_pc = vad_end_time - (self._eager_silence_ms / 1000.0)
         self._last_user_speech_end_pc = approx_last_speech_pc
-        _e2e_log('VAD_EAGER_END', utterance_num=self._utterance_count + 1, vad_end_pc=vad_end_time,
+        _e2e_log('VAD_EAGER_END', utterance_num=self._utterance_count + 1, session=getattr(self, '_session_id', 'unknown'), vad_end_pc=vad_end_time,
                  last_speech_audio_pc=approx_last_speech_pc,
                  eager_silence_ms=self._eager_silence_ms, speech_duration_s=f'{speech_duration:.2f}')
         time_since_last_audio = (vad_end_time - approx_last_speech_pc) * 1000
@@ -602,7 +602,7 @@ class SileroCohereSTT(BaseSTTProvider):
         _dlog(f'[TRANSCRIBE] Done in {elapsed_pc*1000:.0f}ms -> "{text}" | '
               f'total_since_vad_end={total_since_vad_end:.0f}ms | '
               f'total_since_last_speech_audio={total_since_last_audio:.0f}ms')
-        _e2e_log('TRANSCRIBE_DONE', utterance_num=self._utterance_count + 1,
+        _e2e_log('TRANSCRIBE_DONE', utterance_num=self._utterance_count + 1, session=getattr(self, '_session_id', 'unknown'),
                  transcribe_ms=f'{elapsed_pc*1000:.0f}', since_vad_end_ms=f'{total_since_vad_end:.0f}')
 
         if not text or not text.strip():
@@ -667,7 +667,7 @@ class SileroCohereSTT(BaseSTTProvider):
         self._emit_final(result)
 
         final_pc = time.perf_counter()
-        _e2e_log('VAD_FINAL_CONFIRMED', utterance_num=utterance_num,
+        _e2e_log('VAD_FINAL_CONFIRMED', utterance_num=utterance_num, session=getattr(self, '_session_id', 'unknown'),
                  since_vad_eager_end_ms=f'{(final_pc - getattr(self, "_last_vad_eager_end_pc", final_pc))*1000:.0f}')
 
     # ------------------------------------------------------------------

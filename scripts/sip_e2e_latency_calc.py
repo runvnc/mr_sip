@@ -7,10 +7,13 @@ Parses /tmp/sip_e2e_latency.log and computes user-perceived latency:
 
 Also breaks down each pipeline segment for analysis.
 
+Now supports session IDs for concurrent-call isolation and concurrency analysis.
+
 Usage:
   python3 /tmp/sip_e2e_latency_calc.py              # parse entire log
   python3 /tmp/sip_e2e_latency_calc.py --tail 20     # last 20 utterances
   python3 /tmp/sip_e2e_latency_calc.py --watch        # follow log in real-time
+  python3 /tmp/sip_e2e_latency_calc.py --concurrency  # show concurrency analysis only
 """
 import re
 import sys
@@ -43,27 +46,63 @@ def parse_log(lines):
         # Handle utterance_num= from PySIP as fallback for utterance=
         if utterance is None:
             utterance = kv.pop('utterance_num', '0')
+        # Extract session ID (added for concurrent-call isolation)
+        session = kv.pop('session', None) or 'unknown'
         events.append({
             'wall_ts': wall_ts,
             'event': event,
             'perf_counter': float(perf_counter),
             'utterance': int(utterance),
+            'session': session,
             **kv,
         })
     return events
 
 
-def compute_latencies(events):
-    """Group events by utterance number and compute latencies."""
-    by_utterance = defaultdict(dict)
+def compute_session_spans(events):
+    """Compute the time span [first_event, last_event] for each session.
+
+    Returns dict: session_id -> (start_pc, end_pc)
+    """
+    spans = {}
     for e in events:
-        # Keep FIRST occurrence of each event type per utterance
-        if e['event'] not in by_utterance[e['utterance']]:
-            by_utterance[e['utterance']][e['event']] = e
+        s = e['session']
+        pc = e['perf_counter']
+        if s not in spans:
+            spans[s] = [pc, pc]
+        else:
+            if pc < spans[s][0]:
+                spans[s][0] = pc
+            if pc > spans[s][1]:
+                spans[s][1] = pc
+    return {s: (v[0], v[1]) for s, v in spans.items()}
+
+
+def count_concurrent(spans, t_start, t_end):
+    """Count how many session spans overlap the interval [t_start, t_end]."""
+    count = 0
+    for s_start, s_end in spans.values():
+        if s_start <= t_end and s_end >= t_start:
+            count += 1
+    return count
+
+
+def compute_latencies(events):
+    """Group events by (session, utterance) and compute latencies.
+
+    Falls back to utterance-only grouping for old log entries without session=.
+    """
+    # Group by (session, utterance) tuple for proper concurrent-call isolation
+    by_key = defaultdict(dict)
+    for e in events:
+        key = (e['session'], e['utterance'])
+        # Keep FIRST occurrence of each event type per (session, utterance)
+        if e['event'] not in by_key[key]:
+            by_key[key][e['event']] = e
 
     # E2E_LATENCY events contain rtp_sent_pc which is equivalent to FIRST_RTP_SENT.
     # Use it as a synthetic FIRST_RTP_SENT when the real one is missing (it lacks utterance= field).
-    for utt_num, evts in by_utterance.items():
+    for key, evts in by_key.items():
         if 'E2E_LATENCY' in evts and 'FIRST_RTP_SENT' not in evts:
             e2e = evts['E2E_LATENCY']
             if 'rtp_sent_pc' in e2e:
@@ -72,10 +111,14 @@ def compute_latencies(events):
                     'wall_ts': e2e.get('wall_ts', ''),
                 }
 
+    # Compute session spans for concurrency analysis
+    session_spans = compute_session_spans(events)
+
     results = []
-    for utt_num in sorted(by_utterance.keys()):
-        evts = by_utterance[utt_num]
-        r = {'utterance': utt_num}
+    for key in sorted(by_key.keys()):
+        session, utt_num = key
+        evts = by_key[key]
+        r = {'utterance': utt_num, 'session': session}
 
         # Primary metric: VAD_EAGER_END -> FIRST_RTP_SENT
         if 'VAD_EAGER_END' in evts and 'FIRST_RTP_SENT' in evts:
@@ -131,12 +174,74 @@ def compute_latencies(events):
         elif 'VAD_EAGER_END' in evts and 'last_speech_audio_pc' in evts['VAD_EAGER_END'] and 'FIRST_RTP_SENT' in evts:
             r['user_e2e_ms'] = (evts['FIRST_RTP_SENT']['perf_counter'] - float(evts['VAD_EAGER_END']['last_speech_audio_pc'])) * 1000
 
+        # Concurrency: count how many sessions were active during this utterance's
+        # e2e latency window (VAD_EAGER_END -> FIRST_RTP_SENT). If we don't have
+        # both endpoints, use the full event span for this utterance.
+        if 'VAD_EAGER_END' in evts and 'FIRST_RTP_SENT' in evts:
+            t_start = evts['VAD_EAGER_END']['perf_counter']
+            t_end = evts['FIRST_RTP_SENT']['perf_counter']
+        else:
+            pcs = [e['perf_counter'] for e in evts.values()]
+            t_start = min(pcs) if pcs else 0
+            t_end = max(pcs) if pcs else 0
+        r['concurrent_calls'] = count_concurrent(session_spans, t_start, t_end)
+
         results.append(r)
         # Also compute LLM-to-speech latency (from first partial speak to first audio chunk)
         if 'LLM_FIRST_PARTIAL_SPEAK' in evts and 'KYUTAI_FIRST_AUDIO_FRAME' in evts:
             r['llm_to_first_audio_ms'] = (evts['KYUTAI_FIRST_AUDIO_FRAME']['perf_counter'] - evts['LLM_FIRST_PARTIAL_SPEAK']['perf_counter']) * 1000
 
     return results
+
+
+def print_concurrency_analysis(results):
+    """Print concurrency vs latency analysis."""
+    print(f'{'='*80}')
+    print(f'Concurrency Analysis')
+    print(f'{'='*80}')
+    print()
+
+    # Group results by concurrent_calls count
+    by_concurrency = defaultdict(list)
+    for r in results:
+        cc = r.get('concurrent_calls', 1)
+        e2e = r.get('e2e_ms')
+        user_e2e = r.get('user_e2e_ms')
+        if e2e is not None:
+            by_concurrency[cc].append(e2e)
+        if user_e2e is not None:
+            by_concurrency.setdefault(cc, []).append(user_e2e)
+
+    if not by_concurrency:
+        print('  No latency data available for concurrency analysis.')
+        return
+
+    print(f"{'Concurrent':>10} {'Samples':>8} {'Avg E2E':>10} {'Min E2E':>10} {'Max E2E':>10} {'P50':>10} {'P95':>10}")
+    print('-' * 70)
+    for cc in sorted(by_concurrency.keys()):
+        vals = by_concurrency[cc]
+        if not vals:
+            continue
+        avg = sum(vals) / len(vals)
+        mn = min(vals)
+        mx = max(vals)
+        sorted_vals = sorted(vals)
+        p50 = sorted_vals[len(sorted_vals) // 2]
+        p95 = sorted_vals[int(len(sorted_vals) * 0.95)] if len(sorted_vals) >= 20 else mx
+        print(f"{cc:>10} {len(vals):>8} {avg:>10.0f} {mn:>10.0f} {mx:>10.0f} {p50:>10.0f} {p95:>10.0f}")
+
+    print()
+    print('  This shows how e2e latency scales with the number of concurrent calls.')
+    print('  If Avg E2E increases significantly at higher concurrency, the system')
+    print('  is bottlenecking (GPU contention, queue depth, etc.).')
+
+    # Also show unique sessions
+    sessions = set(r.get('session', 'unknown') for r in results)
+    print(f'\n  Unique sessions in log: {len(sessions)}')
+    if len(sessions) <= 20:
+        for s in sorted(sessions):
+            count = sum(1 for r in results if r.get('session') == s)
+            print(f'    {s}: {count} utterances')
 
 
 def print_results(results, show_all=False):
@@ -179,14 +284,19 @@ def print_results(results, show_all=False):
         print()
 
     # Per-utterance table
-    header = f"{'Utt':>4} {'Wall Time':>20} {'UserE2E':>7} {'E2E(ms)':>8} {'VAD->X':>7} {'X->CB':>7} {'CB->UT':>7} {'UT->TTS':>8} {'TTS->Q':>7} {'Q->DQ':>7} {'DQ->PS':>7} {'PS->RTP':>8} {'Prebuf':>6}"
+    header = f"{'Sess':>8} {'Utt':>4} {'Wall Time':>20} {'UserE2E':>7} {'E2E(ms)':>8} {'Conc':>4} {'VAD->X':>7} {'X->CB':>7} {'CB->UT':>7} {'UT->TTS':>8} {'TTS->Q':>7} {'Q->DQ':>7} {'DQ->PS':>7} {'PS->RTP':>8} {'Prebuf':>6}"
     print(header)
-    print('-' * 120)
+    print('-' * 130)
 
     for r in results:
         e2e = f"{r['e2e_ms']:.0f}" if r.get('e2e_ms') is not None else '-'
         user_e2e = f"{r['user_e2e_ms']:.0f}" if r.get('user_e2e_ms') is not None else '-'
         wall = r.get('wall_ts', '-')
+        conc = r.get('concurrent_calls', '-')
+        sess = r.get('session', 'unknown')
+        # Truncate session ID for display
+        if len(str(sess)) > 8:
+            sess = str(sess)[:6] + '..'
         segs = []
         seg_keys = ['vad_to_transcribe_ms', 'transcribe_to_eager_cb_ms',
                      'eager_cb_to_utterance_cb_ms', 'utterance_cb_to_tts_start_ms',
@@ -196,17 +306,20 @@ def print_results(results, show_all=False):
             v = r.get(k)
             segs.append(f"{v:.0f}" if v is not None else '-')
         prebuf = r.get('prebuffer_frames', '-')
-        print(f"{r['utterance']:>4} {wall:>20} {user_e2e:>7} {e2e:>8} {segs[0]:>7} {segs[1]:>7} {segs[2]:>7} {segs[3]:>8} {segs[4]:>7} {segs[5]:>7} {segs[6]:>7} {segs[7]:>8} {prebuf:>6}")
+        print(f"{str(sess):>8} {r['utterance']:>4} {wall:>20} {user_e2e:>7} {e2e:>8} {str(conc):>4} {segs[0]:>7} {segs[1]:>7} {segs[2]:>7} {segs[3]:>8} {segs[4]:>7} {segs[5]:>7} {segs[6]:>7} {segs[7]:>8} {str(prebuf):>6}")
 
     # Kyutai streaming breakdown table
     kyutai_results = [r for r in results if r.get('utterance_cb_to_first_partial_ms') is not None]
     if kyutai_results:
         print(f'\nKyutai Streaming Breakdown:')
-        header_k = f"{'Utt':>4} {'CB->LLM':>8} {'LLM->TXT':>8} {'TXT->AUD':>8} {'AUD->Q':>8} {'LLM->AUD':>8}"
+        header_k = f"{'Sess':>8} {'Utt':>4} {'CB->LLM':>8} {'LLM->TXT':>8} {'TXT->AUD':>8} {'AUD->Q':>8} {'LLM->AUD':>8}"
         print(header_k)
         print('-' * len(header_k))
         for r in kyutai_results:
-            print(f"{r['utterance']:>4} {r.get('utterance_cb_to_first_partial_ms', 0):>8.0f} {r.get('first_partial_to_first_text_delta_ms', 0):>8.0f} {r.get('first_text_delta_to_first_audio_ms', 0):>8.0f} {r.get('first_audio_to_chunk_queued_ms', 0):>8.0f} {r.get('llm_to_first_audio_ms', 0):>8.0f}")
+            sess = r.get('session', 'unknown')
+            if len(str(sess)) > 8:
+                sess = str(sess)[:6] + '..'
+            print(f"{str(sess):>8} {r['utterance']:>4} {r.get('utterance_cb_to_first_partial_ms', 0):>8.0f} {r.get('first_partial_to_first_text_delta_ms', 0):>8.0f} {r.get('first_text_delta_to_first_audio_ms', 0):>8.0f} {r.get('first_audio_to_chunk_queued_ms', 0):>8.0f} {r.get('llm_to_first_audio_ms', 0):>8.0f}")
         print('  CB->LLM = Utterance callback -> First partial speak (LLM TTFS)')
         print('  LLM->TXT = First partial -> Kyutai text delta (routing)')
         print('  TXT->AUD = Kyutai text delta -> First audio frame (TTS TTFA)')
@@ -215,6 +328,8 @@ def print_results(results, show_all=False):
 
     print()
     print('Column legend:')
+    print('  Sess    = Session ID (truncated)')
+    print('  Conc    = Number of concurrent calls active during this utterance')
     print('  VAD->X  = VAD eager end -> Transcription done')
     print('  X->CB   = Transcription done -> Eager EOT callback')
     print('  CB->UT  = Eager EOT callback -> Utterance callback (agent input)')
@@ -226,15 +341,18 @@ def print_results(results, show_all=False):
     print('  Prebuf  = PySIP outgoing prebuffer frames (each 20ms)')
 
     # Also print any E2E_LATENCY lines from PySIP (pre-computed)
-    e2e_auto = [(r['utterance'], r.get('user_e2e_ms', r.get('e2e_ms')), r.get('e2e_ms')) for r in results if r.get('e2e_ms') is not None]
+    e2e_auto = [(r['utterance'], r.get('session', '?'), r.get('user_e2e_ms', r.get('e2e_ms')), r.get('e2e_ms')) for r in results if r.get('e2e_ms') is not None]
     if e2e_auto:
         print(f'\nAuto-computed E2E_LATENCY events from PySIP:')
-        for utt, user_ms, vad_ms in e2e_auto:
-            print(f'  Utterance #{utt}: user_e2e={user_ms:.0f}ms (vad_e2e={vad_ms:.0f}ms)')
+        for utt, sess, user_ms, vad_ms in e2e_auto:
+            print(f'  [{sess}] Utterance #{utt}: user_e2e={user_ms:.0f}ms (vad_e2e={vad_ms:.0f}ms)')
+
+
 def main():
     parser = argparse.ArgumentParser(description='SIP E2E Latency Calculator')
     parser.add_argument('--tail', type=int, default=None, help='Show last N utterances')
     parser.add_argument('--watch', action='store_true', help='Follow log in real-time')
+    parser.add_argument('--concurrency', action='store_true', help='Show concurrency analysis only')
     args = parser.parse_args()
 
     if args.watch:
@@ -254,7 +372,7 @@ def main():
                         for e in events:
                             if e['event'] == 'E2E_LATENCY':
                                 # Pre-computed e2e from PySIP - print immediately
-                                print(f"  UTT#{e['utterance']}: e2e={e.get('e2e_ms', '?')}ms (pre-computed)")
+                                print(f"  [{e.get('session', '?')}] UTT#{e['utterance']}: e2e={e.get('e2e_ms', '?')}ms (pre-computed)")
                             elif e['event'] == 'FIRST_RTP_SENT':
                                 # Find matching VAD_EAGER_END
                                 # Read full log to compute
@@ -264,12 +382,13 @@ def main():
                                 if results:
                                     last = results[-1]
                                     if last.get('e2e_ms') is not None:
-                                        print(f"  UTT#{last['utterance']}: e2e={last['e2e_ms']:.0f}ms "
+                                        print(f"  [{last.get('session', '?')}] UTT#{last['utterance']}: e2e={last['e2e_ms']:.0f}ms "
                                               f"(VAD->X={last.get('vad_to_transcribe_ms',0):.0f} "
                                               f"X->CB={last.get('transcribe_to_eager_cb_ms',0):.0f} "
                                               f"CB->UT={last.get('eager_cb_to_utterance_cb_ms',0):.0f} "
                                               f"UT->TTS={last.get('utterance_cb_to_tts_start_ms',0):.0f} "
-                                              f"TTS->RTP={last.get('pysip_to_rtp_sent_ms',0):.0f})")
+                                              f"TTS->RTP={last.get('pysip_to_rtp_sent_ms',0):.0f} "
+                                              f"conc={last.get('concurrent_calls', '?')})")
                     else:
                         time.sleep(0.5)
         except KeyboardInterrupt:
@@ -289,7 +408,12 @@ def main():
     if args.tail and len(results) > args.tail:
         results = results[-args.tail:]
 
-    print_results(results)
+    if args.concurrency:
+        print_concurrency_analysis(results)
+    else:
+        print_results(results)
+        print()
+        print_concurrency_analysis(results)
 
 
 if __name__ == '__main__':
