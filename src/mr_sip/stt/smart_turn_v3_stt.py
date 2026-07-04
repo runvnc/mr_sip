@@ -388,17 +388,37 @@ class SmartTurnV3STT(BaseSTTProvider):
 
         _dlog(f'_load_smart_turn_model: loading ONNX from {model_path}')
 
+        # TensorRT EP handles Conv1D by internally converting to
+        # Unsqueeze->Conv2D->Squeeze, avoiding the CUDA EP node-level fallback
+        # warning: "OP Conv(node_conv1d_1) running in Fallback mode".
+        # Set SMART_TURN_TENSORRT=0 to disable and use CUDA EP only.
+        use_tensorrt = os.getenv('SMART_TURN_TENSORRT', '1').lower() not in ('0', 'false', 'no')
+        trt_cache_dir = os.getenv('SMART_TURN_TRT_CACHE_DIR', '/tmp/trt_cache')
+
         providers = ['CPUExecutionProvider']
         if self._smart_turn_device == 'cuda':
-            providers = [
+            providers = []
+            if use_tensorrt and 'TensorrtExecutionProvider' in ort.get_available_providers():
+                os.makedirs(trt_cache_dir, exist_ok=True)
+                providers.append(('TensorrtExecutionProvider', {
+                    'device_id': 0,
+                    'trt_max_workspace_size': 2147483648,
+                    'trt_fp16_enable': True,
+                    'trt_engine_cache_enable': True,
+                    'trt_engine_cache_path': trt_cache_dir,
+                    'trt_timing_cache_enable': True,
+                    'trt_timing_cache_path': trt_cache_dir,
+                }))
+                _dlog(f'_load_smart_turn_model: TensorRT EP added (cache={trt_cache_dir})')
+            providers.extend([
                 ('CUDAExecutionProvider', {
                     'device_id': 0,
                     'cudnn_conv_algo_search': 'DEFAULT',
                     'do_copy_in_default_stream': '1',
                     'use_tf32': '1',
                 }),
-                'CPUExecutionProvider',
-            ]
+            ])
+            providers.append('CPUExecutionProvider')
 
         so = ort.SessionOptions()
         so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
@@ -408,10 +428,14 @@ class SmartTurnV3STT(BaseSTTProvider):
         self._ort_session = ort.InferenceSession(model_path, sess_options=so, providers=providers)
         _dlog(f'_load_smart_turn_model: loaded, providers={self._ort_session.get_providers()}')
 
-        if self._smart_turn_device == 'cuda' and 'CUDAExecutionProvider' not in self._ort_session.get_providers():
-            raise RuntimeError(
-                f'SMART_TURN_DEVICE=cuda requested but ONNX Runtime active providers are {self._ort_session.get_providers()}; refusing silent CPU fallback'
-            )
+        if self._smart_turn_device == 'cuda':
+            active = self._ort_session.get_providers()
+            has_gpu = ('CUDAExecutionProvider' in active or
+                       'TensorrtExecutionProvider' in active)
+            if not has_gpu:
+                raise RuntimeError(
+                    f'SMART_TURN_DEVICE=cuda requested but ONNX Runtime active providers are {active}; refusing silent CPU fallback'
+                )
 
     def _smart_turn_runtime_label(self) -> str:
         """Return a short runtime label for the active Smart Turn ONNX provider.
@@ -427,7 +451,9 @@ class SmartTurnV3STT(BaseSTTProvider):
         except Exception as e:
             return f'requested={self._smart_turn_device}, active=unknown, providers_error={e!r}'
 
-        if 'CUDAExecutionProvider' in providers:
+        if 'TensorrtExecutionProvider' in providers:
+            active = 'tensorrt'
+        elif 'CUDAExecutionProvider' in providers:
             active = 'cuda'
         elif 'CPUExecutionProvider' in providers:
             active = 'cpu'
