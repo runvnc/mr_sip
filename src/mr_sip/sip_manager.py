@@ -7,6 +7,7 @@ Handles audio routing between SIP calls and MindRoot's TTS/STT systems.
 """
 
 import asyncio
+import os
 import threading
 import logging
 import time
@@ -15,6 +16,11 @@ from datetime import datetime
 import traceback
 
 logger = logging.getLogger(__name__)
+
+# Bound each session teardown (audio sender stop + SIP hangup / far-end BYE),
+# which is always run WITHOUT the manager lock, so a single stuck hangup can't
+# wedge shutdown/cleanup. Override with MR_SIP_SESSION_TEARDOWN_TIMEOUT.
+SESSION_TEARDOWN_TIMEOUT = float(os.getenv('MR_SIP_SESSION_TEARDOWN_TIMEOUT', '15'))
 
 # End-to-end latency log (shared across mr_sip + PySIP)
 E2E_LATENCY_LOG = '/tmp/sip_e2e_latency.log'
@@ -416,51 +422,71 @@ class SIPSessionManager:
         
     async def create_session(self, log_id: str, destination: str, baresip_bot=None) -> SIPSession:
         """Create a new SIP session"""
+        old_session = None
         async with self._lock:
             if log_id in self.sessions:
                 logger.warning(f"Session {log_id} already exists, ending previous session")
-                # MUST NOT call self.end_session() here: it re-acquires self._lock
-                # (asyncio.Lock is NOT reentrant) and deadlocks, holding the global
-                # lock forever and hanging every other get_session/create_session/
-                # end_session in the process. Use the lock-free helper.
-                await self._end_session_locked(log_id)
-
+                # Remove the stale session UNDER the lock, but DO NOT tear it down
+                # here. session.end_session() can block on audio-sender shutdown
+                # or a slow far-end SIP BYE/hangup, and we must never hold the
+                # global manager lock across that (it serializes every
+                # get/create/end session-wide -> the previous deadlock/clog class
+                # of bugs). Teardown happens AFTER the lock is released.
+                old_session = self.sessions.pop(log_id, None)
             session = SIPSession(log_id, destination, baresip_bot)
             self.sessions[log_id] = session
             logger.info(f"Created SIP session {log_id} for destination {destination}")
-            return session
-            
+        # Tear down the previous session OUTSIDE the lock.
+        if old_session is not None:
+            await self._teardown_session(log_id, old_session)
+        return session
+
     async def get_session(self, log_id: str) -> Optional[SIPSession]:
         """Get an existing SIP session"""
         async with self._lock:
             return self.sessions.get(log_id)
-            
-    async def _end_session_locked(self, log_id: str) -> bool:
-        """End a session. Caller MUST already hold self._lock."""
-        session = self.sessions.get(log_id)
-        if session:
-            await session.end_session()
-            del self.sessions[log_id]
-            logger.info(f"Ended SIP session {log_id}")
-            return True
-        return False
+
+    async def _teardown_session(self, log_id: str, session: 'SIPSession') -> bool:
+        """Tear down a session's resources. Caller must NOT hold self._lock.
+
+        session.end_session() may block (audio-sender shutdown, SIP hangup /
+        far-end BYE), so it is always run without the manager lock AND bounded
+        by a timeout so one stuck teardown can't wedge shutdown/cleanup.
+        """
+        if session is None:
+            return False
+        try:
+            await asyncio.wait_for(session.end_session(), timeout=SESSION_TEARDOWN_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout ({SESSION_TEARDOWN_TIMEOUT}s) tearing down SIP session {log_id}; continuing")
+        except Exception as e:
+            logger.error(f"Error tearing down SIP session {log_id}: {e}")
+        logger.info(f"Ended SIP session {log_id}")
+        return True
 
     async def end_session(self, log_id: str) -> bool:
         """End a SIP session"""
         async with self._lock:
-            return await self._end_session_locked(log_id)
-            
+            session = self.sessions.pop(log_id, None)
+        # Teardown outside the lock (see _teardown_session).
+        if session is None:
+            return False
+        return await self._teardown_session(log_id, session)
+
     async def get_active_sessions(self) -> Dict[str, SIPSession]:
         """Get all active sessions"""
         async with self._lock:
             return {log_id: session for log_id, session in self.sessions.items() if session.is_active}
-            
+
     async def cleanup_all_sessions(self):
         """Cleanup all sessions (called on shutdown)"""
         async with self._lock:
-            for log_id in list(self.sessions.keys()):
-                await self._end_session_locked(log_id)
-            logger.info("All SIP sessions cleaned up")
+            items = list(self.sessions.items())
+            self.sessions.clear()
+        # Teardown outside the lock so a slow hangup can't wedge the manager.
+        for log_id, session in items:
+            await self._teardown_session(log_id, session)
+        logger.info("All SIP sessions cleaned up")
 
 # Global session manager instance
 _session_manager = None

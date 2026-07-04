@@ -638,6 +638,9 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str, jo
         logger.info(f'Queued call job {queued_job_id} for agent {agent} to call {phone_number}')
         start_wait = time.time()
         job_started = False
+        # Bind before the loop: if timeout<=0 the loop body never runs and the
+        # DCJ_DID_NOT_START trace (last_status=status) would raise NameError.
+        status = None
         max_queue_wait = min(timeout, 420)  # 7 minutes max
         while time.time() - start_wait < max_queue_wait:
             job_data = await service_manager.get_job_data_service(queued_job_id)

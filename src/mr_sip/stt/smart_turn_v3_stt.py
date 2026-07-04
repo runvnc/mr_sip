@@ -395,37 +395,62 @@ class SmartTurnV3STT(BaseSTTProvider):
         use_tensorrt = os.getenv('SMART_TURN_TENSORRT', '1').lower() not in ('0', 'false', 'no')
         trt_cache_dir = os.getenv('SMART_TURN_TRT_CACHE_DIR', '/tmp/trt_cache')
 
+        # CUDA-only provider list (CUDA EP + CPU fallback). Also the RETRY list
+        # if the TensorRT EP fails to initialize (e.g. libnvinfer.so missing
+        # even though the EP is listed as available): we prefer the GPU CUDA EP
+        # over any silent CPU fallback. The guard below still hard-fails if NO
+        # GPU EP ends up active, so a broken GPU never silently degrades to CPU.
+        cuda_providers = [
+            ('CUDAExecutionProvider', {
+                'device_id': 0,
+                'cudnn_conv_algo_search': 'DEFAULT',
+                'do_copy_in_default_stream': '1',
+                'use_tf32': '1',
+            }),
+            'CPUExecutionProvider',
+        ]
+
         providers = ['CPUExecutionProvider']
+        trt_requested = False
         if self._smart_turn_device == 'cuda':
             providers = []
             if use_tensorrt and 'TensorrtExecutionProvider' in ort.get_available_providers():
+                trt_requested = True
                 os.makedirs(trt_cache_dir, exist_ok=True)
                 providers.append(('TensorrtExecutionProvider', {
                     'device_id': 0,
                     'trt_max_workspace_size': 2147483648,
-                    'trt_fp16_enable': True,
+                    # FP32 (fp16 disabled): the turn-end decision must run at the
+                    # SAME precision as the CUDA/CPU paths. TensorRT still fixes
+                    # the Conv1D CPU-fallback issue (Unsqueeze->Conv2D->Squeeze);
+                    # FP16 is unnecessary for this tiny model and would make the
+                    # endpoint probability diverge slightly from CUDA/CPU.
+                    'trt_fp16_enable': False,
                     'trt_engine_cache_enable': True,
                     'trt_engine_cache_path': trt_cache_dir,
                     'trt_timing_cache_enable': True,
                     'trt_timing_cache_path': trt_cache_dir,
                 }))
-                _dlog(f'_load_smart_turn_model: TensorRT EP added (cache={trt_cache_dir})')
-            providers.extend([
-                ('CUDAExecutionProvider', {
-                    'device_id': 0,
-                    'cudnn_conv_algo_search': 'DEFAULT',
-                    'do_copy_in_default_stream': '1',
-                    'use_tf32': '1',
-                }),
-            ])
-            providers.append('CPUExecutionProvider')
+                _dlog(f'_load_smart_turn_model: TensorRT EP added (fp32, cache={trt_cache_dir})')
+            providers.extend(cuda_providers)
 
         so = ort.SessionOptions()
         so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         so.inter_op_num_threads = 1
         so.intra_op_num_threads = 1
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        self._ort_session = ort.InferenceSession(model_path, sess_options=so, providers=providers)
+        try:
+            self._ort_session = ort.InferenceSession(model_path, sess_options=so, providers=providers)
+        except Exception as e:
+            if trt_requested:
+                # TensorRT EP failed to initialize (commonly libnvinfer.so
+                # missing even though the EP shows as available). Retry on the
+                # CUDA EP - still GPU, never a silent CPU downgrade.
+                _dlog(f'_load_smart_turn_model: TensorRT session creation FAILED ({e}); '
+                      f'retrying with CUDA EP only')
+                self._ort_session = ort.InferenceSession(model_path, sess_options=so, providers=cuda_providers)
+            else:
+                raise
         _dlog(f'_load_smart_turn_model: loaded, providers={self._ort_session.get_providers()}')
 
         if self._smart_turn_device == 'cuda':
