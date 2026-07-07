@@ -654,6 +654,24 @@ class SmartTurnV3STT(BaseSTTProvider):
                     is_silence = not is_near_end
 
                 if is_near_end:
+                    # DIAGNOSTIC (log-only): if end-silence had already been
+                    # building and a (possibly borderline / background) near-end
+                    # frame just wiped it, record why. This is exactly the
+                    # pattern that starves the max-silence fallback so a turn
+                    # never endpoints (dead air). No behavior change.
+                    _accrued_ms = self._vad_silence_chunks * 32
+                    if _accrued_ms >= max(96, self._semantic_check_silence_ms // 2):
+                        _rel_str = f'{rel_db:.1f}' if rel_db is not None else 'n/a'
+                        _wall_ms = (time.perf_counter() - self._last_speech_audio_time) * 1000
+                        _deadair_log('TURN_SILENCE_RESET',
+                                     utterance_num=self._utterance_count + 1,
+                                     accrued_end_silence_ms=_accrued_ms,
+                                     wall_silence_ms=f'{_wall_ms:.0f}',
+                                     reason=gate['reason'], label=label,
+                                     prob=f'{prob:.3f}', rms=f'{rms:.5f}',
+                                     rel_db=_rel_str,
+                                     near_end_ref=gate['near_end_ref'],
+                                     noise_floor=f"{gate['noise_floor']:.6f}")
                     self._vad_silence_chunks = 0
                     if self._is_speaking:
                         self._last_speech_audio_time = time.perf_counter()

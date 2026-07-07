@@ -161,6 +161,12 @@ class MindRootSIPBotV2:
         self.record_separate = record_separate
         self.recorder: Optional[CallRecorder] = None
         self._interrupting = False
+        # When True, an in-progress play_audio(bargeable=False) owns the
+        # outbound channel and barge-in must NOT halt/clear it. Used by the
+        # receptionist test rig so a scripted clip plays straight through while
+        # the far end keeps talking (faithfully simulating a human who does not
+        # stop for the AI). Set/cleared by the play_audio command.
+        self._playback_locked = False
         self.utterances = []
         self.last_partial_text = ''
         self.last_eager_eot_text = ''
@@ -267,6 +273,11 @@ class MindRootSIPBotV2:
 
     def _on_partial_result(self, result: STTResult):
         """Callback for partial transcription results."""
+        # While a play_audio(bargeable=False) clip owns the outbound channel we
+        # act as a pure playback vehicle: do NOT let far-end speech turn into a
+        # receptionist response (which would swap the audio_stream mid-clip).
+        if getattr(self, '_playback_locked', False):
+            return
         if result.text != self.last_partial_text:
             logger.info(f'[PARTIAL] {result.text} (confidence: {result.confidence:.2f}, eager_eot: {result.is_eager_eot})')
             self.last_partial_text = result.text
@@ -289,6 +300,9 @@ class MindRootSIPBotV2:
 
     def _on_final_result(self, result: STTResult):
         """Callback for final transcription results."""
+        if getattr(self, '_playback_locked', False):
+            logger.debug('[FINAL] Suppressed during locked play_audio: %r', result.text)
+            return
         utterance_data = {'number': result.utterance_num or len(self.utterances) + 1, 'text': result.text, 'timestamp': result.timestamp or time.time(), 'confidence': result.confidence, 'time_str': time.strftime('%H:%M:%S', time.localtime(result.timestamp or time.time()))}
         self.utterances.append(utterance_data)
         logger.info(f"[{utterance_data['time_str']}] Utterance #{utterance_data['number']}: {result.text}")
@@ -322,6 +336,13 @@ class MindRootSIPBotV2:
 
     def _handle_turn_resumed(self):
         """Handle TurnResumed event from Deepgram - user is speaking (barge-in)."""
+        # play_audio(bargeable=False) lock: a scripted clip owns the outbound
+        # channel and must play through. Do not halt/clear/cancel on barge-in.
+        if getattr(self, '_playback_locked', False):
+            logger.info('[BARGE-IN] Ignoring speech-start: play_audio bargeable=False (playback locked)')
+            _deadair_log('TURN_RESUMED_PLAYBACK_LOCKED',
+                         utterance_num=getattr(self, '_e2e_current_utterance_num', 0))
+            return
         # Barge-in grace window: ignore the *immediate* halt if the current TTS
         # response only just started. TTS plugins (e.g. mr_kyutai) have a warm-up
         # of ~250-300ms before the first audio frame reaches the RTP wire. A bare

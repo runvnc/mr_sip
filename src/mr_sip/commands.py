@@ -962,7 +962,7 @@ def _load_wav_as_ulaw_8k(file_path: str, channel: str = 'left') -> bytes:
 
 @command()
 async def play_audio(file_path: str, channel: str = 'mix', wait: bool = True,
-                     context=None) -> str:
+                     bargeable: bool = True, context=None) -> str:
     """
     Play a WAV file OUT to the caller on the active call (outbound audio).
 
@@ -980,6 +980,12 @@ async def play_audio(file_path: str, channel: str = 'mix', wait: bool = True,
         wait:      If True (default), block until the whole clip has played, so
                    the agent's next action happens after playback. If False,
                    play in the background and return immediately.
+        bargeable: If True (default), a barge-in (far-end speech) halts playback
+                   like normal TTS. If False, the clip plays straight through and
+                   far-end speech does NOT interrupt it - use this for the
+                   receptionist test rig so a scripted clip faithfully simulates
+                   a human who keeps talking over the AI (the default rig behavior
+                   of stopping on any caller audio cannot reproduce that).
         context:   MindRoot context (automatically provided).
 
     Returns:
@@ -1026,6 +1032,12 @@ async def play_audio(file_path: str, channel: str = 'mix', wait: bool = True,
         async def _play():
             frame_dt = 0.02
             sent = 0
+            if not bargeable:
+                try:
+                    setattr(bot, '_playback_locked', True)
+                    logger.info('play_audio: bargeable=False -> playback locked (barge-in disabled)')
+                except Exception:
+                    pass
             try:
                 await bot.start_tts_response()
                 start = time.perf_counter()
@@ -1048,6 +1060,12 @@ async def play_audio(file_path: str, channel: str = 'mix', wait: bool = True,
                     await bot.end_tts_response()
                 except Exception:
                     pass
+                if not bargeable:
+                    try:
+                        setattr(bot, '_playback_locked', False)
+                        logger.info('play_audio: playback unlocked (barge-in re-enabled)')
+                    except Exception:
+                        pass
             logger.info(f'play_audio: done, played {sent}/{n_frames} frames for session {context.log_id}')
 
         if wait:
