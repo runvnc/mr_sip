@@ -89,6 +89,50 @@ def _dbg(tag, **fields):
     except Exception:
         pass
 
+# ---------------------------------------------------------------------------
+# Per-number outbound call cooldown (in-memory, resets on server restart).
+#
+# Unless INTERVAL_VERIFICATION_DAYS is 0 or '0', no call can go out to the same
+# number within CALL_COOLDOWN_SECONDS (default 3600 = 1 hour). This prevents
+# the AI from rapidly re-dialing a number that returns an instant error.
+# The cooldown is recorded at attempt time (before dialing), so failed calls
+# also count.
+# ---------------------------------------------------------------------------
+_recent_call_times = {}  # normalized_number -> time.time() of last attempt
+CALL_COOLDOWN_SECONDS = float(os.getenv('MR_SIP_CALL_COOLDOWN_SECONDS', '3600'))
+
+
+def _cooldown_disabled() -> bool:
+    """True if the per-number call cooldown is disabled via env var."""
+    val = os.getenv('INTERVAL_VERIFICATION_DAYS', '1')
+    return str(val).strip() in ('0', '0.0', '', 'false', 'False', 'no', 'No')
+
+
+def _check_call_cooldown(destination: str):
+    """Return None if OK to call, or an error string if within cooldown."""
+    if _cooldown_disabled():
+        return None
+    now = time.time()
+    last = _recent_call_times.get(destination)
+    if last is not None:
+        elapsed = now - last
+        if elapsed < CALL_COOLDOWN_SECONDS:
+            logger.warning(
+                f'Call to {destination} blocked by cooldown: '
+                f'last attempt {int(elapsed)}s ago, cooldown {int(CALL_COOLDOWN_SECONDS)}s'
+            )
+            return ('SYSTEM ERROR: attempted rapid redial. no call retries allowed '
+                    'in less than one hour! DO NOT CALL THIS NUMBER AGAIN IN THIS SESSION')
+    return None
+
+
+def _record_call_attempt(destination: str):
+    """Record a call attempt timestamp for cooldown tracking."""
+    if _cooldown_disabled():
+        return
+    _recent_call_times[destination] = time.time()
+
+
 @command()
 async def call(destination: str, context=None) -> str:
     """
@@ -140,6 +184,13 @@ async def call(destination: str, context=None) -> str:
             destination = '1' + destination
         else:
             pass
+        # Per-number cooldown: prevent rapid re-dialing (e.g. instant-error loop)
+        cooldown_error = _check_call_cooldown(destination)
+        if cooldown_error:
+            return cooldown_error
+        else:
+            pass
+        _record_call_attempt(destination)
         dial_service_s2s, end_call_service_s2s, s2s_available = _get_s2s_services()
         if sip_provider == 's2s' and s2s_available:
             logger.info(f'Using S2S implementation for call to {destination}')
