@@ -188,7 +188,7 @@ class MindRootSIPBotV2:
         # Action = re-deliver that same reply. All default OFF / current
         # behavior. See DEADAIR_BACKSTOP_SPEC.md.
         self._backstop_enabled = os.getenv(
-            'MR_SIP_DEADAIR_BACKSTOP_ENABLED', '0').strip().lower() in ('1', 'true', 'yes', 'on')
+            'MR_SIP_DEADAIR_BACKSTOP_ENABLED', '1').strip().lower() in ('1', 'true', 'yes', 'on')
         try:
             self._backstop_ms = max(0.0, float(os.getenv('MR_SIP_DEADAIR_BACKSTOP_MS', '1500')))
         except (TypeError, ValueError):
