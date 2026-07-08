@@ -61,6 +61,11 @@ class BargeInGate:
         rescue_sustain_ms: int = 160,     # must persist this long (rejects thuds)
         noise_alpha: float = 0.05,
         noise_init_rms: float = 1e-4,     # ~ -80 dBFS
+        rescue_warmup_frames: int = 0,    # NS frames the noise floor must adapt
+                                          # over before loud-rescue may fire.
+                                          # 0 = disabled (legacy). Prevents the
+                                          # cold-noise-floor false onset on the
+                                          # call-answer click.
     ):
         self.vad_threshold = vad_threshold
         self.frame_ms = frame_ms
@@ -74,6 +79,7 @@ class BargeInGate:
         self.rescue_snr_db = rescue_snr_db
         self.rescue_sustain_ms = rescue_sustain_ms
         self.noise_alpha = noise_alpha
+        self.rescue_warmup_frames = max(0, rescue_warmup_frames)
 
         win = max(1, level_window_ms // frame_ms)
         self._rms_win = deque(maxlen=win)
@@ -84,6 +90,9 @@ class BargeInGate:
         self._onset_voiced_count = 0
         self._rescue_run_frames = 0
         self._in_fg = False
+        # Count of non-speech frames the noise floor has adapted over (gates the
+        # loud-rescue warm-up).
+        self._noise_frames = 0
 
     def _rel_db(self, lvl: float) -> Optional[float]:
         if self.near_end_ref is None or self.near_end_ref <= 0 or lvl <= 0:
@@ -108,6 +117,7 @@ class BargeInGate:
         self.noise_floor = a * rms + (1 - a) * self.noise_floor
         if self.noise_floor < 1e-6:
             self.noise_floor = 1e-6
+        self._noise_frames += 1
 
     def process(self, prob: float, rms: float) -> dict:
         """Feed one chunk. Returns dict(label, barge_in, rel_db, snr_db, reason)."""
@@ -134,7 +144,13 @@ class BargeInGate:
 
         # Path B: loud-foreground rescue.
         pathB = False
-        loud = floor_ok and (snr_db >= self.rescue_snr_db) and within_band
+        # Warm-up gate: until the noise floor has actually been measured over
+        # rescue_warmup_frames non-speech frames, do NOT allow loud-rescue. At
+        # call answer the floor is cold (~-80 dBFS) so the first transient (the
+        # pickup click) otherwise reads as huge SNR and trips a false onset.
+        rescue_warmed = (self.rescue_warmup_frames <= 0
+                         or self._noise_frames >= self.rescue_warmup_frames)
+        loud = floor_ok and (snr_db >= self.rescue_snr_db) and within_band and rescue_warmed
         if self.rescue_enabled and loud:
             self._rescue_run_frames += 1
             if self._rescue_run_frames * self.frame_ms >= self.rescue_sustain_ms:
