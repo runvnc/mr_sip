@@ -180,6 +180,43 @@ class MindRootSIPBotV2:
         self.last_activity_time = time.time()
         self.silence_threshold = 200
         self.silence_reported = False
+        # ---- Dead-air backstop (Phase 1 safety net) ----------------------
+        # Guarantees we never sit in total dead air after the far end finishes
+        # WITHOUT reproducing the old idle-reprompt pestering. Fires ONLY on an
+        # UN-VOICED generated reply (the AI produced speak text but 0 frames
+        # reached RTP) once the far end turn is over (strong-near-end silence).
+        # Action = re-deliver that same reply. All default OFF / current
+        # behavior. See DEADAIR_BACKSTOP_SPEC.md.
+        self._backstop_enabled = os.getenv(
+            'MR_SIP_DEADAIR_BACKSTOP_ENABLED', '0').strip().lower() in ('1', 'true', 'yes', 'on')
+        try:
+            self._backstop_ms = max(0.0, float(os.getenv('MR_SIP_DEADAIR_BACKSTOP_MS', '1500')))
+        except (TypeError, ValueError):
+            self._backstop_ms = 1500.0
+        # retain | redispatch. 'retain' (re-voice the exact generated text via
+        # TTS) has no clean text->call seam through the current TTS plugin, so
+        # it currently aliases 'redispatch' (regenerate the reply to the same
+        # last user turn, temp0 => ~identical words) which reuses the whole
+        # existing TTS pipeline. Kept as a flag for a future Phase-2 retain path.
+        self._backstop_redeliver = os.getenv(
+            'MR_SIP_DEADAIR_BACKSTOP_REDELIVER', 'redispatch').strip().lower()
+        # Frames actually voiced for the CURRENT agent reply (reset when a reply
+        # begins generating, incremented as RTP frames leave). 0 after the reply
+        # is done == un-voiced.
+        self._frames_voiced_this_reply = 0
+        # Latched state: an un-voiced reply is waiting to be re-delivered.
+        self._unvoiced_reply_pending = False
+        self._unvoiced_reply_pc = 0.0
+        self._unvoiced_reply_text = ''
+        # One-shot latch: after firing (or while a reply is voicing) do not fire
+        # again until the far end speaks again or Katie voices audio.
+        self._backstop_latched = False
+        # Settable hook: True while the agent is in an intentional wait(); hard
+        # suppresses the backstop. Deliberate SILENT waits are already covered
+        # by requiring generated speak text, so this is belt-and-suspenders
+        # (default False).
+        self._wait_active = False
+        self._backstop_firing = False
         self._s2s_active = True
         self._silence_monitor_task = None
         self._aborted = False
@@ -343,6 +380,11 @@ class MindRootSIPBotV2:
             _deadair_log('TURN_RESUMED_PLAYBACK_LOCKED',
                          utterance_num=getattr(self, '_e2e_current_utterance_num', 0))
             return
+        # Far end started speaking: a new turn is beginning. Un-latch the
+        # dead-air backstop and clear any pending un-voiced reply (that reply is
+        # about to be superseded by the response to this new utterance).
+        self._backstop_latched = False
+        self._unvoiced_reply_pending = False
         # Barge-in grace window: ignore the *immediate* halt if the current TTS
         # response only just started. TTS plugins (e.g. mr_kyutai) have a warm-up
         # of ~250-300ms before the first audio frame reaches the RTP wire. A bare
@@ -995,6 +1037,13 @@ class MindRootSIPBotV2:
                              since_tts_response_start_ms=f'{(time.perf_counter() - getattr(self, "_tts_response_start_pc", time.perf_counter()))*1000:.0f}',
                              chunk_len=len(ulaw_audio[i:i + FRAME_SIZE]))
                 self._response_output_frame_count += 1
+                # Dead-air backstop bookkeeping: this reply is voicing real RTP
+                # frames, so it is NOT the un-voiced dead-air case. Clear any
+                # pending latch and un-latch (Katie voiced audio -> reset).
+                self._frames_voiced_this_reply += 1
+                if self._unvoiced_reply_pending or self._backstop_latched:
+                    self._unvoiced_reply_pending = False
+                    self._backstop_latched = False
                 frame = ulaw_audio[i:i + FRAME_SIZE]
                 frame_timestamp = timestamp + i / 8000.0 if timestamp else None
                 try:
@@ -1097,6 +1146,134 @@ class MindRootSIPBotV2:
             logger.error(f'Error in hangup_call: {e}')
             logger.error(traceback.format_exc())
 
+    # ==================== Dead-air backstop (Phase 1) ====================
+    def note_reply_generation_start(self):
+        """Mark that the agent is about to GENERATE a reply for the current
+        user turn. Resets the per-reply voiced-frame counter and clears any
+        stale pending latch. Called from the utterance dispatch path before
+        send_message_to_agent."""
+        self._frames_voiced_this_reply = 0
+        self._unvoiced_reply_pending = False
+        self._backstop_latched = False
+
+    def note_reply_generation_done(self, voiced_text_len: int, generated_text: str = ''):
+        """Called AFTER the agent turn finished generating. If the reply
+        produced speak text but voiced 0 RTP frames, arm the backstop so the
+        monitor loop can re-deliver it once the far end turn is over.
+
+        Deliberate SILENT waits are inherently covered: they produce no speak
+        text (voiced_text_len == 0) so nothing is armed."""
+        if not self._backstop_enabled:
+            return
+        if self._backstop_firing:
+            return
+        if voiced_text_len > 0 and self._frames_voiced_this_reply == 0 and not self._wait_active:
+            self._unvoiced_reply_pending = True
+            self._unvoiced_reply_pc = time.perf_counter()
+            self._unvoiced_reply_text = (generated_text or '')[:120]
+            _deadair_log('BACKSTOP_ARMED',
+                         utterance_num=getattr(self, '_e2e_current_utterance_num', 0),
+                         gen_text_len=voiced_text_len,
+                         spoken_seconds=0,
+                         redeliver_mode=self._backstop_redeliver)
+        else:
+            # Not the dead-air case: voiced normally, silent wait, or wait()
+            self._unvoiced_reply_pending = False
+            if voiced_text_len > 0 and self._frames_voiced_this_reply > 0:
+                # healthy voiced reply -> un-latch
+                self._backstop_latched = False
+            elif self._wait_active:
+                _deadair_log('BACKSTOP_SUPPRESSED', reason='wait_active',
+                             utterance_num=getattr(self, '_e2e_current_utterance_num', 0))
+
+    async def _maybe_fire_deadair_backstop(self):
+        """Fire the dead-air backstop if ALL conditions hold. Called each
+        _monitor_silence tick while an un-voiced reply is pending."""
+        if not self._unvoiced_reply_pending or self._backstop_latched or self._backstop_firing:
+            return
+        # Currently generating / speaking / locked playback -> not dead air.
+        if self._tts_response_active or getattr(self, 'draft_response_active', False) \
+                or getattr(self, '_playback_locked', False):
+            _deadair_log('BACKSTOP_SUPPRESSED', reason='generating_or_speaking',
+                         utterance_num=getattr(self, '_e2e_current_utterance_num', 0),
+                         tts_active=self._tts_response_active,
+                         draft_active=getattr(self, 'draft_response_active', None))
+            return
+        if self._wait_active:
+            _deadair_log('BACKSTOP_SUPPRESSED', reason='wait_active',
+                         utterance_num=getattr(self, '_e2e_current_utterance_num', 0))
+            return
+        if self._frames_voiced_this_reply > 0:
+            # Reply voiced after all -> not dead air.
+            self._unvoiced_reply_pending = False
+            _deadair_log('BACKSTOP_SUPPRESSED', reason='voiced>0',
+                         utterance_num=getattr(self, '_e2e_current_utterance_num', 0),
+                         frames_voiced=self._frames_voiced_this_reply)
+            return
+        stt = self.stt
+        if stt is None:
+            return
+        last_strong = getattr(stt, '_last_strong_near_end_pc', 0.0) or 0.0
+        if last_strong <= 0.0:
+            # Never observed strong near-end speech; cannot assert turn is over.
+            return
+        silence_ms = (time.perf_counter() - last_strong) * 1000.0
+        if silence_ms < self._backstop_ms:
+            _deadair_log('BACKSTOP_SUPPRESSED', reason='far_end_speaking',
+                         utterance_num=getattr(self, '_e2e_current_utterance_num', 0),
+                         strong_silence_ms=f'{silence_ms:.0f}',
+                         need_ms=f'{self._backstop_ms:.0f}')
+            return
+        # ---- All conditions hold: FIRE (one-shot) ----
+        self._backstop_latched = True
+        self._backstop_firing = True
+        _deadair_log('BACKSTOP_FIRED',
+                     utterance_num=getattr(self, '_e2e_current_utterance_num', 0),
+                     silence_ms=f'{silence_ms:.0f}',
+                     redeliver_mode=self._backstop_redeliver,
+                     gen_text_preview=self._unvoiced_reply_text.replace(' ', '_')[:60])
+        try:
+            await self._redeliver_unvoiced_reply()
+        finally:
+            self._backstop_firing = False
+
+    async def _redeliver_unvoiced_reply(self):
+        """Re-deliver the un-voiced reply. Default 'redispatch': drop the
+        trailing un-voiced assistant turn and re-run the agent generation loop
+        on the existing history (no new user turn) so the reply is regenerated
+        (temp0 => ~identical words) and this time voices. NEVER injects a
+        'take initiative' / '[No audio detected]' nudge."""
+        ctx = self.context
+        if not ctx or not getattr(ctx, 'log_id', None):
+            _deadair_log('BACKSTOP_REDELIVER_NO_CONTEXT')
+            return
+        try:
+            # Make sure output is not halted from an earlier barge-in.
+            try:
+                await service_manager.sip_resume_audio(context=ctx)
+            except Exception:
+                pass
+            # Drop the trailing un-voiced assistant turn so the agent re-answers
+            # the same last user turn fresh instead of seeing its own reply.
+            try:
+                await ctx.chat_log.drop_last('assistant')
+            except Exception as _e:
+                logger.debug(f'backstop drop_last assistant failed: {_e}')
+            self._frames_voiced_this_reply = 0
+            await service_manager.send_message_to_agent(
+                session_id=ctx.log_id, message='', context=ctx, add_user_message=False)
+            frames_after = self._frames_voiced_this_reply
+            _deadair_log('BACKSTOP_REDELIVERED',
+                         utterance_num=getattr(self, '_e2e_current_utterance_num', 0),
+                         frames_voiced_after=frames_after,
+                         redeliver_mode=self._backstop_redeliver)
+            if frames_after > 0:
+                self._unvoiced_reply_pending = False
+        except Exception as e:
+            _deadair_log('BACKSTOP_REDELIVER_ERROR', error=str(e))
+            logger.error(f'Error re-delivering un-voiced reply: {e}')
+            logger.error(traceback.format_exc())
+
     async def _monitor_silence(self):
         """Monitor for silence on both channels."""
         try:
@@ -1178,6 +1355,17 @@ class MindRootSIPBotV2:
                         pass
                 else:
                     pass
+
+                # ---- Dead-air backstop check (Phase 1) ----
+                # Independent of the 40s idle nudge above (which is starved by
+                # any incoming RTP). Fires only on an UN-VOICED generated reply
+                # once the far end turn is over. Cheap no-op when disabled or
+                # when there is no pending un-voiced reply.
+                if self._backstop_enabled and self._unvoiced_reply_pending:
+                    try:
+                        await self._maybe_fire_deadair_backstop()
+                    except Exception as _e:
+                        logger.debug(f'dead-air backstop check error: {_e}')
             else:
                 pass
         except asyncio.CancelledError:

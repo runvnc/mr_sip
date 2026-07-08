@@ -249,6 +249,10 @@ class SmartTurnV3STT(BaseSTTProvider):
         # near-end run AND Smart Turn predicting semantic completion. <=0 falls
         # back to the gate's own FG/BG label.
         self._turn_end_rel_db = float(os.getenv('BARGE_IN_TURN_END_REL_LEVEL_DB', '9'))
+        # Dead-air backstop: strict band for the STRONG near-end timer. A frame
+        # counts as 'strong near-end' only if it is FG and within this many dB
+        # of the near-end reference (default 4dB, tighter than _turn_end_rel_db).
+        self._strong_near_end_rel_db = float(os.getenv('SMART_TURN_STRONG_NEAR_END_REL_DB', '4'))
         # On turn end, trim trailing audio beyond the last near-end (FG) frame
         # (plus this pad) so any background that bled into the buffer before the
         # endpoint fired is not transcribed. <0 disables trimming.
@@ -262,6 +266,15 @@ class SmartTurnV3STT(BaseSTTProvider):
         self._is_speaking: bool = False
         self._speech_start_time: float = 0.0
         self._last_speech_audio_time: float = 0.0
+        # Dead-air backstop (Phase 1): a STRONG near-end timer, updated only on
+        # a strict near-end frame (FG, high VAD prob, within STRONG_REL_DB of the
+        # near-end reference). Decoupled from _last_speech_audio_time (the
+        # keep-alive timer) which real but borderline near-end/background frames
+        # legitimately reset (see TURN_SILENCE_RESET). The backstop uses this
+        # harder-to-reset timer to decide the far end's turn is truly over, so
+        # background / cross-talk cannot starve it. 0.0 == never seen strong
+        # near-end yet (treated as 'not silent long enough' by the backstop).
+        self._last_strong_near_end_pc: float = 0.0
         self._frames_received: int = 0
         self._vad_chunks_processed: int = 0
 
@@ -573,6 +586,16 @@ class SmartTurnV3STT(BaseSTTProvider):
             # noise floor stay coherent across the whole call.
             gate = self._gate.process(prob, rms)
             label = gate['label']
+
+            # Dead-air backstop STRONG near-end timer: update on every strict
+            # near-end frame (FG, voiced, within _strong_near_end_rel_db of the
+            # near-end reference). This is deliberately harder to reset than the
+            # keep-alive _last_speech_audio_time so background / cross-talk
+            # cannot make the backstop think the far end is still talking.
+            _sne_rel = gate['rel_db']
+            if (label == self._gate.FG and voiced
+                    and (_sne_rel is None or _sne_rel >= -self._strong_near_end_rel_db)):
+                self._last_strong_near_end_pc = time.perf_counter()
 
             # Speech start detection only.
             if not self._vad_speech_active:

@@ -195,7 +195,26 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
                     pass
                 await service_manager.backend_user_message(message=text)
                 logger.info(f'SIP_DEBUG Sending message to agent for session {ctx.log_id}')
+                # Dead-air backstop: mark reply generation boundaries so an
+                # un-voiced reply (speak text generated but 0 RTP frames) can be
+                # re-delivered once the far end turn is over. No behavior change
+                # unless MR_SIP_DEADAIR_BACKSTOP_ENABLED=1.
+                _bot = getattr(session, 'baresip_bot', None) if session else None
+                if _bot is not None and hasattr(_bot, 'note_reply_generation_start'):
+                    try:
+                        _bot.note_reply_generation_start()
+                    except Exception:
+                        pass
                 await service_manager.send_message_to_agent(session_id=ctx.log_id, message=text, context=ctx)
+                if _bot is not None and hasattr(_bot, 'note_reply_generation_done'):
+                    try:
+                        _gen_text = await service_manager.get_last_assistant_speech_text(context=ctx)
+                    except Exception:
+                        _gen_text = ''
+                    try:
+                        _bot.note_reply_generation_done(len(_gen_text or ''), _gen_text or '')
+                    except Exception:
+                        pass
             except Exception as e:
                 logger.error(f'SIP_DEBUG Error processing utterance: {e}')
             finally:
