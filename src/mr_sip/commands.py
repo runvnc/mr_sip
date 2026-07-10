@@ -3,6 +3,7 @@ MindRoot SIP Plugin - User Commands
 """
 import os
 import logging
+from logging.handlers import RotatingFileHandler
 import numpy as np
 from lib.providers.commands import command, command_manager
 from lib.chatcontext import get_context
@@ -69,25 +70,53 @@ logger = logging.getLogger(__name__)
 logger.info('Commands module loaded - SIP config will be read from context/environment at runtime')
 
 # ---------------------------------------------------------------------------
-# Dedicated runtime diagnostic log for delegate_call_job / job-queue tracing.
-# Writes to /tmp so it is isolated from the main app logs and easy to tail on
-# the server. Disable with MR_SIP_DELEGATE_DEBUG=0. Never raises.
+# Focused queue/delegate diagnostic channel. Independent of MR_DEBUG so the
+# production process can stay at MR_DEBUG=errors without losing lifecycle data.
+# Event-level only (never per audio frame) and bounded by rotation.
 # ---------------------------------------------------------------------------
-DELEGATE_DEBUG_LOG = os.getenv('MR_SIP_DELEGATE_DEBUG_LOG', '/tmp/delegate_call_debug.log')
-DELEGATE_DEBUG_ENABLED = os.getenv('MR_SIP_DELEGATE_DEBUG', '1') not in ('0', 'false', 'False', '')
+DELEGATE_DEBUG_ENABLED = os.getenv(
+    'MR_JOB_QUEUE_DIAGNOSTICS', os.getenv('MR_SIP_DELEGATE_DEBUG', '1')
+).lower() not in ('0', 'false', 'no', 'off', '')
+DELEGATE_DEBUG_LOG = os.getenv(
+    'MR_JOB_QUEUE_DIAGNOSTICS_LOG',
+    os.getenv('MR_SIP_DELEGATE_DEBUG_LOG', '/tmp/job_queue_diagnostics.log')
+)
+_delegate_diag_logger = logging.getLogger('mr_sip.delegate_lockup')
+_delegate_diag_logger.setLevel(logging.INFO)
+_delegate_diag_logger.propagate = False
+if DELEGATE_DEBUG_ENABLED and not _delegate_diag_logger.handlers:
+    try:
+        _delegate_handler = RotatingFileHandler(
+            DELEGATE_DEBUG_LOG,
+            maxBytes=int(os.getenv('MR_JOB_QUEUE_DIAGNOSTICS_MAX_BYTES', '5242880')),
+            backupCount=int(os.getenv('MR_JOB_QUEUE_DIAGNOSTICS_BACKUPS', '3')),
+        )
+        _delegate_handler.setFormatter(logging.Formatter('%(asctime)s %(message)s', '%Y-%m-%d %H:%M:%S'))
+        _delegate_diag_logger.addHandler(_delegate_handler)
+    except Exception:
+        DELEGATE_DEBUG_ENABLED = False
 
 def _dbg(tag, **fields):
-    """Append a single structured line to the delegate-call debug log."""
     if not DELEGATE_DEBUG_ENABLED:
         return
     try:
-        ts = time.strftime('%Y-%m-%d %H:%M:%S') + f'.{int((time.time() % 1) * 1000):03d}'
         parts = ' '.join(f'{k}={v!r}' for k, v in fields.items())
-        line = f'{ts} pid={os.getpid()} [SIP] {tag} {parts}\n'
-        with open(DELEGATE_DEBUG_LOG, 'a') as f:
-            f.write(line)
+        _delegate_diag_logger.info('pid=%s [SIP] %s %s', os.getpid(), tag, parts)
     except Exception:
         pass
+
+def _task_snapshot():
+    try:
+        task = asyncio.current_task()
+        coro = task.get_coro() if task else None
+        return {
+            'done': task.done() if task else None,
+            'cancelled': task.cancelled() if task else None,
+            'coro': getattr(coro, '__qualname__', repr(coro)),
+            'stack': [f'{frame.f_code.co_filename}:{frame.f_lineno}:{frame.f_code.co_name}' for frame in task.get_stack(limit=8)] if task else [],
+        }
+    except Exception as exc:
+        return {'snapshot_error': repr(exc)}
 
 # ---------------------------------------------------------------------------
 # Per-number outbound call cooldown (in-memory, resets on server restart).
@@ -489,12 +518,14 @@ async def _await_guarded(coro, what: str, timeout: float = None) -> bool:
         await asyncio.wait_for(coro, timeout=timeout)
         return True
     except asyncio.TimeoutError:
+        _dbg('SIP_CLEANUP_TIMEOUT', what=what, timeout=timeout, task=_task_snapshot())
         logger.error(
             f'CLEANUP TIMEOUT after {timeout}s during: {what}. Continuing; '
             f'SIP teardown may be incomplete (see Bug A / far-end BYE handling).'
         )
         return False
     except Exception as e:
+        _dbg('SIP_CLEANUP_ERROR', what=what, error=repr(e), task=_task_snapshot())
         logger.warning(f'Error during {what}: {e}')
         return False
 
@@ -822,7 +853,7 @@ async def delegate_call_job(agent: str, phone_number: str, instructions: str, jo
              duration=round(time.time() - call_start_time, 1),
              max_call_exceeded=max_call_exceeded,
              disconnected=(disconnected_at is not None))
-        _dbg('DCJ_CLEANUP_GET_SESSION_BEGIN', job_id=queued_job_id)
+        _dbg('DCJ_CLEANUP_GET_SESSION_BEGIN', job_id=queued_job_id, task=_task_snapshot())
         try:
             session_manager = get_session_manager()
             session = await asyncio.wait_for(session_manager.get_session(queued_job_id), timeout=CLEANUP_AWAIT_TIMEOUT)

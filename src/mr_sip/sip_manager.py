@@ -17,6 +17,36 @@ import traceback
 
 logger = logging.getLogger(__name__)
 
+
+def _queue_diag(tag: str, **fields):
+    """Write sparse SIP-manager lifecycle data to the queue diagnostic file."""
+    enabled = os.getenv(
+        'MR_JOB_QUEUE_DIAGNOSTICS', os.getenv('MR_SIP_DELEGATE_DEBUG', '1')
+    ).lower() not in ('0', 'false', 'no', 'off', '')
+    if not enabled:
+        return
+    try:
+        from logging.handlers import RotatingFileHandler
+        diag = logging.getLogger('mr_sip.session_lockup')
+        diag.setLevel(logging.INFO)
+        diag.propagate = False
+        if not diag.handlers:
+            path = os.getenv(
+                'MR_JOB_QUEUE_DIAGNOSTICS_LOG',
+                os.getenv('MR_SIP_DELEGATE_DEBUG_LOG', '/tmp/job_queue_diagnostics.log')
+            )
+            handler = RotatingFileHandler(
+                path,
+                maxBytes=int(os.getenv('MR_JOB_QUEUE_DIAGNOSTICS_MAX_BYTES', '5242880')),
+                backupCount=int(os.getenv('MR_JOB_QUEUE_DIAGNOSTICS_BACKUPS', '3')),
+            )
+            handler.setFormatter(logging.Formatter('%(asctime)s %(message)s', '%Y-%m-%d %H:%M:%S'))
+            diag.addHandler(handler)
+        parts = ' '.join(f'{key}={value!r}' for key, value in fields.items())
+        diag.info('pid=%s [SIPMGR] %s %s', os.getpid(), tag, parts)
+    except Exception:
+        pass
+
 # Bound each session teardown (audio sender stop + SIP hangup / far-end BYE),
 # which is always run WITHOUT the manager lock, so a single stuck hangup can't
 # wedge shutdown/cleanup. Override with MR_SIP_SESSION_TEARDOWN_TIMEOUT.
@@ -423,7 +453,9 @@ class SIPSessionManager:
     async def create_session(self, log_id: str, destination: str, baresip_bot=None) -> SIPSession:
         """Create a new SIP session"""
         old_session = None
+        _queue_diag('CREATE_LOCK_WAIT', log_id=log_id, locked=self._lock.locked(), session_count=len(self.sessions))
         async with self._lock:
+            _queue_diag('CREATE_LOCK_ACQUIRED', log_id=log_id, session_count=len(self.sessions))
             if log_id in self.sessions:
                 logger.warning(f"Session {log_id} already exists, ending previous session")
                 # Remove the stale session UNDER the lock, but DO NOT tear it down
@@ -443,7 +475,11 @@ class SIPSessionManager:
 
     async def get_session(self, log_id: str) -> Optional[SIPSession]:
         """Get an existing SIP session"""
+        wait_started = time.perf_counter()
         async with self._lock:
+            waited_ms = (time.perf_counter() - wait_started) * 1000.0
+            if waited_ms >= float(os.getenv('MR_SIP_MANAGER_LOCK_LOG_MS', '100')):
+                _queue_diag('GET_LOCK_SLOW', log_id=log_id, waited_ms=round(waited_ms, 1), session_count=len(self.sessions))
             return self.sessions.get(log_id)
 
     async def _teardown_session(self, log_id: str, session: 'SIPSession') -> bool:
@@ -455,19 +491,24 @@ class SIPSessionManager:
         """
         if session is None:
             return False
+        _queue_diag('TEARDOWN_BEGIN', log_id=log_id, bot_ended=getattr(session.baresip_bot, '_ended', None), bot_ending=getattr(session.baresip_bot, '_ending', None), audio_sender=repr(session._audio_sender_task))
         try:
             await asyncio.wait_for(session.end_session(), timeout=SESSION_TEARDOWN_TIMEOUT)
         except asyncio.TimeoutError:
+            _queue_diag('TEARDOWN_TIMEOUT', log_id=log_id, timeout=SESSION_TEARDOWN_TIMEOUT, audio_sender=repr(session._audio_sender_task))
             logger.error(f"Timeout ({SESSION_TEARDOWN_TIMEOUT}s) tearing down SIP session {log_id}; continuing")
         except Exception as e:
             logger.error(f"Error tearing down SIP session {log_id}: {e}")
+        _queue_diag('TEARDOWN_DONE', log_id=log_id, bot_ended=getattr(session.baresip_bot, '_ended', None), bot_ending=getattr(session.baresip_bot, '_ending', None))
         logger.info(f"Ended SIP session {log_id}")
         return True
 
     async def end_session(self, log_id: str) -> bool:
         """End a SIP session"""
+        _queue_diag('END_LOCK_WAIT', log_id=log_id, locked=self._lock.locked(), session_count=len(self.sessions))
         async with self._lock:
             session = self.sessions.pop(log_id, None)
+        _queue_diag('END_LOCK_RELEASED', log_id=log_id, found=bool(session), session_count=len(self.sessions))
         # Teardown outside the lock (see _teardown_session).
         if session is None:
             return False
