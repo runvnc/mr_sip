@@ -96,12 +96,22 @@ if DELEGATE_DEBUG_ENABLED and not _delegate_diag_logger.handlers:
     except Exception:
         DELEGATE_DEBUG_ENABLED = False
 
+def _emit_diagnostic(logger, message, *args):
+    """Emit to this logger's handlers despite a process-wide logging.disable floor."""
+    record = logger.makeRecord(
+        logger.name, logging.INFO, __file__, 0, message, args, None
+    )
+    logger.handle(record)
+
+
 def _dbg(tag, **fields):
     if not DELEGATE_DEBUG_ENABLED:
         return
     try:
         parts = ' '.join(f'{k}={v!r}' for k, v in fields.items())
-        _delegate_diag_logger.info('pid=%s [SIP] %s %s', os.getpid(), tag, parts)
+        _emit_diagnostic(
+            _delegate_diag_logger, 'pid=%s [SIP] %s %s', os.getpid(), tag, parts
+        )
     except Exception:
         pass
 

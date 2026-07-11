@@ -43,7 +43,20 @@ def _queue_diag(tag: str, **fields):
             handler.setFormatter(logging.Formatter('%(asctime)s %(message)s', '%Y-%m-%d %H:%M:%S'))
             diag.addHandler(handler)
         parts = ' '.join(f'{key}={value!r}' for key, value in fields.items())
-        diag.info('pid=%s [SIPMGR] %s %s', os.getpid(), tag, parts)
+        # logging.disable(WARNING), used by MR_DEBUG=errors, suppresses normal
+        # logger.info() even on a private non-propagating file logger. Build and
+        # handle the record directly so this explicitly enabled diagnostic
+        # channel remains independent of the process-wide ordinary-log floor.
+        record = diag.makeRecord(
+            diag.name,
+            logging.INFO,
+            __file__,
+            0,
+            'pid=%s [SIPMGR] %s %s',
+            (os.getpid(), tag, parts),
+            None,
+        )
+        diag.handle(record)
     except Exception:
         pass
 
