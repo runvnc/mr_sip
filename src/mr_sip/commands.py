@@ -150,8 +150,7 @@ def _check_call_cooldown(destination: str):
                 f'Call to {destination} blocked by cooldown: '
                 f'last attempt {int(elapsed)}s ago, cooldown {int(CALL_COOLDOWN_SECONDS)}s'
             )
-            return ('SYSTEM ERROR: attempted rapid redial. no call retries allowed '
-                    'in less than one hour! DO NOT CALL THIS NUMBER AGAIN IN THIS SESSION')
+            return ('NO ANSWER/COULD NOT CONNECT. Note: no retries in this session.')
     return None
 
 
