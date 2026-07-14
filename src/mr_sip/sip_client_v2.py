@@ -222,23 +222,36 @@ class MindRootSIPBotV2:
         self._aborted = False
         self._ending = False
         self._ended = False
-        self._rtp_timeout_end_call = os.getenv('MR_SIP_RTP_TIMEOUT_END_CALL', 'true').lower() in ('1', 'true', 'yes', 'on')
+        # A peer can stop RTP without a usable SIP BYE (for example, a broken
+        # UAS BYE rejected by the carrier). Do not leave the agent talking into
+        # that dead leg until the overall call-length timeout. Once an
+        # established call has received RTP, a complete frame drought is an
+        # emergency signaling-failure fallback. Normal SIP BYE remains the
+        # authoritative and immediate call-end signal.
+        self._rtp_timeout_end_call = os.getenv(
+            'MR_SIP_RTP_TIMEOUT_END_CALL', 'true').lower() in ('1', 'true', 'yes', 'on')
         try:
-            self._rtp_timeout_seconds = max(0.0, float(os.getenv('MR_SIP_RTP_TIMEOUT_SECONDS', '120')))
+            self._rtp_timeout_seconds = max(
+                0.0, float(os.getenv('MR_SIP_RTP_TIMEOUT_SECONDS', '12')))
         except (TypeError, ValueError):
-            self._rtp_timeout_seconds = 120.0
+            self._rtp_timeout_seconds = 12.0
         try:
-            self._rtp_watchdog_warn_interval = max(1.0, float(os.getenv('MR_SIP_RTP_WATCHDOG_WARN_INTERVAL', '10')))
+            self._rtp_watchdog_warn_interval = max(
+                1.0, float(os.getenv('MR_SIP_RTP_WATCHDOG_WARN_INTERVAL', '5')))
         except (TypeError, ValueError):
-            self._rtp_watchdog_warn_interval = 10.0
+            self._rtp_watchdog_warn_interval = 5.0
+        self._idle_agent_reprompt_enabled = os.getenv(
+            'MR_SIP_IDLE_AGENT_REPROMPT_ENABLED', 'false'
+        ).strip().lower() in ('1', 'true', 'yes', 'on')
         self._last_rtp_watchdog_warn = 0.0
         logger.info(f'PySIP V2 Bot initialized for user {user} on gateway {gateway}')
         logger.info(f'STT provider: {self.stt_provider_name}')
         logger.info(
-            'RTP watchdog config: end_call=%s timeout_seconds=%.1f warn_interval=%.1f',
+            'RTP watchdog config: end_call=%s timeout_seconds=%.1f warn_interval=%.1f idle_agent_reprompt=%s',
             self._rtp_timeout_end_call,
             self._rtp_timeout_seconds,
             self._rtp_watchdog_warn_interval,
+            self._idle_agent_reprompt_enabled,
         )
 
     def wait_until_ready(self):
@@ -1306,10 +1319,10 @@ class MindRootSIPBotV2:
                     return
                 
                 # Watch incoming RTP for diagnostics and an emergency local
-                # abort.  Short RTP gaps are not call termination signals; SIP
-                # BYE/CANCEL/dialog state owns normal call lifetime.
+                # abort when the peer goes media-dead without a usable SIP BYE.
+                # Short RTP gaps remain tolerated; SIP owns normal call lifetime.
                 current_frames = self._input_frame_count
-                if current_frames == last_frame_count and self.call_established:
+                if current_frames > 0 and current_frames == last_frame_count and self.call_established:
                     no_frame_count += 1
                     no_frame_seconds = no_frame_count * 0.5
                     now = time.time()
@@ -1330,8 +1343,20 @@ class MindRootSIPBotV2:
                         and self._rtp_timeout_seconds > 0
                         and no_frame_seconds >= self._rtp_timeout_seconds
                     ):
-                        reason = f'Emergency RTP watchdog timeout: no incoming RTP for {no_frame_seconds:.1f}s'
-                        logger.error('%s; sending SIP termination now', reason)
+                        reason = (
+                            'SIP signaling failure fallback: no incoming RTP for '
+                            f'{no_frame_seconds:.1f}s and no remote BYE'
+                        )
+                        _hangup_log(
+                            'MR_SIP_RTP_LOSS_NO_BYE',
+                            getattr(self.call, 'call_id', '') if self.call else '',
+                            no_rtp_seconds=f'{no_frame_seconds:.1f}',
+                            call_state=call_state,
+                            dialogue_state=dialogue_state,
+                            input_frames=current_frames,
+                            output_frames=self._output_frame_count,
+                        )
+                        logger.error('%s; terminating the dead media leg locally', reason)
                         await self._terminate_call(reason, CallState.ENDED)
                         return
                 else:
@@ -1339,8 +1364,11 @@ class MindRootSIPBotV2:
                     self._last_rtp_watchdog_warn = 0.0
                 last_frame_count = current_frames
                 
+                # Legacy behavior which asks the LLM to improvise after 40s of
+                # low-level audio silence. Disabled by default: it can make an
+                # agent pursue a peer whose media/signaling leg is already dead.
                 duration = time.time() - self.last_activity_time
-                if duration > 40.0 and (not self.silence_reported):
+                if self._idle_agent_reprompt_enabled and duration > 40.0 and (not self.silence_reported):
                     self.silence_reported = True
                     msg = f'[SYSTEM: No audio detected for {duration:.1f} seconds.]'
                     logger.info(f'Silence detected: {msg}')
