@@ -222,6 +222,9 @@ class MindRootSIPBotV2:
         self._aborted = False
         self._ending = False
         self._ended = False
+        # Serializes all local termination callers. A disconnect notification
+        # can make the agent issue hangup while the original cleanup is active.
+        self._terminate_lock = asyncio.Lock()
         # A peer can stop RTP without a usable SIP BYE (for example, a broken
         # UAS BYE rejected by the carrier). Do not leave the agent talking into
         # that dead leg until the overall call-length timeout. Once an
@@ -821,57 +824,61 @@ class MindRootSIPBotV2:
                     logger.error(traceback.format_exc())
 
     async def _terminate_call(self, reason: str, state: CallState=CallState.ENDED):
-        """Terminate the SIP dialog first, then run local cleanup.
+        """Terminate the SIP dialog once, then run local cleanup once.
 
         Local cleanup alone is not enough: Telnyx/remote SIP peers need an
         explicit CANCEL/BYE for early/confirmed dialogs.  This helper is for
         local abort paths such as agent hangup, setup failure, or the emergency
-        RTP watchdog.
+        RTP watchdog. Concurrent callers serialize here; callers arriving while
+        cleanup is active do not send another BYE or stop RTP a second time.
         """
-        _hangup_log('MR_SIP_TERMINATE_CALL_ENTRY',
-                    getattr(self.call, 'call_id', '') if self.call else '',
-                    reason=reason,
-                    state=state,
-                    is_active=self.is_active,
-                    already_ended=self._ended)
-        logger.warning(f'Terminating SIP call: {reason}')
-        self.is_active = False
-        try:
-            if self.call:
-                dialogue = getattr(self.call, 'dialogue', None)
-                logger.info(
-                    'Calling PySIP stop: reason=%s call_state=%s dialogue_state=%s already_stopped=%s',
-                    reason,
-                    getattr(self.call, 'call_state', None),
-                    getattr(dialogue, 'state', None),
-                    getattr(self.call, '_is_call_stopped', None),
-                )
-                await self.call.stop(reason)
-                _hangup_log('MR_SIP_TERMINATE_CALL_STOP_DONE',
-                            getattr(self.call, 'call_id', '') or '',
-                            reason=reason,
-                            dialogue_state=getattr(dialogue, 'state', None))
-                logger.info('PySIP stop completed for reason: %s', reason)
-                # NOTE: stop() returns even when the BYE was rejected by the
-                # carrier (e.g. Telnyx 403 Forbidden on a mis-tagged UAS BYE) or
-                # suppressed by the already-stopped guard. "stop completed" is
-                # therefore NOT proof of a real on-wire teardown. Verify the
-                # dialog actually reached TERMINATED and surface it loudly.
-            else:
-                _hangup_log('MR_SIP_TERMINATE_CALL_NO_CALL', '', reason=reason)
-                logger.warning('No SipCall object available while terminating call')
-        except Exception as e:
-            _hangup_log('MR_SIP_TERMINATE_CALL_ERROR',
-                        getattr(self.call, 'call_id', '') if self.call else '',
-                        reason=reason, error=str(e))
-            logger.error(f'Error while stopping SIP call for reason {reason}: {e}')
-            logger.error(traceback.format_exc())
-        finally:
-            _hangup_log('MR_SIP_TERMINATE_CALL_FINALLY',
-                        getattr(self.call, 'call_id', '') if self.call else '',
-                        reason=reason, ended=self._ended)
-            if not self._ended:
-                await self._on_call_ended(state)
+        call_id = getattr(self.call, 'call_id', '') if self.call else ''
+        if self._terminate_lock.locked():
+            _hangup_log('MR_SIP_TERMINATE_CALL_WAIT', call_id,
+                        reason=reason, ended=self._ended, ending=self._ending)
+        async with self._terminate_lock:
+            if self._ended:
+                _hangup_log('MR_SIP_TERMINATE_CALL_SKIP_ENDED', call_id,
+                            reason=reason)
+                return
+            if self._ending:
+                _hangup_log('MR_SIP_TERMINATE_CALL_SKIP_ENDING', call_id,
+                            reason=reason)
+                return
+
+            _hangup_log('MR_SIP_TERMINATE_CALL_ENTRY', call_id,
+                        reason=reason, state=state, is_active=self.is_active,
+                        already_ended=self._ended)
+            logger.warning(f'Terminating SIP call: {reason}')
+            self.is_active = False
+            try:
+                if self.call:
+                    dialogue = getattr(self.call, 'dialogue', None)
+                    logger.info(
+                        'Calling PySIP stop: reason=%s call_state=%s dialogue_state=%s already_stopped=%s',
+                        reason,
+                        getattr(self.call, 'call_state', None),
+                        getattr(dialogue, 'state', None),
+                        getattr(self.call, '_is_call_stopped', None),
+                    )
+                    await self.call.stop(reason)
+                    _hangup_log('MR_SIP_TERMINATE_CALL_STOP_DONE', call_id,
+                                reason=reason,
+                                dialogue_state=getattr(dialogue, 'state', None))
+                    logger.info('PySIP stop completed for reason: %s', reason)
+                else:
+                    _hangup_log('MR_SIP_TERMINATE_CALL_NO_CALL', '', reason=reason)
+                    logger.warning('No SipCall object available while terminating call')
+            except Exception as e:
+                _hangup_log('MR_SIP_TERMINATE_CALL_ERROR', call_id,
+                            reason=reason, error=str(e))
+                logger.error(f'Error while stopping SIP call for reason {reason}: {e}')
+                logger.error(traceback.format_exc())
+            finally:
+                _hangup_log('MR_SIP_TERMINATE_CALL_FINALLY', call_id,
+                            reason=reason, ended=self._ended)
+                if not self._ended and not self._ending:
+                    await self._on_call_ended(state)
 
     async def start_tts_response(self) -> bool:
         """Start a fresh outbound TTS response stream for PySIP.
