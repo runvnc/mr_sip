@@ -63,7 +63,11 @@ def create_stt_provider(provider_name: Optional[str]=None, **kwargs) -> BaseSTTP
         kwargs.pop('api_key', None)
         kwargs.pop('encoding', None)
         return SmartTurnV3STT(**kwargs)
+    if provider_name == 'umut':
+        from .umut_stt import UmutSTT
+        kwargs.pop('encoding', None)
+        return UmutSTT(**kwargs)
     raise ValueError(
         f'Unknown STT provider: {provider_name}. '
-        f'Available: deepgram, deepgram_flux, silero_cohere, smart_turn_v3'
+        f'Available: deepgram, deepgram_flux, silero_cohere, smart_turn_v3, umut'
     )

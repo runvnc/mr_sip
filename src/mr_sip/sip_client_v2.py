@@ -419,7 +419,10 @@ class MindRootSIPBotV2:
         except (TypeError, ValueError):
             grace_ms = 400.0
         start_pc = getattr(self, '_tts_response_start_pc', None)
-        if (self._tts_response_active and start_pc is not None
+        # Umut intentionally retains Unmute's immediate interruption behavior.
+        # The warm-up grace remains unchanged for all older providers.
+        if (self.stt_provider_name != 'umut'
+                and self._tts_response_active and start_pc is not None
                 and (time.perf_counter() - start_pc) * 1000.0 < grace_ms):
             elapsed_ms = (time.perf_counter() - start_pc) * 1000.0
             logger.info(
@@ -440,7 +443,11 @@ class MindRootSIPBotV2:
                      draft_active=getattr(self, 'draft_response_active', None))
         self._schedule_coroutine(self._halt_audio_output())
         self.last_eager_eot_text = ''
-        if self.draft_response_active:
+        if self.stt_provider_name == 'umut':
+            logger.info('[UMUT INTERRUPT] Cancelling active AI response (Unmute semantics)')
+            self._schedule_coroutine(self._cancel_ai_response())
+            self.clear_audio_queue()
+        elif self.draft_response_active:
             logger.info('[TURN RESUMED] Cancelling draft AI response')
             self._schedule_coroutine(self._cancel_ai_response())
         else:
@@ -895,6 +902,9 @@ class MindRootSIPBotV2:
                 logger.warning('Cannot start TTS response - RTP session not initialized')
                 return False
 
+            if self.stt and hasattr(self.stt, 'set_bot_speaking'):
+                self.stt.set_bot_speaking(True)
+
             self._tts_response_seq += 1
             stream = AudioStreamAdapter()
             stream.stream_id = f'tts_output_{self._tts_response_seq}_{time.time_ns()}'
@@ -959,6 +969,8 @@ class MindRootSIPBotV2:
             stream = self.audio_stream
             if not stream:
                 self._tts_response_active = False
+                if self.stt and hasattr(self.stt, 'set_bot_speaking'):
+                    self.stt.set_bot_speaking(False)
                 self._frame_remainder = b""
                 return False
 
@@ -978,12 +990,16 @@ class MindRootSIPBotV2:
                 logger.warning('TTS response stream full while enqueueing end sentinel')
             stream.stream_done()
             self._tts_response_active = False
+            if self.stt and hasattr(self.stt, 'set_bot_speaking'):
+                self.stt.set_bot_speaking(False)
             logger.debug(f'Ended TTS response stream {stream.stream_id}')
             return True
         except Exception as e:
             logger.error(f'Error ending TTS response stream: {e}')
             logger.error(traceback.format_exc())
             self._tts_response_active = False
+            if self.stt and hasattr(self.stt, 'set_bot_speaking'):
+                self.stt.set_bot_speaking(False)
             return False
 
     async def send_tts_audio(self, audio_chunk: bytes, timestamp=None):
@@ -1172,6 +1188,8 @@ class MindRootSIPBotV2:
         user turn. Resets the per-reply voiced-frame counter and clears any
         stale pending latch. Called from the utterance dispatch path before
         send_message_to_agent."""
+        if self.stt and hasattr(self.stt, 'set_bot_speaking'):
+            self.stt.set_bot_speaking(True)
         self._frames_voiced_this_reply = 0
         self._unvoiced_reply_pending = False
         self._backstop_latched = False
@@ -1183,6 +1201,9 @@ class MindRootSIPBotV2:
 
         Deliberate SILENT waits are inherently covered: they produce no speak
         text (voiced_text_len == 0) so nothing is armed."""
+        if not voiced_text_len and self.stt and hasattr(self.stt, 'set_bot_speaking'):
+            self.stt.set_bot_speaking(False)
+
         if not self._backstop_enabled:
             return
         if self._backstop_firing:

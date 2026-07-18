@@ -115,7 +115,7 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
     deepgram_api_key = os.getenv('DEEPGRAM_API_KEY', '')
     audio_dir = os.getenv('AUDIO_DIR', os.path.expanduser('.'))
     require_deepgram = os.getenv('REQUIRE_DEEPGRAM', 'true').lower() in ('true', '1', 'yes', 'on')
-    is_local_provider = stt_provider in ('silero_cohere',)
+    is_local_provider = stt_provider in ('silero_cohere', 'smart_turn_v3', 'umut')
     call_establish_timeout = int(os.getenv('SIP_CALL_ESTABLISH_TIMEOUT', '120'))
     enable_recording = os.getenv('SIP_ENABLE_RECORDING', 'false').lower() == 'true'
     recording_dir = os.getenv('SIP_RECORDING_DIR', 'data/calls')
@@ -263,6 +263,20 @@ async def dial_service_v2(destination: str, context=None) -> Dict[str, Any]:
                 ('COHERE_TRANSCRIBE_LANGUAGE', 'language'),
                 ('COHERE_MAX_UTTERANCE_S',  'max_utterance_duration_s'),
                 ('COHERE_TRANSCRIBE_URL',   'cohere_transcribe_url'),
+            ]:
+                val = os.environ.get(env_key)
+                if val is not None:
+                    stt_config[cfg_key] = val
+        elif stt_provider == 'umut':
+            logger.info('umut (Kyutai streaming ASR + pause head) configuration prepared')
+            for env_key, cfg_key in [
+                ('UMUT_STT_URL', 'stt_url'),
+                ('UMUT_API_KEY', 'api_key'),
+                ('UMUT_END_THRESHOLD', 'end_threshold'),
+                ('UMUT_SPEECH_THRESHOLD', 'speech_threshold'),
+                ('UMUT_ASR_DELAY_SEC', 'delay_sec'),
+                ('UMUT_QUEUE_FRAMES', 'queue_frames'),
+                ('UMUT_VAD_INTERRUPTION', 'vad_interruption'),
             ]:
                 val = os.environ.get(env_key)
                 if val is not None:
