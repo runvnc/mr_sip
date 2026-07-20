@@ -359,8 +359,21 @@ def dtmf_to_ulaw(tone: np.ndarray) -> bytes:
     pcm = (tone * 32767).astype(np.int16).tobytes()
     return audioop.lin2ulaw(pcm, 2)
 
+
+def _dtmf_log(event: str, **fields) -> None:
+    """Focused event-level DTMF diagnostics, independent of MR_DEBUG."""
+    try:
+        parts = [f"{time_module.time():.6f}", event]
+        parts.extend(f"{key}={value!r}" for key, value in fields.items())
+        with open(os.getenv('MR_SIP_DTMF_LOG', '/tmp/sip_dtmf.log'), 'a') as f:
+            f.write(' '.join(parts) + '\n')
+            f.flush()
+    except Exception:
+        pass
+
+
 @command()
-async def send_dtmf(digits: str, context=None) -> None:
+async def send_dtmf(digits: str, context=None) -> dict:
     """
     Send DTMF tones during an active SIP call.
     
@@ -380,28 +393,35 @@ async def send_dtmf(digits: str, context=None) -> None:
         { "send_dtmf": { "digits": "123#" } }
         { "send_dtmf": { "digits": "*9" } }
     """
+    log_id = getattr(context, 'log_id', None)
+    _dtmf_log('DTMF_EXEC_BEGIN', log_id=log_id, digits=digits)
     try:
         if not context or not context.log_id:
             logger.error('send_dtmf called without valid context')
-            return
+            result = {'status': 'error', 'digits': digits, 'error': 'invalid context'}
+            _dtmf_log('DTMF_EXEC_ERROR', log_id=log_id, digits=digits, error='invalid context')
+            return result
         else:
             pass
         if not digits:
             logger.error('send_dtmf called without digits')
-            return
+            _dtmf_log('DTMF_EXEC_ERROR', log_id=log_id, digits=digits, error='missing digits')
+            return {'status': 'error', 'digits': digits, 'error': 'missing digits'}
         else:
             pass
         valid_dtmf = set('0123456789*#')
         if not all((d in valid_dtmf for d in digits)):
             logger.error(f'Invalid DTMF digits: {digits}')
-            return
+            _dtmf_log('DTMF_EXEC_ERROR', log_id=log_id, digits=digits, error='invalid digits')
+            return {'status': 'error', 'digits': digits, 'error': 'invalid digits'}
         else:
             pass
         session_manager = get_session_manager()
         session = await session_manager.get_session(context.log_id)
         if not session or not session.is_active:
             logger.warning(f'No active call for session {context.log_id}')
-            return
+            _dtmf_log('DTMF_EXEC_ERROR', log_id=log_id, digits=digits, error='no active call')
+            return {'status': 'error', 'digits': digits, 'error': 'no active call'}
         else:
             pass
         logger.info(f"Generating DTMF tones for '{digits}'")
@@ -419,8 +439,13 @@ async def send_dtmf(digits: str, context=None) -> None:
         else:
             pass
         logger.info(f"Sent DTMF digits '{digits}' for session {context.log_id}")
+        result = {'status': 'sent', 'digits': digits}
+        _dtmf_log('DTMF_EXEC_DONE', log_id=log_id, digits=digits)
+        return result
     except Exception as e:
         logger.error(f'Error in send_dtmf command: {e}')
+        _dtmf_log('DTMF_EXEC_ERROR', log_id=log_id, digits=digits, error=repr(e))
+        return {'status': 'error', 'digits': digits, 'error': str(e)}
     finally:
         pass
 
